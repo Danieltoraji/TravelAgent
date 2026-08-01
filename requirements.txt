@@ -1,0 +1,11 @@
+# TravelAgent —— 依赖清单
+#
+# 核心代码零第三方依赖（纯标准库即可运行 tests 与 demo）。
+# 以下为可选依赖：
+#   - app/service.py 轻量服务层（供 C 的 Web 前端调用）需要 fastapi + uvicorn
+# 安装可选服务层:
+#   pip install -r requirements.txt
+
+# --- 可选: 服务层 ---
+fastapi>=0.110
+uvicorn>=0.29
