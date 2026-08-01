@@ -11,7 +11,7 @@
 | 角色 | 职责 | 本仓库中的入口 | 状态 |
 | --- | --- | --- | --- |
 | **A**（Agent 负责人） | 智能决策：Planner、Route Planner、Decision Engine、RePlanner、Memory、Prompt、Workflow | 通过 `decision_hook` 注入决策引擎；消费 `DecisionRequest`、产出 `ReplanRequest` 与 `TripTimeline` | 决策侧暂由 B 提供 stub（`decision/decision_engine.py`） |
-| **B**（系统负责人，本仓库维护者） | 工具与执行：Tool Agents、API 封装、Monitor Scheduler、Execution Agent、Booking、Calendar | `core/schemas.py`（契约）、`execution/execution_agent.py`（核心）、`tools/`、`booking/`、`itinerary/`、`app/service.py` | ✅ 骨架完成，M1–M5 待办（见第六节） |
+| **B**（系统负责人，本仓库维护者） | 工具与执行：Tool Agents、API 封装、Monitor Scheduler、Execution Agent、Booking、Calendar | `core/schemas.py`（契约）、`execution/execution_agent.py`（核心）、`tools/`、`booking/`、`itinerary/`、`app/service.py` | ✅ 骨架完成，M1–M5 待办（见第七节） |
 | **C**（产品负责人） | 展示与交互：Web 前端、日志、Action Queue、Permission Manager、Markdown/PDF 导出 | 通过 `on_event` 订阅监控事件；消费 `ActionItem`/`PermissionLevel`；调用 `app/service.py`；使用 `itinerary/` 导出产物 | 需按契约接入（见第四节） |
 
 ---
@@ -268,9 +268,49 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 
 ---
 
-## 六、B 的下一步（里程碑与待办）
+## 六、仓库与协作方案
 
-### 6.1 本阶段已完成（骨架 + 测试 + Demo）
+> 本仓库是**人物B的交付物**。A/C 的实现提交到**各自独立的仓库**，通过 `core/schemas.py` 契约对齐，互不阻塞、并行开发。
+
+### 6.1 多仓库组织（推荐）
+
+| 仓库 | 内容 | 维护者 |
+| --- | --- | --- |
+| `TravelAgent-B`（**本仓库**）| 契约 `core/schemas.py` + 工具 / 监控 / 执行 / 预约 / 导出全部实现 | B |
+| `TravelAgent-A` | Planner、Route Planner、Decision Engine（正式版）、RePlanner、Memory、Prompt、Workflow | A |
+| `TravelAgent-C` | Web 前端、Action Queue UI、Permission Manager UI、日志展示 | C |
+
+各自独立提交、独立迭代；A/C 只需**依赖契约 + 通过注入点接入**（A 用 `decision_hook`、C 用 `on_event` / `ActionItem` / FastAPI 端点）。
+
+### 6.2 本仓库已含 / 未含（边界对照）
+
+| 模块 | 本仓库 | 归属 |
+| --- | --- | --- |
+| `core/schemas.py` 契约锚点 | ✅ | B 维护，A/C 审阅 |
+| `tools/`、`monitor/`、`execution/`、`booking/`、`itinerary/` | ✅ | B |
+| `decision/decision_engine.py` | ⚠️ 仅 stub | 正式实现属 A |
+| `app/service.py` | ⚠️ 服务层骨架 | C 消费 |
+| A 的 Planner / Route Planner / Memory / Prompt / Workflow | ❌ | A 仓库 |
+| C 的 Web 前端 / Action Queue / Permission Manager | ❌ | C 仓库 |
+
+### 6.3 契约共享方式
+
+| 方案 | 做法 | 适用 |
+| --- | --- | --- |
+| **复制契约文件（推荐）** | 三方各保留一份 `core/schemas.py`，约定版本号（如 `SCHEMA_VERSION`），改动前先对齐 | 比赛 / 课程，轻量省事 |
+| Git 子模块 / 子目录 | A/C 通过 submodule 引入 B 仓库的 `core/` | 需多仓库协同较熟练 |
+| 独立契约包 | 把 `schemas.py` 抽成单独包 pip 发布，三方统一依赖 | 生产级，对比赛偏重 |
+
+### 6.4 协作约定
+1. **契约先行**：联调前（M1 / M2）三方先审阅并定稿 `core/schemas.py` 字段，再各自开发。
+2. **契约版本号**：建议在 `core/schemas.py` 顶部维护 `SCHEMA_VERSION` 常量，改动契约时递增；三方对版本号确认后再同步。
+3. **接入即耦合**：A/C 仓库只 import 契约与注入点，不依赖 B 的具体实现。
+
+---
+
+## 七、B 的下一步（里程碑与待办）
+
+### 7.1 本阶段已完成（骨架 + 测试 + Demo）
 1. `core/schemas.py` —— 全项目共享 JSON 接口契约
 2. `tools/` —— 统一工具抽象层 + 6 个领域 Tool（Mock，含剧情模拟）
 3. `monitor/monitor_scheduler.py` —— asyncio 定时监控调度器
@@ -280,7 +320,7 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 7. `tests/` —— 工具 / 调度 / 执行 / 导出 单元测试
 8. `demo/demo_scenario.py` —— 比赛 Demo 剧情闭环脚本
 
-### 6.2 待办（按优先级）
+### 7.2 待办（按优先级）
 
 | 待办 | 内容 | 协作方 | 说明 |
 | --- | --- | --- | --- |
@@ -290,7 +330,7 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 | **M4 日历平台对接** | Google Calendar API / Outlook 上传 `.ics` | B / C | `itinerary/` 已生成 `.ics` |
 | **M5 生产化** | 调度器容错重试、超时、日志落盘、配置热更新 | B | — |
 
-### 6.3 给 A/C 的建议
+### 7.3 给 A/C 的建议
 1. **契约先行**：联调前请审阅 `core/schemas.py`，字段先定稿再开发。
 2. **Explainable 是亮点**：A 请在 `ReplanRequest.reason` / `diff_summary` 落实"为什么改"。
 3. **Demo 剧情**：用 `demo/demo_scenario.py` 的剧情（暴雨 + 排队暴涨）展示"先评估影响，再决定是否重规划"，而不是直接改。
@@ -298,7 +338,7 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 
 ---
 
-## 七、运行方式
+## 八、运行方式
 
 ```bash
 # 单元测试（核心零依赖，标准库即可）
@@ -316,7 +356,7 @@ uvicorn app.service:app --reload --port 8000
 
 ---
 
-## 八、设计决策（B 侧要点）
+## 九、设计决策（B 侧要点）
 
 1. **契约先行**：`core/schemas.py` 是唯一对齐锚点，A/B/C 各自按契约开发互不阻塞。
 2. **零第三方依赖**：核心代码纯标准库即可跑通测试与 Demo；fastapi 只是可选服务层。
