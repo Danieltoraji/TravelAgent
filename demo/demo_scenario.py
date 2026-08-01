@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover
 
 from booking.booking_manager import BookingManager
 from core.schemas import DayPlan, DecisionRequest, MonitorEvent, Place, TripTimeline
+from decision.decision_engine import DecisionEngine
 from execution.execution_agent import ExecutionAgent
 from itinerary.ics_exporter import write_ics
 from itinerary.markdown_exporter import write_markdown
@@ -60,19 +61,21 @@ def build_timeline() -> TripTimeline:
     )
 
 
-def make_decision_hook(decisions: List[DecisionRequest]):
-    """模拟 A 的 Decision Engine 收到请求后的回调（可解释决策的入口）。"""
-    def hook(req: DecisionRequest) -> None:
-        decisions.append(req)
+def make_decision_printer():
+    """打印 DecisionEngine 的重规划结果（Explainable 决策展示）。"""
+    def printer(req: DecisionRequest, replan) -> None:
         ev = req.events[0]
         data = ev.data or {}
         print(f"\n  ⚡ [Decision Engine 收到请求] {req.events[0].event_id}")
         print(f"     事件: {ev.event_type.value} @ {ev.place}")
         print(f"     观测数据: {data}")
-        print(f"     当前行程: {req.current_timeline.city} "
-              f"({req.current_timeline.start_date} ~ {req.current_timeline.end_date})")
-        print("     → 评估中……是否触发 RePlan 由 A 实现（见 任务整理.md 第五、六节）")
-    return hook
+        if replan is None:
+            print("     → 影响可忽略，不重规划")
+        else:
+            print(f"     → 重规划！原因: {replan.reason}")
+            for d in replan.diff_summary:
+                print(f"       • {d}")
+    return printer
 
 
 def make_event_printer():
@@ -87,11 +90,20 @@ def run_demo() -> None:
     registry = build_registry(world)
     timeline = build_timeline()
 
-    decisions: List[DecisionRequest] = []
+    # 真正的 Decision Engine（stub 版，A 可后续替换为 LLM 驱动）
+    engine = DecisionEngine(impact_threshold=50)
+    decision_printer = make_decision_printer()
+
+    # 包装：让 decision_hook 打印结果后再返回给 ExecutionAgent 应用
+    def decision_hook(req: DecisionRequest):
+        replan = engine(req)
+        decision_printer(req, replan)
+        return replan
+
     agent = ExecutionAgent(
         timeline=timeline,
         registry=registry,
-        decision_hook=make_decision_hook(decisions),
+        decision_hook=decision_hook,
         on_event=make_event_printer(),
     )
 
@@ -120,7 +132,8 @@ def run_demo() -> None:
     print("\n  上午 08:50 再次轮询天气，确认影响：")
     agent.poll_once()
 
-    print(f"\n【4】汇总：Execution Agent 共产出决策请求 {len(decisions)} 次（阈值判定见 execution_agent.py）")
+    print(f"\n【4】汇总：DecisionEngine 共处理 {len(engine.history)} 次决策，"
+          f"其中 {sum(1 for h in engine.history if h is not None)} 次触发重规划")
 
     print("\n【5】预约闭环（Booking Agent：只准备，不付款）")
     bm = BookingManager(registry)
@@ -131,9 +144,10 @@ def run_demo() -> None:
     for action in bm.actions():
         print(f"     - [{action.status.value}/{action.permission.value}] {action.title}")
 
-    print("\n【6】更新后的行程单（重规划结果由 A 产出，此处仅演示导出）")
-    write_markdown(timeline, "output/行程单_final.md")
-    print("  ✔ output/行程单_final.md 已更新")
+    print("\n【6】更新后的行程单（DecisionEngine 重规划结果已应用）")
+    write_markdown(agent.timeline, "output/行程单_final.md",
+                   notes=[f"重规划原因：{h.reason}" for h in engine.history if h is not None])
+    print("  ✔ output/行程单_final.md 已更新（含重规划后的时间轴）")
     print("\n" + "=" * 72)
     print("Demo 结束：架构闭环 = 持续监控 → 影响判定 → 决策请求 → 预约/导出")
     print("=" * 72)

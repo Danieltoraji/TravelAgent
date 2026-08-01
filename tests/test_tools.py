@@ -1,9 +1,12 @@
 """工具层测试：注册表、各 Tool 的 Mock 调用、统一返回契约。"""
 
+import json
 import unittest
+from unittest.mock import patch
 
 from core.schemas import ToolStatus
 from tools import default_registry
+from tools.weather_tool import WeatherToolLive
 
 
 class TestToolRegistry(unittest.TestCase):
@@ -77,6 +80,152 @@ class TestTools(unittest.TestCase):
         r = default_registry.call("weather", city="北京")
         text = r.to_json()
         self.assertIn("condition", text)
+
+
+class TestWeatherLive(unittest.TestCase):
+    """WeatherToolLive 测试：mock urllib.request.urlopen，验证字段映射。"""
+
+    def _make_mock_response(self, geo_body, now_body, indices_body=None):
+        """构造 3 个 mock 响应对象（GeoAPI / 实况 / 指数）。"""
+        import io
+        import gzip
+        from unittest.mock import MagicMock
+
+        def make_resp(body_dict):
+            raw = json.dumps(body_dict).encode()
+            resp = MagicMock()
+            resp.__enter__ = MagicMock(return_value=resp)
+            resp.__exit__ = MagicMock(return_value=False)
+            resp.read = MagicMock(return_value=raw)
+            resp.headers = {"Content-Encoding": None}
+            return resp
+
+        responses = [make_resp(geo_body), make_resp(now_body)]
+        if indices_body is not None:
+            responses.append(make_resp(indices_body))
+        return responses
+
+    @patch("tools.weather_tool.urlopen")
+    def test_live_field_mapping(self, mock_urlopen):
+        """测试和风 API 返回字段正确映射到项目 dict 结构。"""
+        geo_resp = {"code": "200", "location": [{"id": "101010100", "name": "北京"}]}
+        now_resp = {"code": "200", "now": {
+            "temp": "31", "text": "晴", "icon": "100",
+            "windScale": "3", "humidity": "45", "precip": "0.0",
+        }}
+        indices_resp = {"code": "200", "daily": [{"category": "7"}]}
+
+        mock_urlopen.side_effect = self._make_mock_response(
+            geo_resp, now_resp, indices_resp)
+
+        tool = WeatherToolLive(api_key="test_key", api_host="test.qweatherapi.com")
+        result = tool._run(city="北京")
+
+        self.assertEqual(result["city"], "北京")
+        self.assertEqual(result["condition"], "晴")
+        self.assertEqual(result["temperature_c"], 31.0)
+        self.assertEqual(result["wind_kmh"], 17)  # windScale 3 → 17 km/h
+        self.assertEqual(result["uv_index"], 7)
+        self.assertEqual(result["rain_probability"], 10)  # precip=0 → 10%
+
+    @patch("tools.weather_tool.urlopen")
+    def test_live_rain_probability_from_precip(self, mock_urlopen):
+        """测试降水量 >0 时降雨概率推断为 80%。"""
+        geo_resp = {"code": "200", "location": [{"id": "101010100"}]}
+        now_resp = {"code": "200", "now": {
+            "temp": "22", "text": "暴雨", "icon": "310",
+            "windScale": "5", "precip": "15.5",
+        }}
+        indices_resp = {"code": "200", "daily": [{"category": "2"}]}
+
+        mock_urlopen.side_effect = self._make_mock_response(
+            geo_resp, now_resp, indices_resp)
+
+        tool = WeatherToolLive(api_key="test_key", api_host="test.qweatherapi.com")
+        result = tool._run(city="北京")
+
+        self.assertEqual(result["condition"], "暴雨")
+        self.assertEqual(result["rain_probability"], 80)  # precip>0 → 80%
+
+    @patch("tools.weather_tool.urlopen")
+    def test_live_location_id_cached(self, mock_urlopen):
+        """测试同一城市第二次调用不重复请求 GeoAPI。"""
+        geo_resp = {"code": "200", "location": [{"id": "101010100"}]}
+        now_resp = {"code": "200", "now": {
+            "temp": "28", "icon": "100", "windScale": "2", "precip": "0.0",
+        }}
+        indices_resp = {"code": "200", "daily": [{"category": "5"}]}
+
+        mock_urlopen.side_effect = self._make_mock_response(
+            geo_resp, now_resp, indices_resp)
+
+        tool = WeatherToolLive(api_key="test_key", api_host="test.qweatherapi.com")
+        tool._run(city="北京")
+
+        # 第二次调用：GeoAPI 缓存命中，不应再被调用
+        # 所以 side_effect 只需 now + indices 两个响应
+        now_resp2 = {"code": "200", "now": {
+            "temp": "30", "icon": "100", "windScale": "2", "precip": "0.0",
+        }}
+        indices_resp2 = {"code": "200", "daily": [{"category": "6"}]}
+        mock_urlopen.side_effect = self._make_mock_response(
+            now_resp2, indices_resp2)  # 只有 2 个响应（无 GeoAPI）
+
+        result = tool._run(city="北京")
+        self.assertEqual(result["temperature_c"], 30.0)
+        # 验证 Location ID 缓存命中
+        self.assertIn("北京", tool._location_cache)
+
+    @patch("tools.weather_tool.urlopen")
+    def test_live_uv_failure_defaults_zero(self, mock_urlopen):
+        """测试 UV 指数 API 失败时默认返回 0。"""
+        geo_resp = {"code": "200", "location": [{"id": "101010100"}]}
+        now_resp = {"code": "200", "now": {
+            "temp": "25", "icon": "100", "windScale": "1", "precip": "0.0",
+        }}
+
+        # 只 mock 2 个响应（GeoAPI + now），indices 调用会 IndexError
+        mock_urlopen.side_effect = self._make_mock_response(geo_resp, now_resp)
+
+        tool = WeatherToolLive(api_key="test_key", api_host="test.qweatherapi.com")
+        result = tool._run(city="北京")
+
+        self.assertEqual(result["uv_index"], 0)  # UV 失败默认 0
+
+    @patch("tools.weather_tool.urlopen")
+    def test_live_geo_not_found_raises(self, mock_urlopen):
+        """测试 GeoAPI 找不到城市时抛出 ValueError。"""
+        geo_resp = {"code": "200", "location": []}
+        mock_urlopen.side_effect = self._make_mock_response(
+            geo_resp, {"now": {}}, {"daily": []})
+
+        tool = WeatherToolLive(api_key="test_key", api_host="test.qweatherapi.com")
+        with self.assertRaises(ValueError):
+            tool._run(city="不存在的城市")
+
+    def test_live_source_is_live(self):
+        """测试 source 字段标记为 live。"""
+        tool = WeatherToolLive(api_key="k", api_host="h.qweatherapi.com")
+        self.assertEqual(tool.source, "live")
+
+    @patch("tools.weather_tool.urlopen")
+    def test_live_execute_wraps_as_tool_result(self, mock_urlopen):
+        """测试通过 execute() 调用时正确包装为 ToolResult。"""
+        geo_resp = {"code": "200", "location": [{"id": "101010100"}]}
+        now_resp = {"code": "200", "now": {
+            "temp": "28", "icon": "100", "windScale": "2", "precip": "0.0",
+        }}
+        indices_resp = {"code": "200", "daily": [{"category": "5"}]}
+
+        mock_urlopen.side_effect = self._make_mock_response(
+            geo_resp, now_resp, indices_resp)
+
+        tool = WeatherToolLive(api_key="test_key", api_host="test.qweatherapi.com")
+        result = tool.execute(city="北京")
+
+        self.assertEqual(result.status, ToolStatus.OK)
+        self.assertEqual(result.source, "live")
+        self.assertEqual(result.data["temperature_c"], 28.0)
 
 
 if __name__ == "__main__":
