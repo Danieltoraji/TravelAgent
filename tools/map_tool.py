@@ -129,10 +129,11 @@ class MapToolLive(MapTool):
         """调高德路线规划 API，返回距离和耗时。
 
         先地理编码获取起终点坐标，再调路线规划 API。
+        地理编码时限定 city="北京"，避免同名地点歧义。
         """
-        # 地理编码：地址 → 坐标
-        origin_coord: Tuple[float, float] = self._client.geocode(origin)
-        dest_coord: Tuple[float, float] = self._client.geocode(destination)
+        # 地理编码：地址 → 坐标（限定北京，避免同名歧义）
+        origin_coord: Tuple[float, float] = self._client.geocode(origin, city="北京")
+        dest_coord: Tuple[float, float] = self._client.geocode(destination, city="北京")
 
         # 路线规划
         route_data = self._client.get_route(origin_coord, dest_coord, mode=mode)

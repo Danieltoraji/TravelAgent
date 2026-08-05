@@ -180,7 +180,12 @@ class AmapClient:
     # ------------------------------------------------------------------
 
     def _get(self, path: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        """发送 GET 请求，自动附加 ``key`` 参数，返回解析后的 JSON dict。"""
+        """发送 GET 请求，自动附加 ``key`` 参数，返回解析后的 JSON dict。
+
+        v3 API 的错误通过 ``status != "1"`` 判断；
+        v4 API（如骑行）的返回结构不同，数据在 ``data`` 字段中，
+        错误通过 ``errcode`` 判断。
+        """
         all_params = {"key": self._api_key}
         if params:
             all_params.update(params)
@@ -197,7 +202,17 @@ class AmapClient:
                 raw = gzip.decompress(raw)
             data = json.loads(raw)
 
-        # 高德 API 错误检查：status != "1" 表示失败
+        # v4 API（如 /v4/direction/bicycling）返回结构不同
+        if path.startswith("/v4/"):
+            # v4 错误检查：errcode != 0 表示失败
+            errcode = data.get("errcode", 0)
+            if errcode != 0:
+                err_msg = data.get("errmsg", "unknown")
+                raise ValueError(f"高德 v4 API 错误 [{errcode}]: {err_msg}")
+            # v4 数据在 data 字段中
+            return data.get("data", {})
+
+        # v3 API 错误检查：status != "1" 表示失败
         if data.get("status") != "1":
             err_code = data.get("infocode", "unknown")
             err_msg = data.get("info", "unknown")
@@ -251,7 +266,11 @@ class AmapClient:
 
     @staticmethod
     def _extract_bicycling_route(resp: Dict[str, Any]) -> Dict[str, Any]:
-        """从骑行路线规划响应中提取距离和耗时。"""
+        """从骑行路线规划响应中提取距离和耗时。
+
+        v4 API 的数据已在 ``_get()`` 中解包到顶层，
+        paths 直接在返回的 dict 中。
+        """
         paths = resp.get("paths", [])
         if not paths:
             raise ValueError("高德骑行路线规划返回为空")

@@ -29,6 +29,7 @@ class QWeatherClient:
         self._api_host = api_host.rstrip("/")
         self._timeout = timeout
         self._location_cache: Dict[str, str] = {}  # 城市 → Location ID
+        self._coord_cache: Dict[str, tuple] = {}   # 城市 → (lat, lon)
 
     def get_location_id(self, city: str) -> str:
         """调 GeoAPI 城市搜索，获取 Location ID（带缓存）。"""
@@ -40,10 +41,24 @@ class QWeatherClient:
         locations = resp.get("location", [])
         if not locations:
             raise ValueError(f"GeoAPI 未找到城市: {city}")
-        loc_id = locations[0]["id"]
+        loc = locations[0]
+        loc_id = loc["id"]
         self._location_cache[city] = loc_id
+        # 同时缓存坐标（v1 API 需要）
+        self._coord_cache[city] = (float(loc["lat"]), float(loc["lon"]))
         logger.info("GeoAPI: %s → Location ID %s", city, loc_id)
         return loc_id
+
+    def get_location_coord(self, city: str) -> tuple:
+        """获取城市经纬度 (lat, lon)，带缓存。
+
+        天气预警和空气质量的新 v1 API 需要经纬度路径参数。
+        """
+        if city in self._coord_cache:
+            return self._coord_cache[city]
+        # 先调 get_location_id 填充缓存
+        self.get_location_id(city)
+        return self._coord_cache[city]
 
     def get(self, path_or_url: str) -> Dict[str, Any]:
         """发送 GET 请求（API KEY 认证），返回解析后的 JSON dict。

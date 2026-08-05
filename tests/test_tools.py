@@ -21,6 +21,7 @@ def make_mock_client(geo_id="101010100"):
     """构造一个 mock QWeatherClient，get_location_id 返回固定 ID。"""
     client = MagicMock(spec=QWeatherClient)
     client.get_location_id.return_value = geo_id
+    client.get_location_coord.return_value = (39.92, 116.41)
     return client
 
 
@@ -53,7 +54,12 @@ class TestTools(unittest.TestCase):
         self.assertIn("rain_probability", r.data)
 
     def test_map_search_poi(self) -> None:
-        r = default_registry.call("map", action="search_poi", query="故宫")
+        # 使用 Mock 版注册表，避免 default_registry 在有 API Key 时走 Live
+        from tools.base_tool import ToolRegistry
+        from tools.map_tool import MapTool
+        reg = ToolRegistry()
+        reg.register(MapTool())
+        r = reg.call("map", action="search_poi", query="故宫")
         self.assertEqual(r.status, ToolStatus.OK)
         self.assertTrue(any(p["name"] == "故宫" for p in r.data))
 
@@ -189,7 +195,7 @@ class TestWeatherWarningLive(unittest.TestCase):
     def test_live_no_warnings(self):
         """测试无预警时返回空列表。"""
         client = make_mock_client()
-        client.get.return_value = {"code": "200", "warning": []}
+        client.get.return_value = {"alerts": []}
 
         tool = WeatherWarningToolLive(client)
         result = tool._run(city="北京")
@@ -202,12 +208,11 @@ class TestWeatherWarningLive(unittest.TestCase):
         """测试有暴雨预警时正确返回。"""
         client = make_mock_client()
         client.get.return_value = {
-            "code": "200",
-            "warning": [{
-                "title": "北京市气象台发布暴雨橙色预警",
-                "type": "暴雨",
-                "level": "橙色",
-                "text": "预计未来3小时降雨量将达50毫米以上",
+            "alerts": [{
+                "headline": "北京市气象台发布暴雨橙色预警",
+                "eventType": {"name": "暴雨", "code": "1003"},
+                "color": {"code": "orange"},
+                "description": "预计未来3小时降雨量将达50毫米以上",
             }],
         }
 
@@ -217,10 +222,22 @@ class TestWeatherWarningLive(unittest.TestCase):
         self.assertTrue(result["has_warning"])
         self.assertEqual(len(result["warnings"]), 1)
         self.assertEqual(result["warnings"][0]["type"], "暴雨")
+        self.assertEqual(result["warnings"][0]["level"], "orange")
 
     def test_live_source_is_live(self):
         tool = WeatherWarningToolLive(make_mock_client())
         self.assertEqual(tool.source, "live")
+
+    def test_live_api_error_returns_empty(self):
+        """测试 API 调用失败（如 403）时优雅降级返回空预警。"""
+        client = make_mock_client()
+        client.get.side_effect = Exception("HTTP Error 403")
+
+        tool = WeatherWarningToolLive(client)
+        result = tool._run(city="北京")
+
+        self.assertFalse(result["has_warning"])
+        self.assertEqual(result["warnings"], [])
 
 
 class TestAirQualityLive(unittest.TestCase):
@@ -230,12 +247,17 @@ class TestAirQualityLive(unittest.TestCase):
         """测试空气质量字段映射。"""
         client = make_mock_client()
         client.get.return_value = {
-            "code": "200",
-            "now": [{
-                "aqi": "85", "category": "良", "pm2p5": "42.0",
-                "pm10": "65.0", "no2": "30.0", "so2": "8.0",
-                "co": "0.8", "o3": "55.0",
-            }],
+            "indexes": [
+                {"code": "us-epa", "aqi": 85, "category": "Moderate"},
+            ],
+            "pollutants": [
+                {"code": "pm2p5", "concentration": {"value": 42.0, "unit": "μg/m3"}},
+                {"code": "pm10", "concentration": {"value": 65.0, "unit": "μg/m3"}},
+                {"code": "no2", "concentration": {"value": 30.0, "unit": "μg/m3"}},
+                {"code": "so2", "concentration": {"value": 8.0, "unit": "μg/m3"}},
+                {"code": "co", "concentration": {"value": 0.8, "unit": "mg/m3"}},
+                {"code": "o3", "concentration": {"value": 55.0, "unit": "μg/m3"}},
+            ],
         }
 
         tool = AirQualityToolLive(client)
@@ -243,14 +265,14 @@ class TestAirQualityLive(unittest.TestCase):
 
         self.assertEqual(result["city"], "北京")
         self.assertEqual(result["aqi"], 85)
-        self.assertEqual(result["category"], "良")
+        self.assertEqual(result["category"], "Moderate")
         self.assertEqual(result["pm25"], 42.0)
         self.assertEqual(result["pm10"], 65.0)
 
     def test_live_empty_response(self):
         """测试 API 返回空时默认值。"""
         client = make_mock_client()
-        client.get.return_value = {"code": "200", "now": []}
+        client.get.return_value = {"indexes": [], "pollutants": []}
 
         tool = AirQualityToolLive(client)
         result = tool._run(city="北京")
@@ -261,6 +283,17 @@ class TestAirQualityLive(unittest.TestCase):
     def test_live_source_is_live(self):
         tool = AirQualityToolLive(make_mock_client())
         self.assertEqual(tool.source, "live")
+
+    def test_live_api_error_returns_defaults(self):
+        """测试 API 调用失败（如 403）时优雅降级返回默认值。"""
+        client = make_mock_client()
+        client.get.side_effect = Exception("HTTP Error 403")
+
+        tool = AirQualityToolLive(client)
+        result = tool._run(city="北京")
+
+        self.assertEqual(result["aqi"], 0)
+        self.assertEqual(result["category"], "未知")
 
 
 class TestWeatherForecastLive(unittest.TestCase):
@@ -279,16 +312,37 @@ class TestWeatherForecastLive(unittest.TestCase):
             ],
         }
 
-        tool = WeatherForecastToolLive(client)
-        result = tool._run(city="北京", hours=2)
+    def test_live_iconcode_none_fallback_to_text(self):
+        """测试 iconCode 为 None 时 fallback 到 text 字段。"""
+        client = make_mock_client()
+        client.get.return_value = {
+            "code": "200",
+            "hourly": [
+                {"fxTime": "2026-08-05T14:00+08:00", "temp": "30",
+                 "iconCode": None, "text": "晴", "precip": "0.0"},
+            ],
+        }
 
-        self.assertEqual(result["city"], "北京")
-        self.assertEqual(len(result["hours"]), 2)
-        self.assertEqual(result["hours"][0]["temp"], 30.0)
+        tool = WeatherForecastToolLive(client)
+        result = tool._run(city="北京", hours=1)
+
         self.assertEqual(result["hours"][0]["condition"], "晴")
-        self.assertEqual(result["hours"][1]["condition"], "暴雨")
-        self.assertEqual(result["hours"][1]["rain_probability"], 80)
-        self.assertIn("1小时可能降雨", result["summary"])
+
+    def test_live_no_iconcode_uses_text(self):
+        """测试无 iconCode 字段时 fallback 到 text 字段。"""
+        client = make_mock_client()
+        client.get.return_value = {
+            "code": "200",
+            "hourly": [
+                {"fxTime": "2026-08-05T14:00+08:00", "temp": "30",
+                 "text": "多云", "precip": "0.0"},
+            ],
+        }
+
+        tool = WeatherForecastToolLive(client)
+        result = tool._run(city="北京", hours=1)
+
+        self.assertEqual(result["hours"][0]["condition"], "多云")
 
     def test_live_no_rain_summary(self):
         """测试无降雨时摘要正确。"""

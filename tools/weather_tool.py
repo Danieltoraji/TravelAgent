@@ -197,13 +197,24 @@ class WeatherWarningToolLive(WeatherWarningTool):
         self._client = client
 
     def _run(self, city: str = "") -> Dict[str, Any]:
-        from urllib.parse import urlencode
-
         city = city or CITY_MOCK
-        loc_id = self._client.get_location_id(city)
-        url = f"/v7/warning/now?{urlencode({'location': loc_id})}"
-        resp = self._client.get(url)
-        warnings = resp.get("warning", [])
+        lat, lon = self._client.get_location_coord(city)
+        url = f"/weatheralert/v1/current/{lat}/{lon}"
+        try:
+            resp = self._client.get(url)
+            alerts = resp.get("alerts", [])
+        except Exception as exc:
+            logger.warning("天气预警 API 调用失败，返回空预警: %s", exc)
+            alerts = []
+        # 映射 v1 响应格式为统一输出
+        warnings = []
+        for a in alerts:
+            warnings.append({
+                "title": a.get("headline", ""),
+                "type": a.get("eventType", {}).get("name", ""),
+                "level": a.get("color", {}).get("code", ""),
+                "text": a.get("description", ""),
+            })
         return {
             "city": city,
             "warnings": warnings,
@@ -257,14 +268,13 @@ class AirQualityToolLive(AirQualityTool):
         self._client = client
 
     def _run(self, city: str = "") -> Dict[str, Any]:
-        from urllib.parse import urlencode
-
         city = city or CITY_MOCK
-        loc_id = self._client.get_location_id(city)
-        url = f"/v7/air/now?{urlencode({'location': loc_id})}"
-        resp = self._client.get(url)
-        aqi_list = resp.get("now", [])
-        if not aqi_list:
+        lat, lon = self._client.get_location_coord(city)
+        url = f"/airquality/v1/current/{lat}/{lon}"
+        try:
+            resp = self._client.get(url)
+        except Exception as exc:
+            logger.warning("空气质量 API 调用失败，返回默认值: %s", exc)
             return {
                 "city": city,
                 "aqi": 0,
@@ -276,17 +286,37 @@ class AirQualityToolLive(AirQualityTool):
                 "co": 0.0,
                 "o3": 0.0,
             }
-        aqi_data = aqi_list[0] if isinstance(aqi_list, list) else aqi_list
+        # v1 响应: indexes 数组含 AQI/类别, pollutants 数组含各污染物浓度
+        indexes = resp.get("indexes", [])
+        pollutants = resp.get("pollutants", [])
+
+        # 从 indexes 中取 AQI（优先 us-epa，否则取第一个）
+        aqi = 0
+        category = "未知"
+        for idx in indexes:
+            if idx.get("code") == "us-epa" or aqi == 0:
+                aqi = int(idx.get("aqi", 0))
+                category = idx.get("category", "未知")
+                if idx.get("code") == "us-epa":
+                    break
+
+        # 从 pollutants 中提取各污染物浓度
+        pollutant_map = {}
+        for p in pollutants:
+            code = p.get("code", "")
+            conc = p.get("concentration", {})
+            pollutant_map[code] = float(conc.get("value", 0))
+
         return {
             "city": city,
-            "aqi": int(aqi_data.get("aqi", 0)),
-            "category": aqi_data.get("category", "未知"),
-            "pm25": float(aqi_data.get("pm2p5", 0)),
-            "pm10": float(aqi_data.get("pm10", 0)),
-            "no2": float(aqi_data.get("no2", 0)),
-            "so2": float(aqi_data.get("so2", 0)),
-            "co": float(aqi_data.get("co", 0)),
-            "o3": float(aqi_data.get("o3", 0)),
+            "aqi": aqi,
+            "category": category,
+            "pm25": pollutant_map.get("pm2p5", 0.0),
+            "pm10": pollutant_map.get("pm10", 0.0),
+            "no2": pollutant_map.get("no2", 0.0),
+            "so2": pollutant_map.get("so2", 0.0),
+            "co": pollutant_map.get("co", 0.0),
+            "o3": pollutant_map.get("o3", 0.0),
         }
 
 
@@ -352,8 +382,10 @@ class WeatherForecastToolLive(WeatherForecastTool):
         hourly_raw = resp.get("hourly", [])
         hourly = []
         for h in hourly_raw[:hours]:
-            icon = h.get("iconCode", "999")
-            condition = _QWEATHER_ICON_TEXT.get(icon, h.get("text", "未知"))
+            icon = h.get("iconCode") or ""
+            text = h.get("text", "")
+            # 优先用 iconCode 映射，iconCode 为空时 fallback 到 text 字段
+            condition = _QWEATHER_ICON_TEXT.get(icon, "") or text or "未知"
             temp = float(h.get("temp", 0))
             precip = float(h.get("precip", "0"))
             rain_prob = 80 if precip > 0 else 10
