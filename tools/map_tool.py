@@ -89,7 +89,7 @@ class MapToolLive(MapTool):
     """高德地图 API 实现版。
 
     调用链路：
-      1. search_poi → AmapClient.search_poi() → /v3/place/text
+      1. search_poi → AmapClient.search_poi() → /v5/place/text
       2. route → AmapClient.geocode(origin/destination) 获取坐标
                → AmapClient.get_route() → /v3/direction/{mode}
 

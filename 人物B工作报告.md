@@ -22,22 +22,26 @@
 
 ## 二、接下来要做的主要工作
 
-### 本阶段已完成（代码骨架 + 测试 + Demo）
+### 本阶段已完成（代码骨架 + 测试 + Demo + 真实 API 接入）
 
 1. `core/schemas.py` — 全项目共享 JSON 接口契约（与 A/C 对齐的锚点）
-2. `tools/` — 统一工具抽象层 + 6 个领域 Tool（Mock 数据，含剧情模拟）
+2. `tools/` — 统一工具抽象层 + 9 个 Tool（Mock/Live 双版本，自动切换）
 3. `monitor/monitor_scheduler.py` — asyncio 定时监控调度器
 4. `execution/execution_agent.py` — 持续监控执行体（影响阈值判定 + DecisionRequest 组装）
 5. `booking/booking_manager.py` — 预约状态机 + ActionQueue 契约 + 付款人工提醒
 6. `itinerary/` — `.ics` 日历 + Markdown 行程单导出
-7. `tests/` — 工具 / 调度 / 执行 / 导出 单元测试
+7. `tests/` — 工具 / 调度 / 执行 / 导出 单元测试（83 个测试全部通过）
 8. `demo/demo_scenario.py` — 比赛 Demo 剧情闭环脚本
+9. `tools/qweather_client.py` — QWeatherClient 共享客户端（API KEY 认证 + Location ID/坐标缓存）
+10. `tools/amap_client.py` — AmapClient 共享客户端（地理编码缓存 + 路线规划）
+11. 天气 Live 版 4 个（实况/预警/空气质量/预报）+ 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已全部接入真实 API
+12. `tool_introduction.md` — 完整工具层接口文档（含 API 端点映射、字段对照、v3→v5 升级说明）
 
 ### 待办（按优先级，供后续迭代）
 
 - [ ] **M1 与 A 联调**：确认 `DecisionRequest` 契约字段；A 的 Decision Engine 消费后返回 `ReplanRequest`
 - [ ] **M2 与 C 联调**：确认 `ActionItem` 契约；C 的 Action Queue / Permission Manager 消费 B 产出的动作
-- [ ] **M3 替换真实 API**：高德（地图）、和风（天气）、景区 / 点评（景点 / 餐饮），通过环境变量注入 Key
+- [x] **M3 替换真实 API**：✅ 已完成 — 高德（地图+交通+景点+餐饮，POI 搜索已升级至 v5 API）、和风（天气 4 个端点含 v1 迁移）已接入，环境变量注入 Key
 - [ ] **M4 日历平台对接**：Google Calendar API / Outlook 上传 `.ics`
 - [ ] **M5 生产化**：调度器容错重试、超时、日志落盘、配置热更新
 
@@ -47,9 +51,10 @@
 
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
-| M1 | 工具层 + Mock 跑通 | ✅ 本阶段 |
-| M2 | Scheduler + Execution 跑通 Demo 剧情 | ✅ 本阶段 |
-| M3 | Booking / Calendar + 契约联调 | ✅ 本阶段（骨架） |
+| M1 | 工具层 + Mock 跑通 | ✅ 完成 |
+| M2 | Scheduler + Execution 跑通 Demo 剧情 | ✅ 完成 |
+| M3 | Booking / Calendar + 契约联调 | ✅ 完成（骨架） |
+| M3.5 | 真实 API 接入（天气 4 个 + 地图 + 交通 + 景点 + 餐饮 Live） | ✅ 完成 |
 | M4 | 与 A/C 全量接口联调，Demo 完整闭环 | ⏳ 待办 |
 
 ---

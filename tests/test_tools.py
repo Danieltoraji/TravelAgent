@@ -9,6 +9,8 @@ from tools import default_registry
 from tools.amap_client import AmapClient
 from tools.map_tool import MapToolLive
 from tools.qweather_client import QWeatherClient
+from tools.scenic_tool import ScenicToolLive
+from tools.food_tool import FoodToolLive
 from tools.traffic_tool import TrafficToolLive
 from tools.weather_tool import (
     AirQualityToolLive,
@@ -74,7 +76,9 @@ class TestTools(unittest.TestCase):
         self.assertEqual(r.data["queue_min"], 120)
 
     def test_scenic_unknown_place_errors(self) -> None:
-        r = default_registry.call("scenic", place="不存在的地方")
+        from tools.scenic_tool import ScenicTool
+        tool = ScenicTool()
+        r = tool.execute(place="不存在的地方")
         self.assertEqual(r.status, ToolStatus.ERROR)
         self.assertIsNotNone(r.error)
 
@@ -667,6 +671,295 @@ class TestTrafficLive(unittest.TestCase):
         self.assertEqual(result.status, ToolStatus.OK)
         self.assertEqual(result.source, "live")
         self.assertEqual(result.data["duration_min"], 25)
+
+
+class TestScenicLive(unittest.TestCase):
+    """ScenicToolLive 测试：mock AmapClient，验证字段映射。"""
+
+    def make_mock_amap_client(self):
+        """构造一个 mock AmapClient。"""
+        client = MagicMock(spec=AmapClient)
+        return client
+
+    def test_live_scenic_field_mapping(self):
+        """测试景点搜索字段映射。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {
+                "name": "故宫博物院",
+                "lat": 39.916,
+                "lng": 116.397,
+                "address": "北京市东城区景山前街4号",
+                "tel": "010-85007421",
+                "type": "风景名胜;风景名胜相关",
+                "rating": 4.8,
+                "cost": 60.0,
+                "tag": "故宫,紫禁城",
+                "opentime_today": "08:30-17:00",
+                "opentime_week": "周一至周日:08:30-17:00",
+            },
+        ]
+
+        tool = ScenicToolLive(client)
+        result = tool._run(place="故宫")
+
+        self.assertEqual(result["place"], "故宫")
+        self.assertTrue(result["open"])
+        self.assertGreater(result["queue_min"], 0)  # 从 MockWorld 取
+        self.assertTrue(result["ticket_required"])
+        self.assertEqual(result["price"], 60.0)     # 从 MockWorld 取
+        self.assertEqual(result["open_hours"], "08:30-17:00")  # v5 API opentime_today
+
+    def test_live_scenic_unknown_place_uses_defaults(self):
+        """测试未知景点使用默认值。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {
+                "name": "某小众景点",
+                "lat": 40.0,
+                "lng": 116.5,
+                "address": "某地址",
+                "tel": "",
+                "type": "风景名胜",
+                "rating": 0,
+                "cost": 0,
+                "tag": "",
+                "opentime_today": "",
+                "opentime_week": "",
+            },
+        ]
+
+        tool = ScenicToolLive(client)
+        result = tool._run(place="某小众景点")
+
+        self.assertEqual(result["place"], "某小众景点")
+        self.assertTrue(result["open"])
+        self.assertEqual(result["queue_min"], 20)   # 默认值
+        self.assertTrue(result["ticket_required"])  # 默认值
+        self.assertEqual(result["price"], 0.0)       # 默认值
+        self.assertEqual(result["open_hours"], "")  # API 无数据，MockWorld 也无
+
+    def test_live_scenic_opentime_priority_over_mockworld(self):
+        """测试 v5 API opentime_today 优先于 MockWorld 的 open 字段。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {
+                "name": "故宫博物院",
+                "lat": 39.916,
+                "lng": 116.397,
+                "address": "北京市东城区景山前街4号",
+                "tel": "010-85007421",
+                "type": "风景名胜;风景名胜相关",
+                "rating": 4.8,
+                "cost": 60.0,
+                "tag": "故宫,紫禁城",
+                "opentime_today": "09:00-16:30",  # API 返回，与 MockWorld 不同
+                "opentime_week": "周一至周日:09:00-16:30",
+            },
+        ]
+
+        tool = ScenicToolLive(client)
+        result = tool._run(place="故宫")
+
+        # MockWorld 中故宫的 open 是 "08:30-17:00"，但 API 返回 "09:00-16:30"
+        self.assertEqual(result["open_hours"], "09:00-16:30")
+
+    def test_live_scenic_opentime_fallback_to_mockworld(self):
+        """测试 API opentime_today 为空时 fallback 到 MockWorld。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {
+                "name": "故宫博物院",
+                "lat": 39.916,
+                "lng": 116.397,
+                "address": "北京市东城区景山前街4号",
+                "tel": "010-85007421",
+                "type": "风景名胜;风景名胜相关",
+                "rating": 4.8,
+                "cost": 60.0,
+                "tag": "故宫,紫禁城",
+                "opentime_today": "",  # API 无数据
+                "opentime_week": "",
+            },
+        ]
+
+        tool = ScenicToolLive(client)
+        result = tool._run(place="故宫")
+
+        # API 无数据，fallback 到 MockWorld 的 "08:30-17:00"
+        self.assertEqual(result["open_hours"], "08:30-17:00")
+
+    def test_live_scenic_not_found_raises(self):
+        """测试景点未找到时抛出 ValueError。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = []
+
+        tool = ScenicToolLive(client)
+        with self.assertRaises(ValueError):
+            tool._run(place="不存在的景点")
+
+    def test_live_scenic_source_is_live(self):
+        """测试 source 字段标记为 live。"""
+        tool = ScenicToolLive(self.make_mock_amap_client())
+        self.assertEqual(tool.source, "live")
+
+    def test_live_scenic_execute_wraps_as_tool_result(self):
+        """测试通过 execute() 调用时正确包装为 ToolResult。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {"name": "故宫", "lat": 39.916, "lng": 116.397,
+             "address": "", "tel": "", "type": "", "rating": 0, "cost": 0, "tag": "",
+             "opentime_today": "", "opentime_week": ""},
+        ]
+
+        tool = ScenicToolLive(client)
+        result = tool.execute(place="故宫")
+
+        self.assertEqual(result.status, ToolStatus.OK)
+        self.assertEqual(result.source, "live")
+        self.assertEqual(result.data["place"], "故宫")
+
+
+class TestFoodLive(unittest.TestCase):
+    """FoodToolLive 测试：mock AmapClient，验证字段映射。"""
+
+    def make_mock_amap_client(self):
+        """构造一个 mock AmapClient。"""
+        client = MagicMock(spec=AmapClient)
+        return client
+
+    def test_live_food_without_near(self):
+        """测试无位置参数时的餐饮搜索。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {
+                "name": "全聚德(前门店)",
+                "lat": 39.899,
+                "lng": 116.397,
+                "address": "北京市东城区前门大街30号",
+                "tel": "010-65112418",
+                "type": "餐饮服务;中餐厅",
+                "rating": 4.6,
+                "cost": 180.0,
+                "tag": "烤鸭,京菜",
+                "opentime_today": "10:00-22:00",
+                "opentime_week": "周一至周日:10:00-22:00",
+            },
+            {
+                "name": "护国寺小吃",
+                "lat": 39.940,
+                "lng": 116.379,
+                "address": "北京市西城区护国寺大街",
+                "tel": "",
+                "type": "餐饮服务;中式快餐",
+                "rating": 4.3,
+                "cost": 45.0,
+                "tag": "小吃",
+                "opentime_today": "06:00-20:00",
+                "opentime_week": "周一至周日:06:00-20:00",
+            },
+        ]
+
+        tool = FoodToolLive(client)
+        result = tool._run(query="餐厅")
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["name"], "全聚德(前门店)")
+        self.assertEqual(result[0]["rating"], 4.6)
+        self.assertEqual(result[0]["price_per_person"], 180.0)
+        self.assertTrue(result[0]["open"])
+        self.assertEqual(result[0]["distance_km"], 0.0)  # 无 near，无距离
+        self.assertEqual(result[0]["cuisine"], "中餐厅")
+        self.assertEqual(result[0]["queue_min"], 0)
+
+    def test_live_food_with_near(self):
+        """测试有位置参数时的周边餐饮搜索。"""
+        client = self.make_mock_amap_client()
+        client.geocode.return_value = (39.916, 116.397)  # 故宫坐标
+        client.search_poi_around.return_value = [
+            {
+                "name": "附近餐厅A",
+                "lat": 39.918,
+                "lng": 116.400,
+                "address": "某地址",
+                "tel": "010-12345678",
+                "type": "餐饮服务;中餐厅",
+                "rating": 4.5,
+                "cost": 120.0,
+                "tag": "",
+                "distance": 500,  # 米
+                "opentime_today": "10:00-22:00",
+                "opentime_week": "周一至周日:10:00-22:00",
+            },
+        ]
+
+        tool = FoodToolLive(client)
+        result = tool._run(query="餐厅", near="故宫")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "附近餐厅A")
+        self.assertEqual(result[0]["rating"], 4.5)
+        self.assertEqual(result[0]["price_per_person"], 120.0)
+        self.assertEqual(result[0]["distance_km"], 0.5)  # 500m → 0.5km
+        self.assertEqual(result[0]["cuisine"], "中餐厅")
+
+    def test_live_food_geocode_failure_raises(self):
+        """测试地理编码失败时抛出 ValueError。"""
+        client = self.make_mock_amap_client()
+        client.geocode.return_value = None
+
+        tool = FoodToolLive(client)
+        with self.assertRaises(ValueError):
+            tool._run(query="餐厅", near="不存在的地点")
+
+    def test_live_food_empty_results(self):
+        """测试搜索结果为空时返回空列表。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = []
+
+        tool = FoodToolLive(client)
+        result = tool._run(query="不存在的菜系")
+
+        self.assertEqual(result, [])
+
+    def test_live_food_cuisine_extraction(self):
+        """测试菜系提取逻辑。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {"name": "A", "lat": 0, "lng": 0, "address": "", "tel": "",
+             "type": "餐饮服务;火锅", "rating": 0, "cost": 0, "tag": "",
+             "opentime_today": "", "opentime_week": ""},
+            {"name": "B", "lat": 0, "lng": 0, "address": "", "tel": "",
+             "type": "餐饮服务;西餐", "rating": 0, "cost": 0, "tag": "",
+             "opentime_today": "", "opentime_week": ""},
+        ]
+
+        tool = FoodToolLive(client)
+        result = tool._run(query="餐厅")
+
+        self.assertEqual(result[0]["cuisine"], "火锅")
+        self.assertEqual(result[1]["cuisine"], "西餐")
+
+    def test_live_food_source_is_live(self):
+        """测试 source 字段标记为 live。"""
+        tool = FoodToolLive(self.make_mock_amap_client())
+        self.assertEqual(tool.source, "live")
+
+    def test_live_food_execute_wraps_as_tool_result(self):
+        """测试通过 execute() 调用时正确包装为 ToolResult。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {"name": "测试餐厅", "lat": 0, "lng": 0, "address": "", "tel": "",
+             "type": "中餐", "rating": 4.0, "cost": 50, "tag": "",
+             "opentime_today": "", "opentime_week": ""},
+        ]
+
+        tool = FoodToolLive(client)
+        result = tool.execute(query="餐厅")
+
+        self.assertEqual(result.status, ToolStatus.OK)
+        self.assertEqual(result.source, "live")
+        self.assertEqual(result.data[0]["name"], "测试餐厅")
 
 
 if __name__ == "__main__":

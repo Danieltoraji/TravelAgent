@@ -68,6 +68,9 @@ class AmapClient:
         logger.info("Geocode: %s → (%.6f, %.6f)", address, lat, lng)
         return lat, lng
 
+    # v5 show_fields 固定参数：请求营业时间、评分、人均消费、特色菜等深度信息
+    _SHOW_FIELDS = "business,opentime_today,opentime_week,rating,cost,tag,alias"
+
     def search_poi(
         self,
         query: str,
@@ -77,19 +80,21 @@ class AmapClient:
     ) -> List[Dict[str, Any]]:
         """关键词搜索 POI。
 
-        调用 ``/v3/place/text``，返回标准化 POI 列表。
+        调用 ``/v5/place/text``（v5 API），返回标准化 POI 列表。
+        v5 通过 ``show_fields`` 参数返回营业时间、评分等深度信息。
         """
         params: Dict[str, str] = {
             "keywords": query,
-            "offset": str(min(limit, 25)),
-            "extensions": "all",
+            "page_size": str(min(limit, 25)),
+            "show_fields": self._SHOW_FIELDS,
         }
         if city:
-            params["city"] = city
+            params["region"] = city
+            params["city_limit"] = "true"
         if types:
             params["types"] = types
 
-        resp = self._get("/v3/place/text", params)
+        resp = self._get("/v5/place/text", params)
         pois = resp.get("pois", [])
         return [self._normalize_poi(p) for p in pois[:limit]]
 
@@ -103,7 +108,8 @@ class AmapClient:
     ) -> List[Dict[str, Any]]:
         """周边搜索 POI。
 
-        调用 ``/v3/place/around``，返回标准化 POI 列表。
+        调用 ``/v5/place/around``（v5 API），返回标准化 POI 列表。
+        v5 通过 ``show_fields`` 参数返回营业时间、评分等深度信息。
 
         Args:
             location: 中心点坐标 (lat, lng)
@@ -115,16 +121,16 @@ class AmapClient:
         params: Dict[str, str] = {
             "location": f"{location[1]},{location[0]}",  # 高德格式: lng,lat
             "radius": str(radius),
-            "offset": str(min(limit, 25)),
+            "page_size": str(min(limit, 25)),
             "sortrule": "distance",
-            "extensions": "all",
+            "show_fields": self._SHOW_FIELDS,
         }
         if keywords:
             params["keywords"] = keywords
         if types:
             params["types"] = types
 
-        resp = self._get("/v3/place/around", params)
+        resp = self._get("/v5/place/around", params)
         pois = resp.get("pois", [])
         return [self._normalize_poi(p) for p in pois[:limit]]
 
@@ -222,20 +228,87 @@ class AmapClient:
 
     @staticmethod
     def _normalize_poi(poi: Dict[str, Any]) -> Dict[str, Any]:
-        """将高德 POI 原始返回标准化为项目内部结构。"""
+        """将高德 POI 原始返回标准化为项目内部结构。
+
+        v5 API（``/v5/place/*``）通过 ``show_fields=business,...`` 返回深度信息，
+        深度字段嵌套在 ``business`` 对象内：
+        - rating: 评分（餐饮/酒店/景点/影院类 POI）
+        - cost: 人均消费（餐饮/酒店/景点/影院类 POI）
+        - tag: 特色内容（美食类 POI，如"烤鱼,麻辣香锅"）
+        - opentime_today: 今日营业时间（如 "08:30-17:30"）
+        - opentime_week: 周营业时间描述（如 "周一至周五:08:30-17:30..."）
+
+        v5 结构（show_fields=business,... 时）：
+        - business.rating: 评分（餐饮/酒店/景点/影院类 POI）
+        - business.cost: 人均消费（餐饮/酒店/景点/影院类 POI）
+        - business.tag: 特色内容（美食类 POI，如"烤鱼,麻辣香锅"）
+        - business.opentime_today: 今日营业时间（如 "08:30-17:30"）
+        - business.opentime_week: 周营业时间描述
+        - business.tel: 联系电话（v5 移入 business 内）
+
+        兼容 v3 API：当 ``biz_ext`` 存在时作为 fallback。
+        注意：高德返回值有时是字符串有时是空数组 []，需安全转换。
+        """
         location = poi.get("location", "")  # "lng,lat"
         lat, lng = 0.0, 0.0
         if location and "," in location:
             parts = location.split(",")
             lng = float(parts[0])
             lat = float(parts[1])
+
+        # v5: 深度信息嵌套在 business 对象内
+        business = poi.get("business", {})
+        if not isinstance(business, dict):
+            business = {}
+
+        # v3 fallback: biz_ext 嵌套结构
+        biz_ext = poi.get("biz_ext", {})
+        if not isinstance(biz_ext, dict):
+            biz_ext = {}
+
+        def _safe_float(val: Any) -> float:
+            """安全转换为 float，处理空数组/空字符串/None。"""
+            if isinstance(val, (list, tuple)):
+                return 0.0
+            if val is None or val == "":
+                return 0.0
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return 0.0
+
+        # v5 business 优先，fallback 到 v3 biz_ext
+        rating = business.get("rating")
+        if rating is None:
+            rating = biz_ext.get("rating", 0)
+
+        cost = business.get("cost")
+        if cost is None:
+            cost = biz_ext.get("cost", 0)
+
+        # tel: v5 在 business 内，v3 在顶层
+        tel = business.get("tel") or poi.get("tel", "") or ""
+
+        # tag: v5 在 business 内，v3 在顶层
+        tag = business.get("tag") or poi.get("tag", "") or ""
+
+        # opentime: v5 在 business 内
+        opentime_today = business.get("opentime_today", "") or ""
+        opentime_week = business.get("opentime_week", "") or ""
+
         return {
             "name": poi.get("name", ""),
             "lat": lat,
             "lng": lng,
             "address": poi.get("address", "") or "",
-            "tel": poi.get("tel", "") or "",
+            "tel": tel,
             "type": poi.get("type", "") or "",
+            "rating": _safe_float(rating),
+            "cost": _safe_float(cost),
+            "tag": tag,
+            "distance": _safe_float(poi.get("distance", 0)),
+            "opentime_today": opentime_today,
+            "opentime_week": opentime_week,
         }
 
     @staticmethod

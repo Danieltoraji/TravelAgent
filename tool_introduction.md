@@ -17,10 +17,10 @@
 - [5. 地图工具（Mock/Live 双版本）](#5-地图工具mocklive-双版本)
   - [5.1 AmapClient 共享客户端](#51-amapclient-共享客户端)
   - [5.2 map — 地图服务](#52-map--地图服务)
-- [6. 其他领域工具（4 个）](#6-其他领域工具4-个)
-  - [6.1 scenic — 景点状态](#61-scenic--景点状态)
-  - [6.2 traffic — 交通状态](#62-traffic--交通状态)
-  - [6.3 food — 餐饮推荐](#63-food--餐饮推荐)
+- [6. 其他领域工具](#6-其他领域工具)
+  - [6.1 scenic — 景点状态（Mock/Live 双版本）](#61-scenic--景点状态)
+  - [6.2 traffic — 交通状态（Mock/Live 双版本）](#62-traffic--交通状态)
+  - [6.3 food — 餐饮推荐（Mock/Live 双版本）](#63-food--餐饮推荐)
   - [6.4 booking — 预约服务](#64-booking--预约服务)
 - [7. Mock/Live 切换机制](#7-mocklive-切换机制)
 - [8. 和风天气 API 端点汇总](#8-和风天气-api-端点汇总)
@@ -48,9 +48,9 @@
 | 原则 | 说明 |
 |------|------|
 | **统一契约** | 所有工具继承 `BaseTool`，通过 `execute(**kwargs) → ToolResult` 统一调用 |
-| **Mock/Live 双版本** | 天气和地图工具有 Mock 和 Live 两个实现类，签名一致，调用方零改动 |
+| **Mock/Live 双版本** | 天气(4)、地图(1)、交通(1)、景点(1)、餐饮(1) 工具有 Mock 和 Live 两个实现类，签名一致，调用方零改动 |
 | **零依赖** | Live 版仅使用 Python 标准库 `urllib.request` + `gzip` + `json`，不依赖 `requests` |
-| **共享客户端** | 4 个 Live 天气工具共用 `QWeatherClient`；Live 地图工具用 `AmapClient`，各自缓存 |
+| **共享客户端** | 4 个 Live 天气工具共用 `QWeatherClient`；5 个 Live 地图工具用 `AmapClient`，各自缓存 |
 
 ### 文件结构
 
@@ -59,12 +59,12 @@ tools/
 ├── __init__.py            # build_registry() 工厂 + default_registry
 ├── base_tool.py           # BaseTool 抽象基类 + ToolRegistry 注册表
 ├── qweather_client.py    # QWeatherClient 共享 API 客户端（天气）
-├── amap_client.py         # AmapClient 共享 API 客户端（地图）
+├── amap_client.py         # AmapClient 共享 API 客户端（地图，v5 POI 搜索）
 ├── weather_tool.py        # 4 个天气工具 × 2 版本 = 8 个类
 ├── map_tool.py            # 地图工具 × 2 版本 = 2 个类
-├── scenic_tool.py         # 景点工具
-├── traffic_tool.py        # 交通工具
-├── food_tool.py           # 餐饮工具
+├── scenic_tool.py         # 景点工具 × 2 版本 = 2 个类
+├── traffic_tool.py        # 交通工具 × 2 版本 = 2 个类
+├── food_tool.py           # 餐饮工具 × 2 版本 = 2 个类
 ├── booking_tool.py        # 预约工具
 └── mock_data.py           # MockWorld + 模拟数据
 ```
@@ -428,16 +428,40 @@ client = AmapClient(
 | 方法 | 说明 |
 |------|------|
 | `geocode(address, city="") → (lat, lng)` | 调 `/v3/geocode/geo`，地址→坐标，带缓存 |
-| `search_poi(query, city="", limit=10) → list[dict]` | 调 `/v3/place/text`，关键词搜索 POI |
-| `search_poi_around(location, radius=1000, ...) → list[dict]` | 调 `/v3/place/around`，周边搜索 POI |
+| `search_poi(query, city="", limit=10) → list[dict]` | 调 `/v5/place/text`（v5 API），关键词搜索 POI |
+| `search_poi_around(location, radius=1000, ...) → list[dict]` | 调 `/v5/place/around`（v5 API），周边搜索 POI |
 | `get_route(origin, destination, mode="transit") → dict` | 调路线规划 API，返回 `{distance, duration}` |
 | `api_key` (property) | 获取 API Key |
 
 #### 认证方式
 
 ```
-GET https://restapi.amap.com/v3/place/text?keywords=故宫&key={your_api_key}
+GET https://restapi.amap.com/v5/place/text?keywords=故宫&key={your_api_key}&show_fields=business,opentime_today,opentime_week,rating,cost,tag,alias
 ```
+
+#### v5 POI 深度信息结构
+
+v5 API 通过 `show_fields` 参数返回深度信息，嵌套在 `business` 对象内（非扁平顶层字段）：
+
+```json
+{
+  "name": "故宫博物院",
+  "location": "116.397029,39.917839",
+  "address": "景山前街4号",
+  "type": "风景名胜;风景名胜;世界遗产",
+  "business": {
+    "rating": "4.9",
+    "cost": "",
+    "tag": "",
+    "tel": "4009501925",
+    "opentime_today": "",
+    "opentime_week": "07/27 08:30-17:00开放 最晚进入16:00...",
+    "alias": "紫禁城"
+  }
+}
+```
+
+`_normalize_poi()` 从 `business` 对象提取深度字段，同时保留 v3 `biz_ext` fallback 兼容。
 
 #### 地理编码缓存机制
 
@@ -527,7 +551,7 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 
 ---
 
-## 6. 其他领域工具（4 个）
+## 6. 其他领域工具
 
 ### 6.1 scenic — 景点状态
 
@@ -535,9 +559,9 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 |------|-----|
 | **工具名** | `scenic` |
 | **说明** | 景点实时状态：是否开放、预计排队分钟数、是否需要预约、营业时间、票价 |
-| **类** | `ScenicTool` |
+| **Mock 类** | `ScenicTool` |
+| **Live 类** | `ScenicToolLive` |
 | **文件** | `tools/scenic_tool.py` |
-| **source** | `mock` |
 
 #### 输入参数
 
@@ -547,14 +571,34 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 
 #### 返回字段
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `place` | str | 景点名称 |
-| `open` | bool | 是否开放 |
-| `queue_min` | int | 预计排队时间（分钟） |
-| `ticket_required` | bool | 是否需要预约 |
-| `open_hours` | str | 营业时间 |
-| `price` | float | 票价 |
+| 字段 | 类型 | 说明 | Mock 来源 | Live API 来源 |
+|------|------|------|-----------|---------------|
+| `place` | str | 景点名称 | 入参 | 入参 |
+| `open` | bool | 是否开放 | 固定 `True` | 固定 `True`（高德无法判断） |
+| `queue_min` | int | 预计排队时间（分钟） | MockWorld | MockWorld（无公开 API） |
+| `ticket_required` | bool | 是否需要预约 | MockWorld | MockWorld（无公开 API） |
+| `open_hours` | str | 营业时间 | MockWorld | v5 API `business.opentime_today`，空时 fallback MockWorld |
+| `price` | float | 票价 | MockWorld | MockWorld（高德无此字段） |
+
+#### Live 版调用链路
+
+```
+ScenicToolLive._run(place="故宫")
+  │
+  ├─ client.search_poi("故宫", city="北京", limit=1)    # v5 POI 搜索
+  │    GET /v5/place/text?keywords=故宫&region=北京&city_limit=true&show_fields=business,opentime_today,opentime_week,rating,cost,tag,alias
+  │    → pois[0].business.opentime_today / opentime_week / rating / tel / address
+  │
+  ├─ MockWorld.get_place("故宫")                      # 排队/票价 fallback
+  │    → queue_min / ticket_required / price
+  │
+  └─ open_hours = poi.opentime_today or MockWorld.open
+       → 优先用 v5 API 营业时间，空时 fallback MockWorld
+```
+
+> **v5 升级说明**：v3 API 无营业时间字段，`open_hours` 完全依赖 MockWorld。
+> v5 API 通过 `show_fields=business,opentime_today,...` 返回 `business.opentime_today`，
+> 景点类 POI 通常只有 `opentime_week`（含详细日期段描述），餐饮类才有 `opentime_today`。
 
 ---
 
@@ -564,9 +608,9 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 |------|-----|
 | **工具名** | `traffic` |
 | **说明** | 交通状态：公交/地铁/打车预计耗时与拥堵程度 |
-| **类** | `TrafficTool` |
+| **Mock 类** | `TrafficTool` |
+| **Live 类** | `TrafficToolLive` |
 | **文件** | `tools/traffic_tool.py` |
-| **source** | `mock` |
 
 #### 输入参数
 
@@ -578,15 +622,54 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 
 #### 返回字段
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `origin` | str | 起点 |
-| `destination` | str | 终点 |
-| `mode` | str | 交通方式 |
-| `duration_min` | int | 预计耗时（分钟） |
-| `congestion` | str | 拥堵程度 |
-| `delay_min` | int | 延迟时间（分钟） |
-| `note` | str | 备注 |
+| 字段 | 类型 | 说明 | Mock 来源 | Live API 来源 |
+|------|------|------|-----------|---------------|
+| `origin` | str | 起点 | 入参 | 入参 |
+| `destination` | str | 终点 | 入参 | 入参 |
+| `mode` | str | 交通方式 | 入参 | 入参 |
+| `duration_min` | int | 预计耗时（分钟） | 固定 30 | `route.duration / 60`（秒→分钟） |
+| `congestion` | str | 拥堵程度 | 固定 "畅通" | 驾车模式按速度推断，其他固定 "畅通" |
+| `delay_min` | int | 延迟时间（分钟） | 固定 0 | 驾车模式：实际耗时 - 40km/h 基准耗时 |
+| `note` | str | 备注 | 固定 "地铁1号线运行正常" | `距离 {x}km`，拥堵时追加延误信息 |
+
+#### Live 版拥堵推断逻辑
+
+仅 `taxi`（驾车）模式根据平均速度推断拥堵：
+
+| 平均速度 | 拥堵程度 | 说明 |
+|----------|----------|------|
+| < 15 km/h | 拥堵 | 严重拥堵 |
+| < 30 km/h | 缓行 | 轻度拥堵 |
+| ≥ 30 km/h | 畅通 | 路况良好 |
+
+> `transit`（公交）和 `walk`（步行）模式不推断拥堵，固定返回 "畅通"。
+
+#### Live 版调用链路
+
+```
+TrafficToolLive._run(origin="故宫", destination="天坛", mode="taxi")
+  │
+  ├─ client.geocode("故宫", city="北京")          # 地理编码（带缓存）
+  │    → (39.916, 116.397)
+  │
+  ├─ client.geocode("天坛", city="北京")          # 地理编码（带缓存）
+  │    → (39.882, 116.407)
+  │
+  └─ client.get_route(origin_coord, dest_coord, mode="driving")
+       GET /v3/direction/driving?origin=116.397,39.916&destination=116.407,39.882
+       → {distance: 5500, duration: 1260}
+       → duration_min=21, distance_km=5.5
+       → speed=5.5/(21/60)=15.7km/h → 缓行
+       → free_flow_min=round(5.5/40*60)=8, delay_min=21-8=13
+```
+
+#### mode 映射表
+
+| TrafficTool mode | AmapClient mode | 高德端点 |
+|------------------|----------------|----------|
+| `transit` | `transit` | `/v3/direction/transit/integrated` |
+| `taxi` | `driving` | `/v3/direction/driving` |
+| `walk` | `walk` | `/v3/direction/walking` |
 
 ---
 
@@ -596,9 +679,9 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 |------|-----|
 | **工具名** | `food` |
 | **说明** | 餐厅推荐：评分、人均价格、营业状态、距离 |
-| **类** | `FoodTool` |
+| **Mock 类** | `FoodTool` |
+| **Live 类** | `FoodToolLive` |
 | **文件** | `tools/food_tool.py` |
-| **source** | `mock` |
 
 #### 输入参数
 
@@ -609,15 +692,32 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 
 #### 返回数据 → `list[dict]`
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | str | 餐厅名称 |
-| `rating` | float | 评分 |
-| `price_per_person` | int | 人均价格 |
-| `open` | bool | 是否营业 |
-| `distance_km` | float | 距离 |
-| `cuisine` | str | 菜系 |
-| `queue_min` | int | 排队时间 |
+| 字段 | 类型 | 说明 | Mock 来源 | Live API 来源 |
+|------|------|------|-----------|---------------|
+| `name` | str | 餐厅名称 | 固定列表 | `pois[].name` |
+| `rating` | float | 评分 | 固定值 | `business.rating` |
+| `price_per_person` | int | 人均价格 | 固定值 | `business.cost` |
+| `open` | bool | 是否营业 | 固定 `True` | 固定 `True`（无公开 API） |
+| `distance_km` | float | 距离 | 固定值 | `pois[].distance / 1000`（周边搜索） |
+| `cuisine` | str | 菜系 | 固定值 | POI `type` 字段第二段（如"餐饮服务;中餐厅"→"中餐厅"） |
+| `queue_min` | int | 排队时间 | 固定值 | 固定 `0`（无公开 API） |
+
+#### Live 版调用链路
+
+```
+FoodToolLive._run(query="餐厅", near="故宫")
+  │
+  ├─ client.geocode("故宫")                           # 地理编码（带缓存）
+  │    → (39.916, 116.397)
+  │
+  └─ client.search_poi_around(coord, types="050000", radius=1000, keywords="餐厅")
+       GET /v5/place/around?location=116.397,39.916&radius=1000&types=050000&keywords=餐厅&show_fields=business,opentime_today,opentime_week,rating,cost,tag,alias
+       → pois[].business.rating / cost / tag / opentime_today
+       → pois[].distance（米）
+       → pois[].type（推断菜系）
+```
+
+> **无 near 参数时**：直接调 `search_poi(query or "餐厅", city="北京")`，无距离字段，`distance_km=0.0`。
 
 ---
 
@@ -686,12 +786,18 @@ class Settings:
 在 `tools/__init__.py` 的 `build_registry()` 中：
 
 ```python
-# 地图工具：按配置独立切换 Mock / Live
+# 地图 + 交通 + 景点 + 餐饮工具：按配置独立切换 Mock / Live（共享 AmapClient）
 if settings.use_real_map_api:
     amap_client = AmapClient(api_key=settings.amap_api_key)
     registry.register(MapToolLive(amap_client))
+    registry.register(TrafficToolLive(amap_client))
+    registry.register(ScenicToolLive(amap_client))
+    registry.register(FoodToolLive(amap_client))
 else:
     registry.register(MapTool())
+    registry.register(TrafficTool())
+    registry.register(ScenicTool())
+    registry.register(FoodTool())
 
 # 天气工具：按配置独立切换 Mock / Live
 if settings.use_real_api:
@@ -708,6 +814,7 @@ else:
 ```
 
 > **注意**：天气和地图的 Mock/Live 切换互相独立。可以只配天气 Key（地图走 Mock），也可以只配地图 Key（天气走 Mock），或两者都配。
+> `MapToolLive`、`TrafficToolLive`、`ScenicToolLive` 和 `FoodToolLive` 共享同一个 `AmapClient` 实例，地理编码缓存互通。
 
 ### API Key 安全管理
 
@@ -854,12 +961,18 @@ https://abc1234xyz.def.qweatherapi.com/v7/weather/now?location=101010100
 | # | 端点 | 方法 | 用途 | 调用方法 | 关键返回字段 |
 |---|------|------|------|----------|-------------|
 | 1 | `/v3/geocode/geo` | GET | 地理编码（地址→坐标） | `AmapClient.geocode()` | `geocodes[0].location` (lng,lat) |
-| 2 | `/v3/place/text` | GET | 关键词搜索 POI | `AmapClient.search_poi()` | `pois[].name/location/address` |
-| 3 | `/v3/place/around` | GET | 周边搜索 POI | `AmapClient.search_poi_around()` | `pois[].name/location/address` |
+| 2 | `/v5/place/text` | GET | 关键词搜索 POI（v5） | `AmapClient.search_poi()` | `pois[].name/location/address/business` |
+| 3 | `/v5/place/around` | GET | 周边搜索 POI（v5） | `AmapClient.search_poi_around()` | `pois[].name/location/address/business/distance` |
 | 4 | `/v3/direction/transit/integrated` | GET | 公交路线规划 | `AmapClient.get_route(mode="transit")` | `route.transits[0].distance/duration` |
 | 5 | `/v3/direction/driving` | GET | 驾车路线规划 | `AmapClient.get_route(mode="driving")` | `route.paths[0].distance/duration` |
 | 6 | `/v4/direction/bicycling` | GET | 骑行路线规划 | `AmapClient.get_route(mode="riding")` | `paths[0].distance/duration` |
 | 7 | `/v3/direction/walking` | GET | 步行路线规划 | `AmapClient.get_route(mode="walk")` | `route.paths[0].distance/duration` |
+
+> **v5 升级说明**：POI 搜索端点从 `/v3/place/*` 升级到 `/v5/place/*`，参数变更：
+> `extensions=all` → `show_fields=business,opentime_today,opentime_week,rating,cost,tag,alias`；
+> `city` → `region` + `city_limit=true`；`offset` → `page_size`。
+> v5 深度信息嵌套在 `business` 对象内（v3 在 `biz_ext` 内），`_normalize_poi()` 优先读 v5 `business`，fallback 到 v3 `biz_ext`。
+> geocode/route 端点仍用 v3/v4（v5 无对应端点）。
 
 ### 完整 URL 格式
 
@@ -867,7 +980,7 @@ https://abc1234xyz.def.qweatherapi.com/v7/weather/now?location=101010100
 https://restapi.amap.com{endpoint}?key={api_key}&{query_params}
 
 示例：
-https://restapi.amap.com/v3/place/text?keywords=故宫&key=your_key
+https://restapi.amap.com/v5/place/text?keywords=故宫&key=your_key&show_fields=business,opentime_today,opentime_week,rating,cost,tag,alias
 ```
 
 ### API 返回字段 → 工具返回字段映射
@@ -878,17 +991,26 @@ https://restapi.amap.com/v3/place/text?keywords=故宫&key=your_key
 |----------|-------------|------|
 | `geocodes[0].location` | `(lat, lng)` | 分割 `"lng,lat"` → `float()` |
 
-#### POI 搜索 `/v3/place/text` 和 `/v3/place/around`
+#### POI 搜索 `/v5/place/text` 和 `/v5/place/around`（v5）
 
 | API 字段 | 工具返回字段 | 转换 |
 |----------|-------------|------|
 | `pois[].name` | `name` | 直接透传 |
 | `pois[].location` | `lat` / `lng` | 分割 `"lng,lat"` → `float()` |
 | `pois[].address` | `address` | 直接透传 |
+| `pois[].business.rating` | `rating` | `_safe_float()`，fallback v3 `biz_ext.rating` |
+| `pois[].business.cost` | `cost` | `_safe_float()`，fallback v3 `biz_ext.cost` |
+| `pois[].business.tag` | `tag` | 直接透传，fallback v3 顶层 `tag` |
+| `pois[].business.tel` | `tel` | 直接透传，fallback v3 顶层 `tel` |
+| `pois[].business.opentime_today` | `opentime_today` | 直接透传（v5 新增，v3 无此字段） |
+| `pois[].business.opentime_week` | `opentime_week` | 直接透传（v5 新增，v3 无此字段） |
+| `pois[].distance` | `distance` | `_safe_float()`（仅周边搜索返回） |
 | — | `open` | 固定 `""`（高德无营业时间字段） |
 | — | `price` | 固定 `0.0`（高德无票价字段） |
 
 #### 路线规划 `/v3/direction/*`
+
+**MapToolLive 路线规划**：
 
 | API 字段 | 工具返回字段 | 转换 |
 |----------|-------------|------|
@@ -896,6 +1018,20 @@ https://restapi.amap.com/v3/place/text?keywords=故宫&key=your_key
 | `route.transits[0].duration` 或 `route.paths[0].duration` | `duration_min` | `int() / 60`（秒→分钟） |
 | — | `transit` | mode → 中文（公交/驾车/骑行/步行） |
 | — | `fare` | 固定 `0.0`（高德无票价字段） |
+
+**TrafficToolLive 交通状态**：
+
+| API 字段 | 工具返回字段 | 转换 |
+|----------|-------------|------|
+| `route.transits[0].distance` 或 `route.paths[0].distance` | `note` | `距离 {distance/1000:.1f}km` |
+| `route.transits[0].duration` 或 `route.paths[0].duration` | `duration_min` | `round(duration / 60)`（秒→分钟） |
+| — | `congestion` | 驾车模式按速度推断（< 15km/h 拥堵 / < 30km/h 缓行 / 否则畅通） |
+| — | `delay_min` | 驾车模式：`max(0, duration_min - round(distance_km/40*60))` |
+| — | `note` | `距离 {x}km`，拥堵时追加 `，{congestion}延误约 {delay_min} 分钟` |
+
+> **注意**：`MapToolLive` 和 `TrafficToolLive` 都调用高德路线规划 API，但返回结构不同：
+> - `MapToolLive` 返回 `distance_km` / `duration_min` / `transit` / `fare`（路线信息）
+> - `TrafficToolLive` 返回 `duration_min` / `congestion` / `delay_min` / `note`（交通状态，含拥堵推断）
 
 ### 错误处理
 

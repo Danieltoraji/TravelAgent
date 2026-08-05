@@ -101,14 +101,14 @@ flowchart TB
 | 路径 | 说明 |
 | --- | --- |
 | `tools/base_tool.py` | `BaseTool` 抽象基类（统一执行入口、计时、异常捕获、返回 `ToolResult`）+ `ToolRegistry` 注册表 |
-| `tools/map_tool.py` | 地图：POI 搜索 / 路线 |
+| `tools/map_tool.py` | 地图：POI 搜索 / 路线（Mock + 高德 API Live 版） |
 | `tools/weather_tool.py` | 天气：Mock 版 + 和风 API Live 版（同一签名，自动切换） |
-| `tools/scenic_tool.py` | 景点：开放状态 / 排队 / 预约 |
-| `tools/traffic_tool.py` | 交通：公交 / 地铁 / 驾车 |
-| `tools/food_tool.py` | 餐饮：评分 / 价格 / 营业时间 |
+| `tools/scenic_tool.py` | 景点：开放状态 / 排队 / 预约（Mock + 高德 v5 POI API Live 版，营业时间从 API 获取） |
+| `tools/traffic_tool.py` | 交通：公交 / 地铁 / 打车（Mock + 高德 API Live 版） |
+| `tools/food_tool.py` | 餐饮：评分 / 价格 / 营业时间（Mock + 高德 v5 POI API Live 版） |
 | `tools/booking_tool.py` | 预约：**只准备，不付款** |
 | `tools/mock_data.py` | Mock 数据源 + `MockWorld` 剧情模拟（暴雨 / 排队暴涨） |
-| `tools/__init__.py` | `build_registry()` / `default_registry`：注册全部 6 个 Tool |
+| `tools/__init__.py` | `build_registry()` / `default_registry`：注册全部 9 个 Tool（Mock/Live 自动切换） |
 
 ### 监控 / 执行层（B · 项目核心）
 | 路径 | 说明 |
@@ -317,8 +317,12 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 4. `execution/execution_agent.py` —— 持续监控执行体（影响阈值判定 + 决策请求组装）
 5. `booking/booking_manager.py` —— 预约状态机 + ActionQueue 契约 + 付款人工提醒
 6. `itinerary/` —— `.ics` 日历 + Markdown 行程单导出
-7. `tests/` —— 工具 / 调度 / 执行 / 导出 单元测试
+7. `tests/` —— 工具 / 调度 / 执行 / 导出 单元测试（83 个测试全部通过）
 8. `demo/demo_scenario.py` —— 比赛 Demo 剧情闭环脚本
+9. `tools/qweather_client.py` —— QWeatherClient 共享客户端（API KEY 认证 + Location ID/坐标缓存）
+10. `tools/amap_client.py` —— AmapClient 共享客户端（地理编码缓存 + 路线规划）
+11. 天气 Live 版 4 个（实况/预警/空气质量/预报）+ 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已全部接入真实 API
+12. `tool_introduction.md` — 完整工具层接口文档（含 API 端点映射、字段对照、v3→v5 升级说明）
 
 ### 7.2 待办（按优先级）
 
@@ -326,7 +330,7 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 | --- | --- | --- | --- |
 | **M1 与 A 联调** | 确认 `DecisionRequest` 契约字段；A 的 Decision Engine 消费后返回 `ReplanRequest` | A | 当前 stub 可跑通，A 替换为 LLM 版后接口不变 |
 | **M2 与 C 联调** | 确认 `ActionItem` 契约；C 的 Action Queue / Permission Manager 消费 B 产出的动作 | C | 付款必须人工（`Permission.MANUAL`）|
-| **M3 替换真实 API** | 高德（地图）、和风（天气）、景区/点评（景点/餐饮），环境变量注入 Key | B | `WeatherToolLive` 已就绪；配置见 `config/local_settings.example.py` |
+| **M3 替换真实 API** | 高德（地图+交通+景点+餐饮）、和风（天气），环境变量注入 Key | B | ✅ 天气 4 个 Live + 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已就绪；POI 搜索已升级至 v5 API（营业时间等深度信息）；配置见 `config/local_settings.example.py` |
 | **M4 日历平台对接** | Google Calendar API / Outlook 上传 `.ics` | B / C | `itinerary/` 已生成 `.ics` |
 | **M5 生产化** | 调度器容错重试、超时、日志落盘、配置热更新 | B | — |
 

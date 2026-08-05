@@ -16,11 +16,11 @@ from __future__ import annotations
 from tools.amap_client import AmapClient
 from tools.base_tool import BaseTool, ToolRegistry
 from tools.booking_tool import BookingTool
-from tools.food_tool import FoodTool
+from tools.food_tool import FoodTool, FoodToolLive
 from tools.map_tool import MapTool, MapToolLive
 from tools.mock_data import PLACES, MockWorld, WeatherData
 from tools.qweather_client import QWeatherClient
-from tools.scenic_tool import ScenicTool
+from tools.scenic_tool import ScenicTool, ScenicToolLive
 from tools.traffic_tool import TrafficTool, TrafficToolLive
 from tools.weather_tool import (
     AirQualityTool,
@@ -45,14 +45,18 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
     registry = ToolRegistry()
     world = world or MockWorld()
 
-    # 地图 Tool：按配置自动切换 Mock / Live
+    # 地图/景点/餐饮 Tool：按配置自动切换 Mock / Live（共享 AmapClient）
     if settings.use_real_map_api:
         amap_client = AmapClient(api_key=settings.amap_api_key)
         registry.register(MapToolLive(amap_client))
         registry.register(TrafficToolLive(amap_client))
+        registry.register(ScenicToolLive(amap_client, world))
+        registry.register(FoodToolLive(amap_client))
     else:
         registry.register(MapTool())
         registry.register(TrafficTool())
+        registry.register(ScenicTool(world))
+        registry.register(FoodTool())
 
     # 天气相关 Tool：按配置自动切换 Mock / Live
     if settings.use_real_api:
@@ -70,8 +74,6 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(AirQualityTool(world))
         registry.register(WeatherForecastTool(world))
 
-    registry.register(ScenicTool(world))
-    registry.register(FoodTool())
     registry.register(BookingTool())
     return registry
 
@@ -85,11 +87,17 @@ __all__ = [
     "AirQualityToolLive",
     "AmapClient",
     "BaseTool",
+    "FoodTool",
+    "FoodToolLive",
     "MapTool",
     "MapToolLive",
     "MockWorld",
     "QWeatherClient",
+    "ScenicTool",
+    "ScenicToolLive",
     "ToolRegistry",
+    "TrafficTool",
+    "TrafficToolLive",
     "WeatherData",
     "WeatherForecastTool",
     "WeatherForecastToolLive",
