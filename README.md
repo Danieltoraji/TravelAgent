@@ -317,8 +317,8 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 4. `execution/execution_agent.py` —— 持续监控执行体（影响阈值判定 + 决策请求组装）
 5. `booking/booking_manager.py` —— 预约状态机 + ActionQueue 契约 + 付款人工提醒
 6. `itinerary/` —— `.ics` 日历 + Markdown 行程单导出
-7. `tests/` —— 工具 / 调度 / 执行 / 导出 单元测试（83 个测试全部通过）
-8. `demo/demo_scenario.py` —— 比赛 Demo 剧情闭环脚本
+7. `tests/` —— 工具 / 调度 / 执行 / 导出 单元测试（96 个测试全部通过）
+8. `demo/demo_scenario.py` —— 比赛 Demo 剧情闭环脚本（混合模式：真实 API + 模拟突发事件）
 9. `tools/qweather_client.py` —— QWeatherClient 共享客户端（API KEY 认证 + Location ID/坐标缓存）
 10. `tools/amap_client.py` —— AmapClient 共享客户端（地理编码缓存 + 路线规划）
 11. 天气 Live 版 4 个（实况/预警/空气质量/预报）+ 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已全部接入真实 API
@@ -331,13 +331,13 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 | **M1 与 A 联调** | 确认 `DecisionRequest` 契约字段；A 的 Decision Engine 消费后返回 `ReplanRequest` | A | 当前 stub 可跑通，A 替换为 LLM 版后接口不变 |
 | **M2 与 C 联调** | 确认 `ActionItem` 契约；C 的 Action Queue / Permission Manager 消费 B 产出的动作 | C | 付款必须人工（`Permission.MANUAL`）|
 | **M3 替换真实 API** | 高德（地图+交通+景点+餐饮）、和风（天气），环境变量注入 Key | B | ✅ 天气 4 个 Live + 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已就绪；POI 搜索已升级至 v5 API（营业时间等深度信息）；配置见 `config/local_settings.example.py` |
-| **M4 日历平台对接** | Google Calendar API / Outlook 上传 `.ics` | B / C | `itinerary/` 已生成 `.ics` |
+| **M4 Demo 闭环** | Demo 混合模式：真实 API 数据 + 3 个模拟突发事件（暴雨/排队/交通拥堵） | B | ✅ Demo 已升级为混合模式，展示真实天气/景点/餐饮数据 + 突发事件决策闭环 |
 | **M5 生产化** | 调度器容错重试、超时、日志落盘、配置热更新 | B | — |
 
 ### 7.3 给 A/C 的建议
 1. **契约先行**：联调前请审阅 `core/schemas.py`，字段先定稿再开发。
 2. **Explainable 是亮点**：A 请在 `ReplanRequest.reason` / `diff_summary` 落实"为什么改"。
-3. **Demo 剧情**：用 `demo/demo_scenario.py` 的剧情（暴雨 + 排队暴涨）展示"先评估影响，再决定是否重规划"，而不是直接改。
+3. **Demo 剧情**：用 `demo/demo_scenario.py` 的剧情（暴雨 + 排队暴涨 + 交通拥堵）展示"先评估影响，再决定是否重规划"，而不是直接改。Demo 使用混合模式：真实 API 数据 + MockWorld override 注入突发事件。
 4. **付款必须人工**：C 请在 UI 上强调该交互（`Permission.MANUAL`）。
 
 ---

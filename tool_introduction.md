@@ -117,7 +117,7 @@ print(result.source)   # "mock" 或 "live"
 
 # 方式 2：直接实例化调用
 from tools.weather_tool import WeatherToolLive
-tool = WeatherToolLive(client)
+tool = WeatherToolLive(client, world)  # world 用于 Demo 突发事件 override
 result = tool.execute(city="北京")
 ```
 
@@ -226,6 +226,14 @@ Headers:
 | `humidity` | int | 湿度（%） | 固定 50 | `now.humidity` |
 | `visibility_km` | float | 能见度（km） | 固定 10 | `now.vis` |
 
+#### Live 版构造函数
+
+```python
+WeatherToolLive(client, world=None)
+  # client: QWeatherClient 实例（共享 API KEY + Host + Location ID 缓存）
+  # world: 可选 MockWorld，用于 Demo 突发事件 override（如 set_weather(rain_probability=85)）
+```
+
 #### Live 版调用链路
 
 ```
@@ -239,10 +247,18 @@ WeatherToolLive._run(city="北京")
   │    GET /v7/weather/now?location=101010100
   │    → now.temp / now.text / now.icon / now.windScale / now.humidity / now.precip / now.feelsLike / now.vis
   │
-  └─ self._fetch_uv_index("101010100")       # UV 指数（可选，失败默认 0）
-       GET /v7/indices?location=101010100&type=5
-       → daily[0].category
+  ├─ self._fetch_uv_index("101010100")       # UV 指数（可选，失败默认 0）
+  │    GET /v7/indices?location=101010100&type=5
+  │    → daily[0].category
+  │
+  └─ MockWorld override 叠加（如有）
+       world.set_weather(condition="暴雨", rain_probability=85)
+       → result.update(world.weather_overrides)
+       → API 数据被 override 字段覆盖
 ```
+
+> **Demo 突发事件 override**：`WeatherToolLive` 接收可选的 `MockWorld` 参数，
+> `set_weather()` 设置的 override 字段会叠加到 API 返回数据上，用于注入模拟暴雨等突发事件。
 
 #### 蒲福风级 → km/h 换算表
 
@@ -644,6 +660,14 @@ ScenicToolLive._run(place="故宫")
 
 > `transit`（公交）和 `walk`（步行）模式不推断拥堵，固定返回 "畅通"。
 
+#### Live 版构造函数
+
+```python
+TrafficToolLive(client, world=None)
+  # client: AmapClient 实例（共享 API Key + 地理编码缓存）
+  # world: 可选 MockWorld，用于 Demo 突发事件 override（如 set_traffic_delay()）
+```
+
 #### Live 版调用链路
 
 ```
@@ -655,13 +679,20 @@ TrafficToolLive._run(origin="故宫", destination="天坛", mode="taxi")
   ├─ client.geocode("天坛", city="北京")          # 地理编码（带缓存）
   │    → (39.882, 116.407)
   │
-  └─ client.get_route(origin_coord, dest_coord, mode="driving")
-       GET /v3/direction/driving?origin=116.397,39.916&destination=116.407,39.882
-       → {distance: 5500, duration: 1260}
-       → duration_min=21, distance_km=5.5
-       → speed=5.5/(21/60)=15.7km/h → 缓行
-       → free_flow_min=round(5.5/40*60)=8, delay_min=21-8=13
+  ├─ client.get_route(origin_coord, dest_coord, mode="driving")
+  │    GET /v3/direction/driving?origin=116.397,39.916&destination=116.407,39.882
+  │    → {distance: 5500, duration: 1260}
+  │    → duration_min=21, distance_km=5.5
+  │    → speed=5.5/(21/60)=15.7km/h → 缓行
+  │    → free_flow_min=round(5.5/40*60)=8, delay_min=21-8=13
+  │
+  └─ MockWorld override 叠加（如有）
+       world.set_traffic_delay("北京", "故宫", delay_min=45, congestion="拥堵")
+       → 覆盖 API 计算的 delay_min 和 congestion
 ```
+
+> **Demo 突发事件 override**：`TrafficToolLive` 接收可选的 `MockWorld` 参数，
+> `set_traffic_delay()` 设置的 override 会覆盖 API 返回的延误数据，用于注入模拟交通拥堵事件。
 
 #### mode 映射表
 
@@ -790,19 +821,19 @@ class Settings:
 if settings.use_real_map_api:
     amap_client = AmapClient(api_key=settings.amap_api_key)
     registry.register(MapToolLive(amap_client))
-    registry.register(TrafficToolLive(amap_client))
-    registry.register(ScenicToolLive(amap_client))
+    registry.register(TrafficToolLive(amap_client, world))       # world 用于交通 override
+    registry.register(ScenicToolLive(amap_client, world))       # world 用于排队/票价 fallback
     registry.register(FoodToolLive(amap_client))
 else:
     registry.register(MapTool())
     registry.register(TrafficTool())
-    registry.register(ScenicTool())
+    registry.register(ScenicTool(world))
     registry.register(FoodTool())
 
 # 天气工具：按配置独立切换 Mock / Live
 if settings.use_real_api:
     client = QWeatherClient(api_key=..., api_host=...)
-    registry.register(WeatherToolLive(client))
+    registry.register(WeatherToolLive(client, world))            # world 用于天气 override
     registry.register(WeatherWarningToolLive(client))
     registry.register(AirQualityToolLive(client))
     registry.register(WeatherForecastToolLive(client))
@@ -815,6 +846,13 @@ else:
 
 > **注意**：天气和地图的 Mock/Live 切换互相独立。可以只配天气 Key（地图走 Mock），也可以只配地图 Key（天气走 Mock），或两者都配。
 > `MapToolLive`、`TrafficToolLive`、`ScenicToolLive` 和 `FoodToolLive` 共享同一个 `AmapClient` 实例，地理编码缓存互通。
+>
+> **MockWorld override 机制**：`WeatherToolLive`、`TrafficToolLive` 和 `ScenicToolLive` 都接收可选的 `MockWorld` 参数。
+> 在 Live 模式下，`MockWorld` 充当「突发事件 override 层」：
+> - `set_weather(condition="暴雨", rain_probability=85)` → 覆盖 API 天气数据
+> - `set_traffic_delay("北京", "故宫", delay_min=45)` → 覆盖 API 交通延误
+> - `set_queue("故宫", 120)` → 覆盖景点排队时长（ScenicToolLive fallback）
+> 这样 Demo 可以在真实 API 数据基础上注入模拟突发事件，展示决策闭环。
 
 ### API Key 安全管理
 

@@ -89,13 +89,14 @@ class WeatherToolLive(WeatherTool):
     source = "live"
     input_schema = WeatherTool.input_schema
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, world: Optional[MockWorld] = None) -> None:
         """初始化 Live 版天气 Tool。
 
         Args:
             client: QWeatherClient 实例（共享 API KEY + Host + Location ID 缓存）
+            world: 可选 MockWorld，用于 Demo 突发事件 override（如 set_weather(rain_probability=85)）
         """
-        super().__init__()  # 不实际使用 MockWorld
+        super().__init__(world)  # 传入 world，Live 版用于 override 叠加
         self._client = client
 
     def _run(self, city: str = "", date: Optional[str] = None) -> Dict[str, Any]:
@@ -120,7 +121,7 @@ class WeatherToolLive(WeatherTool):
         # 和风无降雨概率字段，用降水量推断：>0mm → 80%，否则 10%
         rain_prob = 80 if precip > 0 else 10
 
-        return {
+        result = {
             "city": city,
             "date": date or date_cls.today().isoformat(),
             "condition": condition,
@@ -132,6 +133,15 @@ class WeatherToolLive(WeatherTool):
             "humidity": humidity,
             "visibility_km": visibility,
         }
+
+        # Demo 突发事件 override：MockWorld.set_weather() 的字段叠加到 API 数据上
+        if self._world is not None:
+            overrides = self._world.weather_overrides
+            if overrides:
+                result.update(overrides)
+                logger.info("Weather override applied: %s", overrides)
+
+        return result
 
     def _fetch_now(self, loc_id: str) -> Dict[str, Any]:
         """调实况天气 API。"""

@@ -9,9 +9,10 @@ Live 版（TrafficToolLive）：调高德路线规划 API，返回真实耗时�
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from tools.base_tool import BaseTool
+from tools.mock_data import MockWorld
 
 logger = logging.getLogger("tools.traffic")
 
@@ -70,14 +71,16 @@ class TrafficToolLive(TrafficTool):
 
     source = "live"
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, world: Optional[MockWorld] = None) -> None:
         """初始化 Live 版交通 Tool。
 
         Args:
             client: AmapClient 实例（共享 API Key + 地理编码缓存）
+            world: 可选 MockWorld，用于 Demo 突发事件 override（如 set_traffic_delay()）
         """
         super().__init__()
         self._client = client
+        self._world = world
 
     def _run(self, origin: str = "", destination: str = "", mode: str = "transit") -> Dict[str, Any]:
         amap_mode = _MODE_MAP.get(mode, "transit")
@@ -111,6 +114,16 @@ class TrafficToolLive(TrafficTool):
         note = f"距离 {distance_km:.1f}km"
         if congestion != "畅通":
             note += f"，{congestion}延误约 {delay_min} 分钟"
+
+        # Demo 突发事件 override：MockWorld.set_traffic_delay() 覆盖 API 计算的延误数据
+        if self._world is not None:
+            override = self._world.get_traffic_override(origin, destination)
+            if override:
+                congestion = override.get("congestion", congestion)
+                delay_min = override.get("delay_min", delay_min)
+                note += f"（⚠ {congestion}，延误 {delay_min} 分钟）"
+                logger.info("Traffic override applied: %s→%s delay=%dmin %s",
+                            origin, destination, delay_min, congestion)
 
         logger.info("Traffic: %s→%s (%s) %dmin %s", origin, destination, mode_text, duration_min, congestion)
 

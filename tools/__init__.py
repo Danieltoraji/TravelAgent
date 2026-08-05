@@ -49,7 +49,7 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
     if settings.use_real_map_api:
         amap_client = AmapClient(api_key=settings.amap_api_key)
         registry.register(MapToolLive(amap_client))
-        registry.register(TrafficToolLive(amap_client))
+        registry.register(TrafficToolLive(amap_client, world))
         registry.register(ScenicToolLive(amap_client, world))
         registry.register(FoodToolLive(amap_client))
     else:
@@ -64,7 +64,7 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
             api_key=settings.qweather_api_key,
             api_host=settings.qweather_api_host,
         )
-        registry.register(WeatherToolLive(client))
+        registry.register(WeatherToolLive(client, world))
         registry.register(WeatherWarningToolLive(client))
         registry.register(AirQualityToolLive(client))
         registry.register(WeatherForecastToolLive(client))

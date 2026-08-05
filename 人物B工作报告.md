@@ -30,8 +30,8 @@
 4. `execution/execution_agent.py` — 持续监控执行体（影响阈值判定 + DecisionRequest 组装）
 5. `booking/booking_manager.py` — 预约状态机 + ActionQueue 契约 + 付款人工提醒
 6. `itinerary/` — `.ics` 日历 + Markdown 行程单导出
-7. `tests/` — 工具 / 调度 / 执行 / 导出 单元测试（83 个测试全部通过）
-8. `demo/demo_scenario.py` — 比赛 Demo 剧情闭环脚本
+7. `tests/` — 工具 / 调度 / 执行 / 导出 单元测试（96 个测试全部通过）
+8. `demo/demo_scenario.py` — 比赛 Demo 剧情闭环脚本（混合模式：真实 API + 模拟突发事件）
 9. `tools/qweather_client.py` — QWeatherClient 共享客户端（API KEY 认证 + Location ID/坐标缓存）
 10. `tools/amap_client.py` — AmapClient 共享客户端（地理编码缓存 + 路线规划）
 11. 天气 Live 版 4 个（实况/预警/空气质量/预报）+ 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已全部接入真实 API
@@ -42,7 +42,7 @@
 - [ ] **M1 与 A 联调**：确认 `DecisionRequest` 契约字段；A 的 Decision Engine 消费后返回 `ReplanRequest`
 - [ ] **M2 与 C 联调**：确认 `ActionItem` 契约；C 的 Action Queue / Permission Manager 消费 B 产出的动作
 - [x] **M3 替换真实 API**：✅ 已完成 — 高德（地图+交通+景点+餐饮，POI 搜索已升级至 v5 API）、和风（天气 4 个端点含 v1 迁移）已接入，环境变量注入 Key
-- [ ] **M4 日历平台对接**：Google Calendar API / Outlook 上传 `.ics`
+- [x] **M4 Demo 闭环**：✅ 已完成 — Demo 升级为混合模式（真实 API + 模拟突发事件），展示真实天气/景点/餐饮数据 + 3 个突发事件（暴雨/排队/交通拥堵）决策闭环
 - [ ] **M5 生产化**：调度器容错重试、超时、日志落盘、配置热更新
 
 ---
@@ -55,7 +55,7 @@
 | M2 | Scheduler + Execution 跑通 Demo 剧情 | ✅ 完成 |
 | M3 | Booking / Calendar + 契约联调 | ✅ 完成（骨架） |
 | M3.5 | 真实 API 接入（天气 4 个 + 地图 + 交通 + 景点 + 餐饮 Live） | ✅ 完成 |
-| M4 | 与 A/C 全量接口联调，Demo 完整闭环 | ⏳ 待办 |
+| M4 | Demo 混合模式闭环（真实 API + 模拟突发事件） | ✅ 完成 |
 
 ---
 

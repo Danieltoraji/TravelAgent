@@ -8,6 +8,7 @@ from core.schemas import ToolStatus
 from tools import default_registry
 from tools.amap_client import AmapClient
 from tools.map_tool import MapToolLive
+from tools.mock_data import MockWorld
 from tools.qweather_client import QWeatherClient
 from tools.scenic_tool import ScenicToolLive
 from tools.food_tool import FoodToolLive
@@ -960,6 +961,185 @@ class TestFoodLive(unittest.TestCase):
         self.assertEqual(result.status, ToolStatus.OK)
         self.assertEqual(result.source, "live")
         self.assertEqual(result.data[0]["name"], "测试餐厅")
+
+
+class TestWeatherLiveOverride(unittest.TestCase):
+    """WeatherToolLive + MockWorld override 测试：验证突发事件注入能覆盖 API 数据。"""
+
+    def _make_mock_client(self):
+        client = make_mock_client()
+        client.get.side_effect = [
+            {"code": "200", "now": {
+                "temp": "31", "text": "晴", "icon": "100",
+                "windScale": "3", "humidity": "45", "precip": "0.0",
+                "feelsLike": "33", "vis": "15",
+            }},
+            {"code": "200", "daily": [{"category": "7"}]},
+        ]
+        return client
+
+    def test_weather_override_applied(self):
+        """set_weather(rain_probability=85) 后，WeatherToolLive 返回的 rain_probability 应为 85。"""
+        world = MockWorld()
+        world.set_weather(condition="暴雨", rain_probability=85, uv_index=2)
+
+        tool = WeatherToolLive(self._make_mock_client(), world)
+        result = tool._run(city="北京")
+
+        self.assertEqual(result["condition"], "暴雨")       # override 覆盖了 API 的 "晴"
+        self.assertEqual(result["rain_probability"], 85)      # override 覆盖了 API 的 10
+        self.assertEqual(result["uv_index"], 2)               # override 覆盖了 API 的 7
+        # 未 override 的字段仍来自 API
+        self.assertEqual(result["temperature_c"], 31.0)
+        self.assertEqual(result["humidity"], 45)
+
+    def test_weather_no_override_returns_api_data(self):
+        """无 override 时，WeatherToolLive 返回纯 API 数据。"""
+        world = MockWorld()  # 无 set_weather 调用
+
+        tool = WeatherToolLive(self._make_mock_client(), world)
+        result = tool._run(city="北京")
+
+        self.assertEqual(result["condition"], "晴")          # API 原始值
+        self.assertEqual(result["rain_probability"], 10)     # API 原始值
+
+    def test_weather_clear_override_restores_api_data(self):
+        """clear_weather_overrides() 后恢复纯 API 数据。"""
+        world = MockWorld()
+        world.set_weather(rain_probability=85)
+        world.clear_weather_overrides()
+
+        tool = WeatherToolLive(self._make_mock_client(), world)
+        result = tool._run(city="北京")
+
+        self.assertEqual(result["rain_probability"], 10)     # 恢复 API 原始值
+
+    def test_weather_override_partial(self):
+        """只 override 部分字段，其余字段仍来自 API。"""
+        world = MockWorld()
+        world.set_weather(rain_probability=90)  # 只改降雨概率
+
+        tool = WeatherToolLive(self._make_mock_client(), world)
+        result = tool._run(city="北京")
+
+        self.assertEqual(result["rain_probability"], 90)      # override 值
+        self.assertEqual(result["condition"], "晴")          # API 原始值
+        self.assertEqual(result["uv_index"], 7)               # API 原始值
+
+
+class TestTrafficLiveOverride(unittest.TestCase):
+    """TrafficToolLive + MockWorld override 测试：验证交通突发事件注入。"""
+
+    def make_mock_amap_client(self):
+        client = MagicMock(spec=AmapClient)
+        client.geocode.side_effect = [
+            (39.916, 116.397),
+            (39.882, 116.407),
+        ]
+        client.get_route.return_value = {"distance": 3500, "duration": 1500}
+        return client
+
+    def test_traffic_override_applied(self):
+        """set_traffic_delay() 后，TrafficToolLive 返回的 delay_min 和 congestion 应为 override 值。"""
+        world = MockWorld()
+        world.set_traffic_delay("北京", "故宫", delay_min=45, congestion="拥堵")
+
+        tool = TrafficToolLive(self.make_mock_amap_client(), world)
+        result = tool._run(origin="北京", destination="故宫", mode="transit")
+
+        self.assertEqual(result["delay_min"], 45)             # override 覆盖了 API 的 0
+        self.assertEqual(result["congestion"], "拥堵")       # override 覆盖了 API 的 "畅通"
+        self.assertIn("拥堵", result["note"])
+
+    def test_traffic_no_override_returns_api_data(self):
+        """无 override 时，TrafficToolLive 返回纯 API 数据。"""
+        world = MockWorld()
+
+        tool = TrafficToolLive(self.make_mock_amap_client(), world)
+        result = tool._run(origin="北京", destination="故宫", mode="transit")
+
+        self.assertEqual(result["delay_min"], 0)              # API 原始值
+        self.assertEqual(result["congestion"], "畅通")        # API 原始值
+
+    def test_traffic_clear_override_restores_api_data(self):
+        """clear_traffic_overrides() 后恢复纯 API 数据。"""
+        world = MockWorld()
+        world.set_traffic_delay("北京", "故宫", delay_min=45)
+        world.clear_traffic_overrides()
+
+        tool = TrafficToolLive(self.make_mock_amap_client(), world)
+        result = tool._run(origin="北京", destination="故宫", mode="transit")
+
+        self.assertEqual(result["delay_min"], 0)              # 恢复 API 原始值
+
+    def test_traffic_override_different_route(self):
+        """override 只影响匹配的路线，其他路线不受影响。"""
+        world = MockWorld()
+        world.set_traffic_delay("北京", "故宫", delay_min=45, congestion="拥堵")
+
+        tool = TrafficToolLive(self.make_mock_amap_client(), world)
+        # 查北京→天坛（无 override）
+        result = tool._run(origin="北京", destination="天坛", mode="transit")
+
+        self.assertEqual(result["delay_min"], 0)              # 无 override，API 原始值
+        self.assertEqual(result["congestion"], "畅通")
+
+
+class TestMockWorldOverrides(unittest.TestCase):
+    """MockWorld override 机制本身测试。"""
+
+    def test_weather_overrides_tracking(self):
+        """set_weather() 后 weather_overrides property 返回正确 dict。"""
+        world = MockWorld()
+        self.assertEqual(world.weather_overrides, {})          # 初始为空
+
+        world.set_weather(condition="暴雨", rain_probability=85)
+        self.assertEqual(world.weather_overrides,
+                         {"condition": "暴雨", "rain_probability": 85})
+
+    def test_weather_overrides_clear(self):
+        """clear_weather_overrides() 清空 override dict。"""
+        world = MockWorld()
+        world.set_weather(rain_probability=90)
+        world.clear_weather_overrides()
+        self.assertEqual(world.weather_overrides, {})
+
+    def test_traffic_override_set_and_get(self):
+        """set_traffic_delay() + get_traffic_override() 往返测试。"""
+        world = MockWorld()
+
+        # 初始无 override
+        self.assertIsNone(world.get_traffic_override("北京", "故宫"))
+
+        # 设置 override
+        world.set_traffic_delay("北京", "故宫", delay_min=45, congestion="拥堵")
+
+        # 读取 override
+        override = world.get_traffic_override("北京", "故宫")
+        self.assertIsNotNone(override)
+        self.assertEqual(override["delay_min"], 45)
+        self.assertEqual(override["congestion"], "拥堵")
+
+    def test_traffic_override_different_routes(self):
+        """不同路线的 override 互不影响。"""
+        world = MockWorld()
+        world.set_traffic_delay("北京", "故宫", delay_min=45)
+        world.set_traffic_delay("北京", "天坛", delay_min=20, congestion="缓行")
+
+        gugong = world.get_traffic_override("北京", "故宫")
+        tiantan = world.get_traffic_override("北京", "天坛")
+
+        self.assertEqual(gugong["delay_min"], 45)
+        self.assertEqual(tiantan["delay_min"], 20)
+        self.assertEqual(tiantan["congestion"], "缓行")
+
+    def test_traffic_override_clear(self):
+        """clear_traffic_overrides() 清空所有交通 override。"""
+        world = MockWorld()
+        world.set_traffic_delay("北京", "故宫", delay_min=45)
+        world.clear_traffic_overrides()
+
+        self.assertIsNone(world.get_traffic_override("北京", "故宫"))
 
 
 if __name__ == "__main__":
