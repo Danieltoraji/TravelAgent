@@ -1284,5 +1284,104 @@ class TestAmapClientRouteExtractors(unittest.TestCase):
         self.assertEqual(result["tolls"], 15)
 
 
+class TestRetry(unittest.TestCase):
+    """BaseTool 重试机制测试。"""
+
+    def test_retry_on_network_error(self):
+        """网络错误应重试，最终成功。"""
+        from tools.base_tool import BaseTool
+        from config.settings import settings
+
+        # 临时设置快速重试
+        old_retries = settings.max_retries
+        old_backoff = settings.retry_backoff_base
+        settings.max_retries = 2
+        settings.retry_backoff_base = 0.01
+
+        call_count = 0
+
+        class FlakyTool(BaseTool):
+            name = "flaky"
+            description = "test"
+            source = "mock"
+
+            def _run(self, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count < 2:
+                    from urllib.error import URLError
+                    raise URLError("timeout")
+                return {"ok": True}
+
+        try:
+            tool = FlakyTool()
+            result = tool.execute()
+            self.assertEqual(result.status, ToolStatus.OK)
+            self.assertEqual(call_count, 2)
+        finally:
+            settings.max_retries = old_retries
+            settings.retry_backoff_base = old_backoff
+
+    def test_no_retry_on_value_error(self):
+        """业务错误（ValueError）不应重试。"""
+        from tools.base_tool import BaseTool
+        from config.settings import settings
+
+        old_retries = settings.max_retries
+        settings.max_retries = 3
+
+        call_count = 0
+
+        class FailTool(BaseTool):
+            name = "fail"
+            description = "test"
+            source = "mock"
+
+            def _run(self, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                raise ValueError("business error")
+
+        try:
+            tool = FailTool()
+            result = tool.execute()
+            self.assertEqual(result.status, ToolStatus.ERROR)
+            self.assertEqual(call_count, 1)
+        finally:
+            settings.max_retries = old_retries
+
+    def test_retry_exhausted_returns_error(self):
+        """重试耗尽后返回 ERROR。"""
+        from tools.base_tool import BaseTool
+        from config.settings import settings
+
+        old_retries = settings.max_retries
+        old_backoff = settings.retry_backoff_base
+        settings.max_retries = 1
+        settings.retry_backoff_base = 0.01
+
+        call_count = 0
+
+        class AlwaysFailTool(BaseTool):
+            name = "always_fail"
+            description = "test"
+            source = "mock"
+
+            def _run(self, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                from urllib.error import URLError
+                raise URLError("timeout")
+
+        try:
+            tool = AlwaysFailTool()
+            result = tool.execute()
+            self.assertEqual(result.status, ToolStatus.ERROR)
+            self.assertEqual(call_count, 2)  # 1 initial + 1 retry
+        finally:
+            settings.max_retries = old_retries
+            settings.retry_backoff_base = old_backoff
+
+
 if __name__ == "__main__":
     unittest.main()

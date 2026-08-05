@@ -13,3 +13,6 @@ __pycache__/
 
 # 输出文件
 output/
+
+# 日志文件
+logs/

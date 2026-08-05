@@ -333,7 +333,7 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 | **M2 与 C 联调** | 确认 `ActionItem` 契约；C 的 Action Queue / Permission Manager 消费 B 产出的动作 | C | 付款必须人工（`Permission.MANUAL`）|
 | **M3 替换真实 API** | 高德（地图+交通+景点+餐饮）、和风（天气），环境变量注入 Key | B | ✅ 天气 4 个 Live + 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已就绪；POI 搜索已升级至 v5 API（营业时间等深度信息）；配置见 `config/local_settings.example.py` |
 | **M4 Demo 闭环** | Demo 混合模式：真实 API 数据 + 3 个模拟突发事件（暴雨/排队/交通拥堵） | B | ✅ Demo 已升级为混合模式，展示真实天气/景点/餐饮数据 + 突发事件决策闭环 |
-| **M5 生产化** | 调度器容错重试、超时、日志落盘、配置热更新 | B | — |
+| **M5 生产化** | 调度器容错重试、超时、日志落盘、配置热更新 | B | ✅ BaseTool 网络错误自动重试（指数退避）；API 客户端 URLError 异常捕获；RotatingFileHandler 日志落盘；`POST /config/reload` 热更新配置 |
 
 ### 7.3 给 A/C 的建议
 1. **契约先行**：联调前请审阅 `core/schemas.py`，字段先定稿再开发。

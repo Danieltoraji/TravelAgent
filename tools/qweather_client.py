@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Dict
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -24,10 +25,11 @@ class QWeatherClient:
         data = client.get(f"/v7/weather/now?location={loc_id}")
     """
 
-    def __init__(self, api_key: str, api_host: str, timeout: float = 10.0) -> None:
+    def __init__(self, api_key: str, api_host: str, timeout: float | None = None) -> None:
+        from config.settings import settings
         self._api_key = api_key
         self._api_host = api_host.rstrip("/")
-        self._timeout = timeout
+        self._timeout = timeout if timeout is not None else settings.api_timeout
         self._location_cache: Dict[str, str] = {}  # 城市 → Location ID
         self._coord_cache: Dict[str, tuple] = {}   # 城市 → (lat, lon)
 
@@ -74,12 +76,15 @@ class QWeatherClient:
         req.add_header("X-QW-Api-Key", self._api_key)
         req.add_header("Accept-Encoding", "gzip")
         logger.debug("GET %s", url)
-        with urlopen(req, timeout=self._timeout) as resp:
-            raw = resp.read()
-            if resp.headers.get("Content-Encoding") == "gzip":
-                import gzip
-                raw = gzip.decompress(raw)
-            return json.loads(raw)
+        try:
+            with urlopen(req, timeout=self._timeout) as resp:
+                raw = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    import gzip
+                    raw = gzip.decompress(raw)
+                return json.loads(raw)
+        except URLError as exc:
+            raise ConnectionError(f"和风天气 API 请求失败 [{url}]: {exc}") from exc
 
     @property
     def api_host(self) -> str:

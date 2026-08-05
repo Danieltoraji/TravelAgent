@@ -38,7 +38,9 @@ from itinerary.markdown_exporter import write_markdown
 from tools import build_registry
 from tools.mock_data import MockWorld
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
+from config.log_config import setup_logging
+
+setup_logging()
 
 D1 = date(2026, 8, 1)
 D2 = date(2026, 8, 2)

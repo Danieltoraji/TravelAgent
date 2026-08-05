@@ -446,5 +446,31 @@ class TestServiceExport(unittest.TestCase):
             state.timeline = old_timeline
 
 
+@unittest.skipUnless(_HAS_FASTAPI, "fastapi not installed")
+class TestServiceConfigReload(unittest.TestCase):
+    """配置热更新端点测试。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from app.service import create_app, state
+        state.timeline = None
+        state.execution_agent = None
+        state.events.clear()
+        state.booking_manager = type(state.booking_manager)(state.registry)
+        cls.state = state
+        cls.app = create_app()
+        cls.client = TestClient(cls.app)
+
+    def test_config_reload(self):
+        """POST /config/reload 应返回当前配置状态。"""
+        r = self.client.post("/config/reload")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["status"], "ok")
+        self.assertIn("demo_mode", data)
+        self.assertIn("use_real_api", data)
+        self.assertIn("use_real_map_api", data)
+
+
 if __name__ == "__main__":
     unittest.main()

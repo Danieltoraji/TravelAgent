@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -31,9 +32,10 @@ class AmapClient:
         route = client.get_route((39.91, 116.39), (39.92, 116.40), "transit")
     """
 
-    def __init__(self, api_key: str, timeout: float = 10.0) -> None:
+    def __init__(self, api_key: str, timeout: float | None = None) -> None:
+        from config.settings import settings
         self._api_key = api_key
-        self._timeout = timeout
+        self._timeout = timeout if timeout is not None else settings.api_timeout
         self._geocode_cache: Dict[str, Tuple[float, float]] = {}  # 地址 → (lat, lng)
 
     # ------------------------------------------------------------------
@@ -201,12 +203,15 @@ class AmapClient:
         req.add_header("Accept-Encoding", "gzip")
         logger.debug("GET %s", url)
 
-        with urlopen(req, timeout=self._timeout) as resp:
-            raw = resp.read()
-            if resp.headers.get("Content-Encoding") == "gzip":
-                import gzip
-                raw = gzip.decompress(raw)
-            data = json.loads(raw)
+        try:
+            with urlopen(req, timeout=self._timeout) as resp:
+                raw = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    import gzip
+                    raw = gzip.decompress(raw)
+                data = json.loads(raw)
+        except URLError as exc:
+            raise ConnectionError(f"高德 API 请求失败 [{url}]: {exc}") from exc
 
         # v4 API（如 /v4/direction/bicycling）返回结构不同
         if path.startswith("/v4/"):

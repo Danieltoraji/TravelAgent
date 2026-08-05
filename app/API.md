@@ -326,6 +326,25 @@ C 用户拒绝 ActionItem → 标记为 `rejected`。
 
 **响应**：`Content-Type: text/markdown`，Markdown 文本
 
+### 配置
+
+#### `POST /config/reload`
+
+热更新配置：重新从环境变量 + `config/local_settings.py` 读取 API Key 等。
+
+无需重启服务即可切换 Mock ↔ Real 模式。
+
+**响应**：
+
+```json
+{
+  "status": "ok",
+  "demo_mode": false,
+  "use_real_api": true,
+  "use_real_map_api": true
+}
+```
+
 ---
 
 ## 典型工作流

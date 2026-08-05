@@ -9,10 +9,17 @@
 from __future__ import annotations
 
 import abc
+import logging
 import time
 from typing import Any, ClassVar
+from urllib.error import URLError
 
 from core.schemas import ToolResult, ToolStatus
+
+logger = logging.getLogger("tools.base")
+
+# 这些异常被视为网络错误，值得重试；其他异常（如 ValueError）是业务错误，不重试
+_RETRYABLE_ERRORS = (URLError, TimeoutError, ConnectionError, OSError)
 
 
 class BaseTool(abc.ABC):
@@ -34,19 +41,53 @@ class BaseTool(abc.ABC):
         self._registry_ref: ToolRegistry | None = None
 
     def execute(self, **kwargs: Any) -> ToolResult:
-        """统一的执行入口：计时 + 异常捕获 + 统一返回契约。"""
+        """统一的执行入口：计时 + 异常捕获 + 重试 + 统一返回契约。
+
+        网络错误（URLError / timeout / ConnectionError）自动重试，指数退避；
+        业务错误（ValueError 等）不重试，直接返回 ERROR。
+        """
+        from config.settings import settings
+
+        max_retries = settings.max_retries
+        backoff_base = settings.retry_backoff_base
+
         start = time.perf_counter()
-        try:
-            data = self._run(**kwargs)
-            status, error = ToolStatus.OK, None
-        except Exception as exc:  # noqa: BLE001
-            data, status, error = None, ToolStatus.ERROR, str(exc)
+        last_exc: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                data = self._run(**kwargs)
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                return ToolResult(
+                    tool=self.name,
+                    status=ToolStatus.OK,
+                    data=data,
+                    error=None,
+                    source=self.source,
+                    elapsed_ms=round(elapsed_ms, 2),
+                )
+            except _RETRYABLE_ERRORS as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    wait = backoff_base * (2 ** attempt)
+                    logger.warning(
+                        "%s attempt %d/%d failed (%s), retrying in %.1fs",
+                        self.name, attempt + 1, max_retries + 1, exc, wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.error("%s failed after %d attempts: %s", self.name, max_retries + 1, exc)
+            except Exception as exc:  # noqa: BLE001
+                # 业务错误不重试
+                last_exc = exc
+                break
+
         elapsed_ms = (time.perf_counter() - start) * 1000
         return ToolResult(
             tool=self.name,
-            status=status,
-            data=data,
-            error=error,
+            status=ToolStatus.ERROR,
+            data=None,
+            error=str(last_exc) if last_exc else "unknown error",
             source=self.source,
             elapsed_ms=round(elapsed_ms, 2),
         )

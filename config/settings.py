@@ -40,6 +40,15 @@ class Settings:
 
     calendar_tz: str = "Asia/Shanghai"
 
+    # ── M5 生产化配置 ──────────────────────────────────────────────
+    api_timeout: float = 10.0              # API 请求超时（秒）
+    max_retries: int = 3                  # 最大重试次数（首次 + 重试）
+    retry_backoff_base: float = 1.0       # 指数退避基数（秒），第 n 次重试等待 base * 2^n
+    log_dir: str = "logs"                # 日志目录
+    log_level: str = "INFO"              # 日志级别
+    log_max_bytes: int = 10 * 1024 * 1024  # 单日志文件最大字节数（10MB）
+    log_backup_count: int = 5             # 保留日志文件数
+
     @property
     def use_real_api(self) -> bool:
         """当前是否应使用真实天气 API（Demo 关闭且有 Key 时）。
@@ -55,6 +64,20 @@ class Settings:
         地图 Tool 需 amap_api_key，与天气的 use_real_api 独立判断。
         """
         return not self.demo_mode and bool(self.amap_api_key)
+
+    def reload(self) -> None:
+        """热更新：重新从环境变量读取 API Key + 重新加载 local_settings.py。
+
+        不重置 polling / lookahead 等运行时配置（避免影响运行中的调度器）。
+        """
+        self.amap_api_key = os.environ.get("AMAP_API_KEY", "")
+        self.qweather_api_key = os.environ.get("QWEATHER_API_KEY", "")
+        self.qweather_api_host = os.environ.get("QWEATHER_API_HOST", "")
+        try:
+            from config.local_settings import apply_local_settings
+            apply_local_settings(self)
+        except ImportError:
+            pass
 
 
 settings = Settings()

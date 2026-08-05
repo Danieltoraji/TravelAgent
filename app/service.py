@@ -46,6 +46,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from booking.booking_manager import BookingManager, BookingRecord
+from config.settings import settings
 from core.schemas import (
     ActionItem,
     ActionStatus,
@@ -136,6 +137,10 @@ def create_app() -> Any:
     """构建 FastAPI 应用。未安装 fastapi 时抛出 RuntimeError。"""
     if not _HAS_FASTAPI:
         raise RuntimeError("fastapi not installed. Run: pip install -r requirements.txt")
+
+    # 初始化日志（控制台 + 文件落盘）
+    from config.log_config import setup_logging
+    setup_logging()
 
     app = FastAPI(
         title="TravelAgent Service",
@@ -377,6 +382,22 @@ def create_app() -> Any:
     def export_markdown() -> str:
         tl = state.require_timeline()
         return render_markdown(tl)
+
+    # ── 配置 ────────────────────────────────────────────────────────
+
+    @app.post("/config/reload")
+    def config_reload() -> Dict[str, Any]:
+        """热更新配置：重新从环境变量 + local_settings.py 读取 API Key 等。
+
+        不重启服务即可切换 Mock ↔ Real 模式。
+        """
+        settings.reload()
+        return {
+            "status": "ok",
+            "demo_mode": settings.demo_mode,
+            "use_real_api": settings.use_real_api,
+            "use_real_map_api": settings.use_real_map_api,
+        }
 
     return app
 
