@@ -9,6 +9,7 @@ from tools import default_registry
 from tools.amap_client import AmapClient
 from tools.map_tool import MapToolLive
 from tools.qweather_client import QWeatherClient
+from tools.traffic_tool import TrafficToolLive
 from tools.weather_tool import (
     AirQualityToolLive,
     WeatherForecastToolLive,
@@ -517,6 +518,155 @@ class TestMapLive(unittest.TestCase):
         tool._run(action="route", origin="故宫", destination="天坛")
 
         self.assertEqual(client.geocode.call_count, 2)
+
+
+class TestTrafficLive(unittest.TestCase):
+    """TrafficToolLive 测试：mock AmapClient，验证字段映射与拥堵推断。"""
+
+    def make_mock_amap_client(self):
+        """构造一个 mock AmapClient。"""
+        client = MagicMock(spec=AmapClient)
+        return client
+
+    def test_live_transit_field_mapping(self):
+        """测试公交模式字段映射。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.916, 116.397),  # origin: 故宫
+            (39.882, 116.407),  # destination: 天坛
+        ]
+        client.get_route.return_value = {
+            "distance": 3500,   # 米
+            "duration": 1500,   # 秒
+        }
+
+        tool = TrafficToolLive(client)
+        result = tool._run(origin="故宫", destination="天坛", mode="transit")
+
+        self.assertEqual(result["origin"], "故宫")
+        self.assertEqual(result["destination"], "天坛")
+        self.assertEqual(result["mode"], "transit")
+        self.assertEqual(result["duration_min"], 25)      # 1500s → 25min
+        self.assertEqual(result["congestion"], "畅通")    # 公交不推断拥堵
+        self.assertEqual(result["delay_min"], 0)
+        self.assertIn("3.5km", result["note"])
+
+    def test_live_taxi_congestion_smooth(self):
+        """测试打车模式畅通路况（速度高）。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.916, 116.397),
+            (39.882, 116.407),
+        ]
+        # 10km, 600s = 10min → 速度 60km/h → 畅通
+        client.get_route.return_value = {
+            "distance": 10000,
+            "duration": 600,
+        }
+
+        tool = TrafficToolLive(client)
+        result = tool._run(origin="故宫", destination="天坛", mode="taxi")
+
+        self.assertEqual(result["mode"], "taxi")
+        self.assertEqual(result["duration_min"], 10)
+        self.assertEqual(result["congestion"], "畅通")
+        self.assertEqual(result["delay_min"], 0)
+
+    def test_live_taxi_congestion_heavy(self):
+        """测试打车模式拥堵路况（速度低）。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.916, 116.397),
+            (39.882, 116.407),
+        ]
+        # 3km, 900s = 15min → 速度 12km/h → 拥堵
+        client.get_route.return_value = {
+            "distance": 3000,
+            "duration": 900,
+        }
+
+        tool = TrafficToolLive(client)
+        result = tool._run(origin="故宫", destination="天坛", mode="taxi")
+
+        self.assertEqual(result["duration_min"], 15)
+        self.assertEqual(result["congestion"], "拥堵")
+        # 畅通基准: 3km / 40km/h * 60 = 4.5min, delay = 15 - 5 = 10
+        self.assertGreater(result["delay_min"], 0)
+        self.assertIn("拥堵", result["note"])
+
+    def test_live_taxi_congestion_slow(self):
+        """测试打车模式缓行路况（速度中等）。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.916, 116.397),
+            (39.882, 116.407),
+        ]
+        # 5km, 900s = 15min → 速度 20km/h → 缓行
+        client.get_route.return_value = {
+            "distance": 5000,
+            "duration": 900,
+        }
+
+        tool = TrafficToolLive(client)
+        result = tool._run(origin="故宫", destination="天坛", mode="taxi")
+
+        self.assertEqual(result["congestion"], "缓行")
+        self.assertGreater(result["delay_min"], 0)
+
+    def test_live_walk_field_mapping(self):
+        """测试步行模式字段映射。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.916, 116.397),
+            (39.925, 116.396),
+        ]
+        client.get_route.return_value = {
+            "distance": 1000,
+            "duration": 720,
+        }
+
+        tool = TrafficToolLive(client)
+        result = tool._run(origin="故宫", destination="景山公园", mode="walk")
+
+        self.assertEqual(result["mode"], "walk")
+        self.assertEqual(result["duration_min"], 12)      # 720s → 12min
+        self.assertEqual(result["congestion"], "畅通")    # 步行不推断拥堵
+        self.assertEqual(result["delay_min"], 0)
+
+    def test_live_source_is_live(self):
+        """测试 source 字段标记为 live。"""
+        tool = TrafficToolLive(self.make_mock_amap_client())
+        self.assertEqual(tool.source, "live")
+
+    def test_live_calls_geocode_twice(self):
+        """测试调用了两次 geocode（起点+终点）。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.916, 116.397),
+            (39.882, 116.407),
+        ]
+        client.get_route.return_value = {"distance": 1000, "duration": 600}
+
+        tool = TrafficToolLive(client)
+        tool._run(origin="故宫", destination="天坛")
+
+        self.assertEqual(client.geocode.call_count, 2)
+
+    def test_live_execute_wraps_as_tool_result(self):
+        """测试通过 execute() 调用时正确包装为 ToolResult。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.916, 116.397),
+            (39.882, 116.407),
+        ]
+        client.get_route.return_value = {"distance": 3500, "duration": 1500}
+
+        tool = TrafficToolLive(client)
+        result = tool.execute(origin="故宫", destination="天坛", mode="transit")
+
+        self.assertEqual(result.status, ToolStatus.OK)
+        self.assertEqual(result.source, "live")
+        self.assertEqual(result.data["duration_min"], 25)
 
 
 if __name__ == "__main__":

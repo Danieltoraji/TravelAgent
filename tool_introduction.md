@@ -157,6 +157,7 @@ client = QWeatherClient(
 | 方法 | 说明 |
 |------|------|
 | `get_location_id(city: str) → str` | 调 GeoAPI 城市搜索获取 Location ID，带缓存 |
+| `get_location_coord(city: str) → tuple` | 获取城市经纬度 `(lat, lon)`，带缓存（v1 API 需要） |
 | `get(path_or_url: str) → dict` | 发送 GET 请求，返回解析后的 JSON dict |
 | `api_host` (property) | 获取 API Host |
 | `api_key` (property) | 获取 API Key |
@@ -170,17 +171,24 @@ Headers:
   Accept-Encoding: gzip
 ```
 
-### Location ID 缓存机制
+### Location ID 与坐标缓存机制
 
 ```
 首次调用 get_location_id("北京")
   → 调 GeoAPI /geo/v2/city/lookup?location=北京
-  → 获取 Location ID "101010100"
-  → 存入 _location_cache["北京"] = "101010100"
+  → 获取 Location ID "101010100" 和坐标 (39.92, 116.41)
+  → 同时存入 _location_cache 和 _coord_cache
 
 后续调用 get_location_id("北京")
-  → 直接从缓存返回 "101010100"，不再调 GeoAPI
+  → 直接从 _location_cache 返回 "101010100"
+
+调用 get_location_coord("北京")
+  → 直接从 _coord_cache 返回 (39.92, 116.41)
+  → 若缓存未命中，先调 get_location_id 填充缓存
 ```
+
+> **注意**：天气预警和空气质量已迁移至 v1 API，需要经纬度路径参数，
+> 因此 `get_location_coord()` 在首次调用时会触发 GeoAPI 查询并缓存坐标。
 
 ---
 
@@ -270,23 +278,28 @@ WeatherToolLive._run(city="北京")
 
 #### warnings 列表中每个 dict 的字段（Live 版）
 
-| 字段 | 类型 | 说明 | API 来源 |
+| 字段 | 类型 | 说明 | API 来源（v1） |
 |------|------|------|----------|
-| `title` | str | 预警标题 | `warning[].title` |
-| `type` | str | 预警类型（暴雨/台风…） | `warning[].type` |
-| `level` | str | 预警等级（蓝/黄/橙/红） | `warning[].level` |
-| `text` | str | 预警详细内容 | `warning[].text` |
+| `title` | str | 预警标题 | `alerts[].headline` |
+| `type` | str | 预警类型（暴雨/台风…） | `alerts[].eventType.name` |
+| `level` | str | 预警等级（blue/yellow/orange/red） | `alerts[].color.code` |
+| `text` | str | 预警详细内容 | `alerts[].description` |
 
 #### Live 版调用链路
 
 ```
 WeatherWarningToolLive._run(city="北京")
   │
-  ├─ client.get_location_id("北京")
+  ├─ client.get_location_coord("北京")        # 获取经纬度（带缓存）
+  │    → (39.92, 116.41)
   │
-  └─ client.get("/v7/warning/now?location=101010100")
-       → resp["warning"] 数组
+  └─ client.get("/weatheralert/v1/current/39.92/116.41")
+       → resp["alerts"] 数组
+       → 映射: headline→title, eventType.name→type, color.code→level, description→text
 ```
+
+> **v1 迁移说明**：旧端点 `/v7/warning/now?location={id}` 已废弃（返回 403），
+> 新端点 `/weatheralert/v1/current/{lat}/{lon}` 使用经纬度路径参数，响应结构完全不同。
 
 ---
 
@@ -311,26 +324,31 @@ WeatherWarningToolLive._run(city="北京")
 | 字段 | 类型 | 说明 | Mock 来源 | Live API 来源 |
 |------|------|------|-----------|---------------|
 | `city` | str | 城市名 | 入参 | 入参 |
-| `aqi` | int | 空气质量指数 | 固定 35 | `now[0].aqi` |
-| `category` | str | 空气质量类别（优/良/轻度污染…） | 固定 "优" | `now[0].category` |
-| `pm25` | float | PM2.5 浓度（μg/m³） | 固定 15.0 | `now[0].pm2p5` |
-| `pm10` | float | PM10 浓度（μg/m³） | 固定 30.0 | `now[0].pm10` |
-| `no2` | float | 二氧化氮（μg/m³） | 固定 20.0 | `now[0].no2` |
-| `so2` | float | 二氧化硫（μg/m³） | 固定 5.0 | `now[0].so2` |
-| `co` | float | 一氧化碳（mg/m³） | 固定 0.5 | `now[0].co` |
-| `o3` | float | 臭氧（μg/m³） | 固定 60.0 | `now[0].o3` |
+| `aqi` | int | 空气质量指数 | 固定 35 | `indexes[code=us-epa].aqi` |
+| `category` | str | 空气质量类别（优/良/轻度污染…） | 固定 "优" | `indexes[code=us-epa].category` |
+| `pm25` | float | PM2.5 浓度（μg/m³） | 固定 15.0 | `pollutants[code=pm2p5].concentration.value` |
+| `pm10` | float | PM10 浓度（μg/m³） | 固定 30.0 | `pollutants[code=pm10].concentration.value` |
+| `no2` | float | 二氧化氮（μg/m³） | 固定 20.0 | `pollutants[code=no2].concentration.value` |
+| `so2` | float | 二氧化硫（μg/m³） | 固定 5.0 | `pollutants[code=so2].concentration.value` |
+| `co` | float | 一氧化碳（mg/m³） | 固定 0.5 | `pollutants[code=co].concentration.value` |
+| `o3` | float | 臭氧（μg/m³） | 固定 60.0 | `pollutants[code=o3].concentration.value` |
 
 #### Live 版调用链路
 
 ```
 AirQualityToolLive._run(city="北京")
   │
-  ├─ client.get_location_id("北京")
+  ├─ client.get_location_coord("北京")        # 获取经纬度（带缓存）
+  │    → (39.92, 116.41)
   │
-  └─ client.get("/v7/air/now?location=101010100")
-       → resp["now"] 数组 → 取 [0]
-       → aqi / category / pm2p5 / pm10 / no2 / so2 / co / o3
+  └─ client.get("/airquality/v1/current/39.92/116.41")
+       → resp["indexes"] 数组 → 取 code=us-epa 的 aqi/category
+       → resp["pollutants"] 数组 → 按 code 匹配 pm2p5/pm10/no2/so2/co/o3
 ```
+
+> **v1 迁移说明**：旧端点 `/v7/air/now?location={id}` 已废弃（返回 403），
+> 新端点 `/airquality/v1/current/{lat}/{lon}` 使用经纬度路径参数，
+> 响应结构从单个 `now` 对象改为 `indexes` + `pollutants` 两个数组。
 
 ---
 
@@ -719,11 +737,11 @@ else:
 
 | # | 端点 | 方法 | 用途 | 调用工具 | 关键返回字段 |
 |---|------|------|------|----------|-------------|
-| 1 | `/geo/v2/city/lookup` | GET | 城市搜索 → Location ID | QWeatherClient.get_location_id() | `location[0].id` |
+| 1 | `/geo/v2/city/lookup` | GET | 城市搜索 → Location ID + 坐标 | QWeatherClient.get_location_id() / get_location_coord() | `location[0].id` / `location[0].lat` / `location[0].lon` |
 | 2 | `/v7/weather/now` | GET | 实况天气 | WeatherToolLive._fetch_now() | `now.temp/text/icon/windScale/humidity/precip/feelsLike/vis` |
 | 3 | `/v7/indices?type=5` | GET | 天气指数（UV） | WeatherToolLive._fetch_uv_index() | `daily[0].category` |
-| 4 | `/v7/warning/now` | GET | 天气预警 | WeatherWarningToolLive | `warning[]` 数组 |
-| 5 | `/v7/air/now` | GET | 空气质量 | AirQualityToolLive | `now[0].aqi/category/pm2p5/pm10/no2/so2/co/o3` |
+| 4 | `/weatheralert/v1/current/{lat}/{lon}` | GET | 天气预警（v1） | WeatherWarningToolLive | `alerts[].headline/eventType.name/color.code/description` |
+| 5 | `/airquality/v1/current/{lat}/{lon}` | GET | 空气质量（v1） | AirQualityToolLive | `indexes[].aqi/category` + `pollutants[].concentration.value` |
 | 6 | `/v7/weather/24h` | GET | 逐小时预报 | WeatherForecastToolLive | `hourly[].fxTime/temp/iconCode/text/precip` |
 
 ### 完整 URL 格式
@@ -755,29 +773,36 @@ https://abc1234xyz.def.qweatherapi.com/v7/weather/now?location=101010100
 |----------|-------------|------|
 | `daily[0].category` | `uv_index` | `int()`，失败默认 0 |
 
-#### 天气预警 `/v7/warning/now`
+#### 天气预警 `/weatheralert/v1/current/{lat}/{lon}`（v1）
 
 | API 字段 | 工具返回字段 | 转换 |
 |----------|-------------|------|
-| `warning[]` | `warnings` | 直接透传 |
-| `warning[].title` | `warnings[].title` | 直接透传 |
-| `warning[].type` | `warnings[].type` | 直接透传 |
-| `warning[].level` | `warnings[].level` | 直接透传 |
-| `warning[].text` | `warnings[].text` | 直接透传 |
+| `alerts[]` | `warnings` | 遍历映射 |
+| `alerts[].headline` | `warnings[].title` | 直接透传 |
+| `alerts[].eventType.name` | `warnings[].type` | 直接透传 |
+| `alerts[].color.code` | `warnings[].level` | 直接透传（blue/yellow/orange/red） |
+| `alerts[].description` | `warnings[].text` | 直接透传 |
 | — | `has_warning` | `len(warnings) > 0` |
 
-#### 空气质量 `/v7/air/now`
+> **v1 迁移**：旧端点 `/v7/warning/now?location={id}` 已废弃（返回 403），
+> 新端点使用经纬度路径参数，响应从 `warning[]` 改为 `alerts[]`，字段结构完全不同。
+
+#### 空气质量 `/airquality/v1/current/{lat}/{lon}`（v1）
 
 | API 字段 | 工具返回字段 | 转换 |
 |----------|-------------|------|
-| `now[0].aqi` | `aqi` | `int()` |
-| `now[0].category` | `category` | 直接透传 |
-| `now[0].pm2p5` | `pm25` | `float()` |
-| `now[0].pm10` | `pm10` | `float()` |
-| `now[0].no2` | `no2` | `float()` |
-| `now[0].so2` | `so2` | `float()` |
-| `now[0].co` | `co` | `float()` |
-| `now[0].o3` | `o3` | `float()` |
+| `indexes[code=us-epa].aqi` | `aqi` | `int()`，优先取 us-epa，否则取第一个 |
+| `indexes[code=us-epa].category` | `category` | 直接透传 |
+| `pollutants[code=pm2p5].concentration.value` | `pm25` | `float()` |
+| `pollutants[code=pm10].concentration.value` | `pm10` | `float()` |
+| `pollutants[code=no2].concentration.value` | `no2` | `float()` |
+| `pollutants[code=so2].concentration.value` | `so2` | `float()` |
+| `pollutants[code=co].concentration.value` | `co` | `float()` |
+| `pollutants[code=o3].concentration.value` | `o3` | `float()` |
+
+> **v1 迁移**：旧端点 `/v7/air/now?location={id}` 已废弃（返回 403），
+> 新端点使用经纬度路径参数，响应从单个 `now` 对象改为 `indexes` + `pollutants` 两个数组。
+> AQI 从 `indexes` 数组中按 `code=us-epa` 提取，污染物浓度从 `pollutants` 数组按 `code` 匹配。
 
 #### 逐小时预报 `/v7/weather/24h`
 

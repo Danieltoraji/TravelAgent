@@ -21,7 +21,7 @@ from tools.map_tool import MapTool, MapToolLive
 from tools.mock_data import PLACES, MockWorld, WeatherData
 from tools.qweather_client import QWeatherClient
 from tools.scenic_tool import ScenicTool
-from tools.traffic_tool import TrafficTool
+from tools.traffic_tool import TrafficTool, TrafficToolLive
 from tools.weather_tool import (
     AirQualityTool,
     AirQualityToolLive,
@@ -49,8 +49,10 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
     if settings.use_real_map_api:
         amap_client = AmapClient(api_key=settings.amap_api_key)
         registry.register(MapToolLive(amap_client))
+        registry.register(TrafficToolLive(amap_client))
     else:
         registry.register(MapTool())
+        registry.register(TrafficTool())
 
     # 天气相关 Tool：按配置自动切换 Mock / Live
     if settings.use_real_api:
@@ -69,7 +71,6 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(WeatherForecastTool(world))
 
     registry.register(ScenicTool(world))
-    registry.register(TrafficTool())
     registry.register(FoodTool())
     registry.register(BookingTool())
     return registry
