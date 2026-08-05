@@ -15,7 +15,7 @@
 | API 封装 | 统一 `BaseTool` 抽象基类 + 统一返回契约 `ToolResult`，Mock 优先，可平滑切换真实 API |
 | Monitor Scheduler | 定时轮询调度：天气 30min、交通 5min、景点到达前 20min、餐厅到达前 30min |
 | Execution Agent | **项目核心**：加载行程时间轴，按时间驱动监控，评估事件影响，向 Decision Engine 提交决策请求 |
-| Booking | 预约状态机（只准备 / 提交，**不付款**），对接 Action Queue 契约 |
+| Booking | 预约状态机（prepare→confirm→mark_confirmed 完整闭环 + scenic 自动填充，**不付款**），对接 Action Queue 契约 |
 | Calendar | 生成 `.ics` 日历 + Markdown 行程单 |
 
 ---
@@ -28,9 +28,9 @@
 2. `tools/` — 统一工具抽象层 + 9 个 Tool（Mock/Live 双版本，自动切换）
 3. `monitor/monitor_scheduler.py` — asyncio 定时监控调度器
 4. `execution/execution_agent.py` — 持续监控执行体（影响阈值判定 + DecisionRequest 组装）
-5. `booking/booking_manager.py` — 预约状态机 + ActionQueue 契约 + 付款人工提醒
+5. `booking/booking_manager.py` — 预约状态机（prepare→confirm→mark_confirmed 完整闭环 + scenic 自动填充）+ ActionQueue 契约 + 付款人工提醒
 6. `itinerary/` — `.ics` 日历 + Markdown 行程单导出
-7. `tests/` — 工具 / 调度 / 执行 / 导出 单元测试（101 个测试全部通过）
+7. `tests/` — 工具 / 预约 / 调度 / 执行 / 导出 单元测试（125 个测试全部通过）
 8. `demo/demo_scenario.py` — 比赛 Demo 剧情闭环脚本（混合模式：真实 API + 模拟突发事件）
 9. `tools/qweather_client.py` — QWeatherClient 共享客户端（API KEY 认证 + Location ID/坐标缓存）
 10. `tools/amap_client.py` — AmapClient 共享客户端（地理编码缓存 + 路线规划）

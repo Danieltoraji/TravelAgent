@@ -774,11 +774,17 @@ FoodToolLive._run(query="餐厅", near="故宫")
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `action` | enum | ✅ | `prepare`（准备预约）或 `status`（查询状态） |
+| `action` | enum | ✅ | `prepare`（准备预约）、`submit`（模拟提交）、`status`（查询状态） |
 | `place` | string | ❌ | 景点/酒店名（action=prepare 时） |
-| `booking_id` | string | ❌ | 预约 ID（action=status 时必填） |
+| `booking_id` | string | ❌ | 预约 ID（action=submit/status 时必填） |
 | `target_date` | string | ❌ | 目标日期 YYYY-MM-DD |
 | `party_size` | int | ❌ | 人数（默认 1） |
+| `booking_type` | enum | ❌ | 预约类型：`scenic`/`hotel`/`transport`（默认 `scenic`） |
+| `price` | number | ❌ | 票价/房费（由 BookingManager 自动填充） |
+| `tel` | string | ❌ | 联系电话（由 BookingManager 自动填充） |
+| `ticket_required` | bool | ❌ | 是否需要预约（默认 True） |
+| `address` | string | ❌ | 地址（由 BookingManager 自动填充） |
+| `open_hours` | string | ❌ | 营业时间（由 BookingManager 自动填充） |
 
 #### 返回字段
 
@@ -788,9 +794,28 @@ FoodToolLive._run(query="餐厅", near="故宫")
 | `place` | str | 景点/酒店名 |
 | `target_date` | str | 目标日期 |
 | `party_size` | int | 人数 |
-| `status` | str | 预约状态（`draft`） |
+| `booking_type` | str | 预约类型（`scenic`/`hotel`/`transport`） |
+| `price` | float | 票价/房费 |
+| `tel` | str | 联系电话 |
+| `ticket_required` | bool | 是否需要预约 |
+| `address` | str | 地址 |
+| `open_hours` | str | 营业时间 |
+| `status` | str | 预约状态（`draft` → `submitted`） |
 | `payment_required` | bool | 是否需要付款（始终 True，付款需人工） |
+| `confirm_code` | str | 确认码（submit 后生成，格式 `CONF-{booking_id}`） |
 | `note` | str | 备注 |
+
+#### 调用链路
+
+```
+BookingManager.prepare()
+  ├─ registry.call("scenic", place=...)     ← 自动填充景点信息
+  │   返回 price/tel/ticket_required/address/open_hours
+  └─ registry.call("booking", action="prepare", ...)  ← 生成 draft
+
+BookingManager.confirm()
+  └─ registry.call("booking", action="submit", ...)    ← 模拟提交，生成 confirm_code
+```
 
 ---
 

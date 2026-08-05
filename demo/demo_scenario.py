@@ -269,12 +269,24 @@ def run_demo() -> None:
         print(f"  影响评分表：天气=40 / 景点排队=80 / 交通=20 / 餐饮=5（阈值=50）")
 
     # ── 【5】预约闭环 ─────────────────────────────────────────────
-    print(f"\n{_sep('【5】预约闭环（Booking Agent：只准备，不付款）', '═')}")
+    print(f"\n{_sep('【5】预约闭环（Booking Agent：准备→提交→确认→付款提醒）', '═')}")
     bm = BookingManager(registry)
+    # Step 1: prepare — 自动调用 scenic Tool 填充景点信息
     rec = bm.prepare("故宫", target_date="2026-08-01", party_size=2)
     print(f"  ✔ 已准备预约 {rec.place}：id={rec.booking_id}，状态={rec.status.value}")
+    print(f"    类型={rec.booking_type}，票价=¥{rec.price}，电话={rec.tel or '无'}")
+    print(f"    地址={rec.address or '无'}，营业时间={rec.open_hours or '无'}")
+    # Step 2: confirm — 用户确认后调用 submit 模拟提交
+    rec = bm.confirm(rec.booking_id)
+    print(f"  ✔ 用户已确认，提交成功：确认码={rec.confirm_code}，状态={rec.status.value}")
+    # Step 3: mark_confirmed — 服务方确认
+    rec = bm.mark_confirmed(rec.booking_id)
+    print(f"  ✔ 服务方已确认：状态={rec.status.value}")
+    # Step 4: payment_action — 付款提醒（人工执行）
     pay = bm.payment_action(rec.booking_id)
     print(f"  ⚠ 付款提醒（人工执行）：{pay.title} [{pay.permission.value}]")
+    print(f"  {'─' * 50}")
+    print(f"  Action Queue（{len(bm.actions())} 项）：")
     for action in bm.actions():
         print(f"     - [{action.status.value}/{action.permission.value}] {action.title}")
 

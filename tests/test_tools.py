@@ -89,6 +89,12 @@ class TestTools(unittest.TestCase):
         self.assertEqual(r.status, ToolStatus.OK)
         self.assertTrue(r.data["payment_required"])
         self.assertIn("booking_id", r.data)
+        # 新字段
+        self.assertEqual(r.data["booking_type"], "scenic")
+        self.assertEqual(r.data["status"], "draft")
+        self.assertEqual(r.data["confirm_code"], "")
+        for key in ("price", "tel", "ticket_required", "address", "open_hours"):
+            self.assertIn(key, r.data)
 
     def test_booking_status_by_booking_id(self) -> None:
         # 先 prepare 拿到 booking_id，再 status 按 booking_id 查
@@ -102,6 +108,24 @@ class TestTools(unittest.TestCase):
 
     def test_booking_status_missing_id_errors(self) -> None:
         r = default_registry.call("booking", action="status")
+        self.assertEqual(r.status, ToolStatus.ERROR)
+
+    def test_booking_submit_success(self) -> None:
+        """prepare → submit，验证 confirm_code 和状态变化。"""
+        prep = default_registry.call("booking", action="prepare",
+                                     place="故宫", target_date="2026-08-01", party_size=2)
+        bid = prep.data["booking_id"]
+        r = default_registry.call("booking", action="submit", booking_id=bid)
+        self.assertEqual(r.status, ToolStatus.OK)
+        self.assertEqual(r.data["status"], "submitted")
+        self.assertEqual(r.data["confirm_code"], f"CONF-{bid}")
+
+    def test_booking_submit_not_found_errors(self) -> None:
+        r = default_registry.call("booking", action="submit", booking_id="NOSUCHID")
+        self.assertEqual(r.status, ToolStatus.ERROR)
+
+    def test_booking_submit_missing_id_errors(self) -> None:
+        r = default_registry.call("booking", action="submit")
         self.assertEqual(r.status, ToolStatus.ERROR)
 
     def test_tool_result_to_json(self) -> None:
