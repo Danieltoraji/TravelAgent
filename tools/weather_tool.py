@@ -8,12 +8,8 @@ Live 版（WeatherToolLive）：调和风天气 API，返回真实天气数据�
 
 from __future__ import annotations
 
-import json
 import logging
-import time
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 from tools.base_tool import BaseTool
 from tools.mock_data import CITY_MOCK, MockWorld
@@ -23,7 +19,7 @@ logger = logging.getLogger("tools.weather")
 
 class WeatherTool(BaseTool):
     name = "weather"
-    description = "查询城市天气：天气状况、气温、降雨概率、紫外线、风力。"
+    description = "查询城市实况天气：天气状况、气温、体感温度、降雨概率、紫外线、风力、湿度、能见度。"
     source = "mock"
     input_schema = {
         "type": "object",
@@ -45,9 +41,12 @@ class WeatherTool(BaseTool):
             "date": date or self._world.now.date().isoformat(),
             "condition": w.condition,
             "temperature_c": w.temperature_c,
+            "feels_like": w.temperature_c,       # Mock 无体感温度，用气温代替
             "rain_probability": w.rain_probability,
             "uv_index": w.uv_index,
             "wind_kmh": w.wind_kmh,
+            "humidity": 50,                       # Mock 默认湿度
+            "visibility_km": 10,                  # Mock 默认能见度
         }
 
 
@@ -78,30 +77,33 @@ class WeatherToolLive(WeatherTool):
     """和风天气 API 实现版（API KEY 认证）。
 
     调用链路：
-      1. GeoAPI 城市搜索 → 获取 Location ID（类实例级缓存）
-      2. 实况天气 /v7/weather/now → temp/text/icon/windScale/humidity/precip
+      1. GeoAPI 城市搜索 → 获取 Location ID（通过 QWeatherClient 缓存）
+      2. 实况天气 /v7/weather/now → temp/text/icon/windScale/humidity/precip/feelsLike/vis
       3. 天气指数 /v7/indices?type=5 → UV 指数（可选，失败默认 0）
 
     返回与 Mock 版完全相同的 dict 结构，调用方零改动。
     """
 
     name = "weather"
-    description = "查询城市天气：天气状况、气温、降雨概率、紫外线、风力。"
+    description = "查询城市实况天气：天气状况、气温、体感温度、降雨概率、紫外线、风力、湿度、能见度。"
     source = "live"
     input_schema = WeatherTool.input_schema
 
-    def __init__(self, api_key: str, api_host: str, timeout: float = 10.0) -> None:
-        super().__init__()  # 不实际使用 MockWorld，但保持构造签名一致
-        self._api_key = api_key
-        self._api_host = api_host.rstrip("/")
-        self._timeout = timeout
-        self._location_cache: Dict[str, str] = {}  # 城市 → Location ID
+    def __init__(self, client: Any) -> None:
+        """初始化 Live 版天气 Tool。
+
+        Args:
+            client: QWeatherClient 实例（共享 API KEY + Host + Location ID 缓存）
+        """
+        super().__init__()  # 不实际使用 MockWorld
+        self._client = client
 
     def _run(self, city: str = "", date: Optional[str] = None) -> Dict[str, Any]:
-        city = city or CITY_MOCK
         from datetime import date as date_cls
+        from urllib.parse import urlencode
 
-        loc_id = self._get_location_id(city)
+        city = city or CITY_MOCK
+        loc_id = self._client.get_location_id(city)
         now_data = self._fetch_now(loc_id)
         uv_index = self._fetch_uv_index(loc_id)
 
@@ -109,9 +111,12 @@ class WeatherToolLive(WeatherTool):
         icon = now_data.get("icon", "999")
         condition = _QWEATHER_ICON_TEXT.get(icon, now_data.get("text", "未知"))
         temp = float(now_data.get("temp", 0))
+        feels_like = float(now_data.get("feelsLike", temp))
         wind_scale = now_data.get("windScale", "0")
         wind_kmh = _WIND_SCALE_KMH.get(wind_scale, 0)
         precip = float(now_data.get("precip", "0"))
+        humidity = int(now_data.get("humidity", 0))
+        visibility = float(now_data.get("vis", 10))
         # 和风无降雨概率字段，用降水量推断：>0mm → 80%，否则 10%
         rain_prob = 80 if precip > 0 else 10
 
@@ -120,30 +125,19 @@ class WeatherToolLive(WeatherTool):
             "date": date or date_cls.today().isoformat(),
             "condition": condition,
             "temperature_c": temp,
+            "feels_like": feels_like,
             "rain_probability": rain_prob,
             "uv_index": uv_index,
             "wind_kmh": wind_kmh,
+            "humidity": humidity,
+            "visibility_km": visibility,
         }
-
-    def _get_location_id(self, city: str) -> str:
-        """调 GeoAPI 城市搜索，获取 Location ID（带缓存）。"""
-        if city in self._location_cache:
-            return self._location_cache[city]
-
-        url = f"https://{self._api_host}/geo/v2/city/lookup?{urlencode({'location': city})}"
-        resp = self._http_get(url)
-        locations = resp.get("location", [])
-        if not locations:
-            raise ValueError(f"GeoAPI 未找到城市: {city}")
-        loc_id = locations[0]["id"]
-        self._location_cache[city] = loc_id
-        logger.info("GeoAPI: %s → Location ID %s", city, loc_id)
-        return loc_id
 
     def _fetch_now(self, loc_id: str) -> Dict[str, Any]:
         """调实况天气 API。"""
-        url = f"https://{self._api_host}/v7/weather/now?{urlencode({'location': loc_id})}"
-        resp = self._http_get(url)
+        from urllib.parse import urlencode
+        url = f"/v7/weather/now?{urlencode({'location': loc_id})}"
+        resp = self._client.get(url)
         now_list = resp.get("now")
         if not now_list:
             raise ValueError(f"实况天气 API 返回为空: {resp.get('code', 'unknown')}")
@@ -152,9 +146,9 @@ class WeatherToolLive(WeatherTool):
     def _fetch_uv_index(self, loc_id: str) -> int:
         """调天气指数 API 获取 UV 指数（type=5）。失败则默认 0。"""
         try:
-            url = (f"https://{self._api_host}/v7/indices?"
-                   f"{urlencode({'location': loc_id, 'type': '5'})}")
-            resp = self._http_get(url)
+            from urllib.parse import urlencode
+            url = f"/v7/indices?{urlencode({'location': loc_id, 'type': '5'})}"
+            resp = self._client.get(url)
             daily = resp.get("daily", [])
             if daily:
                 return int(daily[0].get("category", 0))
@@ -162,16 +156,221 @@ class WeatherToolLive(WeatherTool):
             logger.warning("UV 指数获取失败，默认 0: %s", exc)
         return 0
 
-    def _http_get(self, url: str) -> Dict[str, Any]:
-        """发送 GET 请求（API KEY 认证），返回解析后的 JSON dict。"""
-        req = Request(url)
-        req.add_header("X-QW-Api-Key", self._api_key)
-        req.add_header("Accept-Encoding", "gzip")
-        logger.debug("GET %s", url)
-        with urlopen(req, timeout=self._timeout) as resp:
-            raw = resp.read()
-            # 处理 gzip 压缩响应
-            if resp.headers.get("Content-Encoding") == "gzip":
-                import gzip
-                raw = gzip.decompress(raw)
-            return json.loads(raw)
+
+class WeatherWarningTool(BaseTool):
+    """天气预警 Tool：查询城市当前生效的天气预警（暴雨/台风/雷电等）。
+
+    Mock 版：返回空预警列表（无预警）。
+    Live 版：调 /v7/warning/now 获取官方发布的极端天气预警。
+    """
+
+    name = "weather_warning"
+    description = "查询城市当前天气预警：暴雨、台风、雷电、大风等极端天气预警信息。"
+    source = "mock"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "城市名"},
+        },
+        "required": ["city"],
+    }
+
+    def __init__(self, world: Optional[MockWorld] = None) -> None:
+        super().__init__()
+        self._world = world or MockWorld()
+
+    def _run(self, city: str = "") -> Dict[str, Any]:
+        return {
+            "city": city or CITY_MOCK,
+            "warnings": [],  # Mock 默认无预警
+            "has_warning": False,
+        }
+
+
+class WeatherWarningToolLive(WeatherWarningTool):
+    """和风天气预警 API 实现版。"""
+
+    source = "live"
+
+    def __init__(self, client: Any) -> None:
+        super().__init__()
+        self._client = client
+
+    def _run(self, city: str = "") -> Dict[str, Any]:
+        from urllib.parse import urlencode
+
+        city = city or CITY_MOCK
+        loc_id = self._client.get_location_id(city)
+        url = f"/v7/warning/now?{urlencode({'location': loc_id})}"
+        resp = self._client.get(url)
+        warnings = resp.get("warning", [])
+        return {
+            "city": city,
+            "warnings": warnings,
+            "has_warning": len(warnings) > 0,
+        }
+
+
+class AirQualityTool(BaseTool):
+    """空气质量 Tool：查询城市当前 AQI、PM2.5、PM10 等。
+
+    Mock 版：返回固定"优"数据。
+    Live 版：调 /v7/air/now 获取实时空气质量。
+    """
+
+    name = "air_quality"
+    description = "查询城市空气质量：AQI 指数、PM2.5、PM10、主要污染物。"
+    source = "mock"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "城市名"},
+        },
+        "required": ["city"],
+    }
+
+    def __init__(self, world: Optional[MockWorld] = None) -> None:
+        super().__init__()
+        self._world = world or MockWorld()
+
+    def _run(self, city: str = "") -> Dict[str, Any]:
+        return {
+            "city": city or CITY_MOCK,
+            "aqi": 35,
+            "category": "优",
+            "pm25": 15.0,
+            "pm10": 30.0,
+            "no2": 20.0,
+            "so2": 5.0,
+            "co": 0.5,
+            "o3": 60.0,
+        }
+
+
+class AirQualityToolLive(AirQualityTool):
+    """和风空气质量 API 实现版。"""
+
+    source = "live"
+
+    def __init__(self, client: Any) -> None:
+        super().__init__()
+        self._client = client
+
+    def _run(self, city: str = "") -> Dict[str, Any]:
+        from urllib.parse import urlencode
+
+        city = city or CITY_MOCK
+        loc_id = self._client.get_location_id(city)
+        url = f"/v7/air/now?{urlencode({'location': loc_id})}"
+        resp = self._client.get(url)
+        aqi_list = resp.get("now", [])
+        if not aqi_list:
+            return {
+                "city": city,
+                "aqi": 0,
+                "category": "未知",
+                "pm25": 0.0,
+                "pm10": 0.0,
+                "no2": 0.0,
+                "so2": 0.0,
+                "co": 0.0,
+                "o3": 0.0,
+            }
+        aqi_data = aqi_list[0] if isinstance(aqi_list, list) else aqi_list
+        return {
+            "city": city,
+            "aqi": int(aqi_data.get("aqi", 0)),
+            "category": aqi_data.get("category", "未知"),
+            "pm25": float(aqi_data.get("pm2p5", 0)),
+            "pm10": float(aqi_data.get("pm10", 0)),
+            "no2": float(aqi_data.get("no2", 0)),
+            "so2": float(aqi_data.get("so2", 0)),
+            "co": float(aqi_data.get("co", 0)),
+            "o3": float(aqi_data.get("o3", 0)),
+        }
+
+
+class WeatherForecastTool(BaseTool):
+    """逐小时天气预报 Tool：查询未来 24 小时天气变化趋势。
+
+    Mock 版：返回固定"全天晴"数据。
+    Live 版：调 /v7/weather/24h 获取逐小时预报。
+    """
+
+    name = "weather_forecast"
+    description = "查询城市未来24小时逐小时天气预报：气温、天气状况、降雨概率变化趋势。"
+    source = "mock"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "城市名"},
+            "hours": {"type": "integer", "description": "返回小时数（默认24）"},
+        },
+        "required": ["city"],
+    }
+
+    def __init__(self, world: Optional[MockWorld] = None) -> None:
+        super().__init__()
+        self._world = world or MockWorld()
+
+    def _run(self, city: str = "", hours: int = 24) -> Dict[str, Any]:
+        w = self._world.get_weather()
+        from datetime import datetime, timedelta
+        hourly = []
+        now = datetime.now()
+        for i in range(min(hours, 24)):
+            t = now + timedelta(hours=i)
+            hourly.append({
+                "time": t.strftime("%H:%M"),
+                "temp": w.temperature_c,
+                "condition": w.condition,
+                "rain_probability": w.rain_probability,
+            })
+        return {
+            "city": city or CITY_MOCK,
+            "hours": hourly,
+            "summary": f"未来{len(hourly)}小时{w.condition}",
+        }
+
+
+class WeatherForecastToolLive(WeatherForecastTool):
+    """和风逐小时天气预报 API 实现版。"""
+
+    source = "live"
+
+    def __init__(self, client: Any) -> None:
+        super().__init__()
+        self._client = client
+
+    def _run(self, city: str = "", hours: int = 24) -> Dict[str, Any]:
+        from urllib.parse import urlencode
+
+        city = city or CITY_MOCK
+        loc_id = self._client.get_location_id(city)
+        url = f"/v7/weather/24h?{urlencode({'location': loc_id})}"
+        resp = self._client.get(url)
+        hourly_raw = resp.get("hourly", [])
+        hourly = []
+        for h in hourly_raw[:hours]:
+            icon = h.get("iconCode", "999")
+            condition = _QWEATHER_ICON_TEXT.get(icon, h.get("text", "未知"))
+            temp = float(h.get("temp", 0))
+            precip = float(h.get("precip", "0"))
+            rain_prob = 80 if precip > 0 else 10
+            hourly.append({
+                "time": h.get("fxTime", "")[-5:],  # 取 HH:MM
+                "temp": temp,
+                "condition": condition,
+                "rain_probability": rain_prob,
+            })
+        # 生成摘要
+        rain_hours = sum(1 for h in hourly if h["rain_probability"] > 50)
+        if rain_hours == 0:
+            summary = f"未来{len(hourly)}小时无降雨"
+        else:
+            summary = f"未来{len(hourly)}小时中有{rain_hours}小时可能降雨"
+        return {
+            "city": city,
+            "hours": hourly,
+            "summary": summary,
+        }
