@@ -30,7 +30,7 @@
 4. `execution/execution_agent.py` — 持续监控执行体（影响阈值判定 + DecisionRequest 组装）
 5. `booking/booking_manager.py` — 预约状态机 + ActionQueue 契约 + 付款人工提醒
 6. `itinerary/` — `.ics` 日历 + Markdown 行程单导出
-7. `tests/` — 工具 / 调度 / 执行 / 导出 单元测试（96 个测试全部通过）
+7. `tests/` — 工具 / 调度 / 执行 / 导出 单元测试（101 个测试全部通过）
 8. `demo/demo_scenario.py` — 比赛 Demo 剧情闭环脚本（混合模式：真实 API + 模拟突发事件）
 9. `tools/qweather_client.py` — QWeatherClient 共享客户端（API KEY 认证 + Location ID/坐标缓存）
 10. `tools/amap_client.py` — AmapClient 共享客户端（地理编码缓存 + 路线规划）

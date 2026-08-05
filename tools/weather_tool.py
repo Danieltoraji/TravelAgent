@@ -47,6 +47,7 @@ class WeatherTool(BaseTool):
             "wind_kmh": w.wind_kmh,
             "humidity": 50,                       # Mock 默认湿度
             "visibility_km": 10,                  # Mock 默认能见度
+            "wind_dir": "",                       # Mock 无风向
         }
 
 
@@ -115,6 +116,7 @@ class WeatherToolLive(WeatherTool):
         feels_like = float(now_data.get("feelsLike", temp))
         wind_scale = now_data.get("windScale", "0")
         wind_kmh = _WIND_SCALE_KMH.get(wind_scale, 0)
+        wind_dir = now_data.get("windDir", "")
         precip = float(now_data.get("precip", "0"))
         humidity = int(now_data.get("humidity", 0))
         visibility = float(now_data.get("vis", 10))
@@ -132,6 +134,7 @@ class WeatherToolLive(WeatherTool):
             "wind_kmh": wind_kmh,
             "humidity": humidity,
             "visibility_km": visibility,
+            "wind_dir": wind_dir,
         }
 
         # Demo 突发事件 override：MockWorld.set_weather() 的字段叠加到 API 数据上

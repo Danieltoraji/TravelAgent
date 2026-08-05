@@ -296,6 +296,12 @@ class AmapClient:
         opentime_today = business.get("opentime_today", "") or ""
         opentime_week = business.get("opentime_week", "") or ""
 
+        # alias: v5 在 business 内（POI 别名，如 "紫禁城"）
+        alias = business.get("alias", "") or ""
+
+        # business_area: v5 在 business 内（POI 所属商圈）
+        business_area = business.get("business_area", "") or ""
+
         return {
             "name": poi.get("name", ""),
             "lat": lat,
@@ -309,6 +315,8 @@ class AmapClient:
             "distance": _safe_float(poi.get("distance", 0)),
             "opentime_today": opentime_today,
             "opentime_week": opentime_week,
+            "alias": alias,
+            "business_area": business_area,
         }
 
     @staticmethod
@@ -322,6 +330,7 @@ class AmapClient:
         return {
             "distance": int(first.get("distance", 0)),
             "duration": int(first.get("duration", 0)),
+            "cost": int(first.get("cost", 0)),
         }
 
     @staticmethod
@@ -335,6 +344,7 @@ class AmapClient:
         return {
             "distance": int(first.get("distance", 0)),
             "duration": int(first.get("duration", 0)),
+            "tolls": int(first.get("tolls", 0)),
         }
 
     @staticmethod

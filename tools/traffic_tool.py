@@ -55,6 +55,7 @@ class TrafficTool(BaseTool):
             "congestion": "畅通",
             "delay_min": 0,
             "note": "地铁1号线运行正常",
+            "distance_km": 3.5,
         }
 
 
@@ -135,4 +136,5 @@ class TrafficToolLive(TrafficTool):
             "congestion": congestion,
             "delay_min": delay_min,
             "note": note,
+            "distance_km": round(distance_km, 2),
         }

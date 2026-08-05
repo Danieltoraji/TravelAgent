@@ -595,6 +595,10 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 | `ticket_required` | bool | 是否需要预约 | MockWorld | MockWorld（无公开 API） |
 | `open_hours` | str | 营业时间 | MockWorld | v5 API `business.opentime_today`，空时 fallback MockWorld |
 | `price` | float | 票价 | MockWorld | MockWorld（高德无此字段） |
+| `rating` | float | 景点评分 | 固定 `0` | v5 API `business.rating` |
+| `address` | str | 地址 | 固定 `""` | v5 API `address` |
+| `tel` | str | 联系电话 | 固定 `""` | v5 API `business.tel` |
+| `open_hours_week` | str | 周营业时间 | 固定 `""` | v5 API `business.opentime_week` |
 
 #### Live 版调用链路
 
@@ -732,6 +736,10 @@ TrafficToolLive._run(origin="故宫", destination="天坛", mode="taxi")
 | `distance_km` | float | 距离 | 固定值 | `pois[].distance / 1000`（周边搜索） |
 | `cuisine` | str | 菜系 | 固定值 | POI `type` 字段第二段（如"餐饮服务;中餐厅"→"中餐厅"） |
 | `queue_min` | int | 排队时间 | 固定值 | 固定 `0`（无公开 API） |
+| `open_hours` | str | 今日营业时间 | 固定值 | v5 API `business.opentime_today` |
+| `specialty` | str | 特色菜 | 固定值 | v5 API `business.tag`（如 "烤鸭,京菜"） |
+| `address` | str | 餐厅地址 | 固定值 | v5 API `address` |
+| `tel` | str | 联系电话 | 固定值 | v5 API `business.tel` |
 
 #### Live 版调用链路
 
@@ -908,6 +916,7 @@ https://abc1234xyz.def.qweatherapi.com/v7/weather/now?location=101010100
 | `now.text` / `now.icon` | `condition` | icon → `_QWEATHER_ICON_TEXT` 映射，fallback 到 text |
 | `now.feelsLike` | `feels_like` | `float()` |
 | `now.windScale` | `wind_kmh` | → `_WIND_SCALE_KMH` 蒲福风级换算 |
+| `now.windDir` | `wind_dir` | 直接透传（风向，如 "东北"） |
 | `now.humidity` | `humidity` | `int()` |
 | `now.precip` | `rain_probability` | `> 0` → 80，否则 10 |
 | `now.vis` | `visibility_km` | `float()` |
@@ -1042,9 +1051,9 @@ https://restapi.amap.com/v5/place/text?keywords=故宫&key=your_key&show_fields=
 | `pois[].business.tel` | `tel` | 直接透传，fallback v3 顶层 `tel` |
 | `pois[].business.opentime_today` | `opentime_today` | 直接透传（v5 新增，v3 无此字段） |
 | `pois[].business.opentime_week` | `opentime_week` | 直接透传（v5 新增，v3 无此字段） |
+| `pois[].business.alias` | `alias` | 直接透传（POI 别名，如 "紫禁城"） |
+| `pois[].business.business_area` | `business_area` | 直接透传（POI 所属商圈） |
 | `pois[].distance` | `distance` | `_safe_float()`（仅周边搜索返回） |
-| — | `open` | 固定 `""`（高德无营业时间字段） |
-| — | `price` | 固定 `0.0`（高德无票价字段） |
 
 #### 路线规划 `/v3/direction/*`
 
@@ -1054,13 +1063,15 @@ https://restapi.amap.com/v5/place/text?keywords=故宫&key=your_key&show_fields=
 |----------|-------------|------|
 | `route.transits[0].distance` 或 `route.paths[0].distance` | `distance_km` | `int() / 1000`（米→公里） |
 | `route.transits[0].duration` 或 `route.paths[0].duration` | `duration_min` | `int() / 60`（秒→分钟） |
+| `route.transits[0].cost` | `fare` | `float()`（公交票价，仅 transit 模式） |
+| `route.paths[0].tolls` | `fare` | `float()`（驾车过路费，仅 driving 模式） |
 | — | `transit` | mode → 中文（公交/驾车/骑行/步行） |
-| — | `fare` | 固定 `0.0`（高德无票价字段） |
 
 **TrafficToolLive 交通状态**：
 
 | API 字段 | 工具返回字段 | 转换 |
 |----------|-------------|------|
+| `route.transits[0].distance` 或 `route.paths[0].distance` | `distance_km` | `round(distance / 1000, 2)`（米→公里） |
 | `route.transits[0].distance` 或 `route.paths[0].distance` | `note` | `距离 {distance/1000:.1f}km` |
 | `route.transits[0].duration` 或 `route.paths[0].duration` | `duration_min` | `round(duration / 60)`（秒→分钟） |
 | — | `congestion` | 驾车模式按速度推断（< 15km/h 拥堵 / < 30km/h 缓行 / 否则畅通） |
@@ -1068,8 +1079,8 @@ https://restapi.amap.com/v5/place/text?keywords=故宫&key=your_key&show_fields=
 | — | `note` | `距离 {x}km`，拥堵时追加 `，{congestion}延误约 {delay_min} 分钟` |
 
 > **注意**：`MapToolLive` 和 `TrafficToolLive` 都调用高德路线规划 API，但返回结构不同：
-> - `MapToolLive` 返回 `distance_km` / `duration_min` / `transit` / `fare`（路线信息）
-> - `TrafficToolLive` 返回 `duration_min` / `congestion` / `delay_min` / `note`（交通状态，含拥堵推断）
+> - `MapToolLive` 返回 `distance_km` / `duration_min` / `transit` / `fare`（路线信息，fare 从公交 cost 或驾车 tolls 填充）
+> - `TrafficToolLive` 返回 `duration_min` / `congestion` / `delay_min` / `note` / `distance_km`（交通状态，含拥堵推断）
 
 ### 错误处理
 

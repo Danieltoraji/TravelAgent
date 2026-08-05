@@ -44,6 +44,10 @@ class ScenicTool(BaseTool):
             "ticket_required": info["ticket"],
             "open_hours": info["open"],
             "price": info["price"],
+            "rating": 0,
+            "address": "",
+            "tel": "",
+            "open_hours_week": "",
         }
 
 
@@ -101,4 +105,8 @@ class ScenicToolLive(ScenicTool):
             "ticket_required": ticket_required,
             "open_hours": open_hours,    # v5 API opentime_today，fallback MockWorld
             "price": price,
+            "rating": poi.get("rating", 0),
+            "address": poi.get("address", ""),
+            "tel": poi.get("tel", ""),
+            "open_hours_week": poi.get("opentime_week", ""),
         }

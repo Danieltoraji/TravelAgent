@@ -32,9 +32,11 @@ class FoodTool(BaseTool):
         # Mock：固定餐厅列表；真实接入点评/美团后替换
         return [
             {"name": "全聚德(前门店)", "rating": 4.6, "price_per_person": 180,
-             "open": True, "distance_km": 0.8, "cuisine": "京菜", "queue_min": 40},
+             "open": True, "distance_km": 0.8, "cuisine": "京菜", "queue_min": 40,
+             "open_hours": "10:00-22:00", "specialty": "烤鸭", "address": "前门大街", "tel": "010-65112418"},
             {"name": "护国寺小吃", "rating": 4.3, "price_per_person": 45,
-             "open": True, "distance_km": 0.5, "cuisine": "小吃", "queue_min": 10},
+             "open": True, "distance_km": 0.5, "cuisine": "小吃", "queue_min": 10,
+             "open_hours": "06:00-20:00", "specialty": "", "address": "护国寺大街", "tel": ""},
         ]
 
 
@@ -105,6 +107,10 @@ class FoodToolLive(FoodTool):
                 "distance_km": round(distance_km, 2),
                 "cuisine": cuisine,
                 "queue_min": 0,              # 无公开 API
+                "open_hours": poi.get("opentime_today", ""),
+                "specialty": poi.get("tag", ""),
+                "address": poi.get("address", ""),
+                "tel": poi.get("tel", ""),
             })
 
         logger.info(

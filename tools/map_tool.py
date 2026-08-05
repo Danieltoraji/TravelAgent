@@ -70,6 +70,9 @@ class MapTool(BaseTool):
                 "lng": info["lng"],
                 "open": info["open"],
                 "price": info["price"],
+                "rating": 0,
+                "tel": "",
+                "type": "",
             })
         return results
 
@@ -118,9 +121,12 @@ class MapToolLive(MapTool):
                 "name": p["name"],
                 "lat": p["lat"],
                 "lng": p["lng"],
-                "open": "",       # 高德无营业时间字段，留空
-                "price": 0.0,     # 高德无门票字段，默认 0
+                "open": p.get("opentime_today", ""),
+                "price": p.get("cost", 0),
                 "address": p.get("address", ""),
+                "rating": p.get("rating", 0),
+                "tel": p.get("tel", ""),
+                "type": p.get("type", ""),
             }
             for p in pois
         ]
@@ -140,11 +146,19 @@ class MapToolLive(MapTool):
         distance_m = route_data["distance"]
         duration_s = route_data["duration"]
 
+        # 票价：公交取 cost，驾车取 tolls，骑行/步行无票价
+        if mode == "transit":
+            fare = float(route_data.get("cost", 0))
+        elif mode == "driving":
+            fare = float(route_data.get("tolls", 0))
+        else:
+            fare = 0.0
+
         return {
             "from": origin,
             "to": destination,
             "distance_km": round(distance_m / 1000, 2),    # 米 → 公里
             "duration_min": round(duration_s / 60),          # 秒 → 分钟
             "transit": _MODE_TEXT.get(mode, mode),
-            "fare": 0.0,                                     # 高德无票价字段，默认 0
+            "fare": fare,
         }

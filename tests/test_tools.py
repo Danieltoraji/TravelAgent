@@ -120,7 +120,7 @@ class TestWeatherLive(unittest.TestCase):
         client.get.side_effect = [
             {"code": "200", "now": {
                 "temp": "31", "text": "晴", "icon": "100",
-                "windScale": "3", "humidity": "45", "precip": "0.0",
+                "windScale": "3", "windDir": "东北", "humidity": "45", "precip": "0.0",
                 "feelsLike": "33", "vis": "15",
             }},
             # _fetch_uv_index 返回
@@ -135,6 +135,7 @@ class TestWeatherLive(unittest.TestCase):
         self.assertEqual(result["temperature_c"], 31.0)
         self.assertEqual(result["feels_like"], 33.0)
         self.assertEqual(result["wind_kmh"], 17)  # windScale 3 → 17 km/h
+        self.assertEqual(result["wind_dir"], "东北")
         self.assertEqual(result["uv_index"], 7)
         self.assertEqual(result["rain_probability"], 10)  # precip=0 → 10%
         self.assertEqual(result["humidity"], 45)
@@ -390,6 +391,9 @@ class TestMapLive(unittest.TestCase):
                 "address": "北京市东城区景山前街4号",
                 "tel": "010-85007421",
                 "type": "风景名胜",
+                "rating": 4.8,
+                "cost": 60.0,
+                "opentime_today": "08:30-17:00",
             },
             {
                 "name": "故宫北门",
@@ -398,6 +402,9 @@ class TestMapLive(unittest.TestCase):
                 "address": "北京市东城区景山前街",
                 "tel": "",
                 "type": "风景名胜",
+                "rating": 0,
+                "cost": 0,
+                "opentime_today": "",
             },
         ]
 
@@ -409,8 +416,11 @@ class TestMapLive(unittest.TestCase):
         self.assertEqual(result[0]["lat"], 39.916)
         self.assertEqual(result[0]["lng"], 116.397)
         self.assertEqual(result[0]["address"], "北京市东城区景山前街4号")
-        self.assertEqual(result[0]["open"], "")    # 高德无此字段
-        self.assertEqual(result[0]["price"], 0.0)  # 高德无此字段
+        self.assertEqual(result[0]["open"], "08:30-17:00")  # 从 opentime_today 填充
+        self.assertEqual(result[0]["price"], 60.0)          # 从 cost 填充
+        self.assertEqual(result[0]["rating"], 4.8)
+        self.assertEqual(result[0]["tel"], "010-85007421")
+        self.assertEqual(result[0]["type"], "风景名胜")
 
     def test_live_route_transit(self):
         """测试公交路线规划字段映射。"""
@@ -422,6 +432,7 @@ class TestMapLive(unittest.TestCase):
         client.get_route.return_value = {
             "distance": 3500,   # 米
             "duration": 1500,   # 秒
+            "cost": 6,          # 公交票价 6 元
         }
 
         tool = MapToolLive(client)
@@ -432,7 +443,7 @@ class TestMapLive(unittest.TestCase):
         self.assertEqual(result["distance_km"], 3.5)    # 3500m → 3.5km
         self.assertEqual(result["duration_min"], 25)      # 1500s → 25min
         self.assertEqual(result["transit"], "公交")
-        self.assertEqual(result["fare"], 0.0)
+        self.assertEqual(result["fare"], 6.0)             # 从 API cost 填充
 
     def test_live_route_driving(self):
         """测试驾车路线规划。"""
@@ -554,6 +565,7 @@ class TestTrafficLive(unittest.TestCase):
         self.assertEqual(result["duration_min"], 25)      # 1500s → 25min
         self.assertEqual(result["congestion"], "畅通")    # 公交不推断拥堵
         self.assertEqual(result["delay_min"], 0)
+        self.assertEqual(result["distance_km"], 3.5)    # 3500m → 3.5km
         self.assertIn("3.5km", result["note"])
 
     def test_live_taxi_congestion_smooth(self):
@@ -576,6 +588,7 @@ class TestTrafficLive(unittest.TestCase):
         self.assertEqual(result["duration_min"], 10)
         self.assertEqual(result["congestion"], "畅通")
         self.assertEqual(result["delay_min"], 0)
+        self.assertEqual(result["distance_km"], 10.0)  # 10000m → 10.0km
 
     def test_live_taxi_congestion_heavy(self):
         """测试打车模式拥堵路况（速度低）。"""
@@ -710,6 +723,10 @@ class TestScenicLive(unittest.TestCase):
         self.assertTrue(result["ticket_required"])
         self.assertEqual(result["price"], 60.0)     # 从 MockWorld 取
         self.assertEqual(result["open_hours"], "08:30-17:00")  # v5 API opentime_today
+        self.assertEqual(result["rating"], 4.8)                    # v5 API rating
+        self.assertEqual(result["address"], "北京市东城区景山前街4号")
+        self.assertEqual(result["tel"], "010-85007421")
+        self.assertEqual(result["open_hours_week"], "周一至周日:08:30-17:00")
 
     def test_live_scenic_unknown_place_uses_defaults(self):
         """测试未知景点使用默认值。"""
@@ -739,6 +756,10 @@ class TestScenicLive(unittest.TestCase):
         self.assertTrue(result["ticket_required"])  # 默认值
         self.assertEqual(result["price"], 0.0)       # 默认值
         self.assertEqual(result["open_hours"], "")  # API 无数据，MockWorld 也无
+        self.assertEqual(result["rating"], 0)        # 默认值
+        self.assertEqual(result["address"], "某地址")
+        self.assertEqual(result["tel"], "")
+        self.assertEqual(result["open_hours_week"], "")
 
     def test_live_scenic_opentime_priority_over_mockworld(self):
         """测试 v5 API opentime_today 优先于 MockWorld 的 open 字段。"""
@@ -872,6 +893,10 @@ class TestFoodLive(unittest.TestCase):
         self.assertEqual(result[0]["distance_km"], 0.0)  # 无 near，无距离
         self.assertEqual(result[0]["cuisine"], "中餐厅")
         self.assertEqual(result[0]["queue_min"], 0)
+        self.assertEqual(result[0]["open_hours"], "10:00-22:00")
+        self.assertEqual(result[0]["specialty"], "烤鸭,京菜")
+        self.assertEqual(result[0]["address"], "北京市东城区前门大街30号")
+        self.assertEqual(result[0]["tel"], "010-65112418")
 
     def test_live_food_with_near(self):
         """测试有位置参数时的周边餐饮搜索。"""
@@ -903,6 +928,8 @@ class TestFoodLive(unittest.TestCase):
         self.assertEqual(result[0]["price_per_person"], 120.0)
         self.assertEqual(result[0]["distance_km"], 0.5)  # 500m → 0.5km
         self.assertEqual(result[0]["cuisine"], "中餐厅")
+        self.assertEqual(result[0]["open_hours"], "10:00-22:00")
+        self.assertEqual(result[0]["tel"], "010-12345678")
 
     def test_live_food_geocode_failure_raises(self):
         """测试地理编码失败时抛出 ValueError。"""
@@ -1140,6 +1167,97 @@ class TestMockWorldOverrides(unittest.TestCase):
         world.clear_traffic_overrides()
 
         self.assertIsNone(world.get_traffic_override("北京", "故宫"))
+
+
+class TestAmapClientNormalizePoi(unittest.TestCase):
+    """AmapClient._normalize_poi() 字段提取测试。"""
+
+    def test_normalize_poi_extracts_alias(self):
+        """测试 alias（别名）字段正确提取。"""
+        poi = {
+            "name": "故宫博物院",
+            "location": "116.397,39.916",
+            "address": "北京市东城区景山前街4号",
+            "type": "风景名胜;风景名胜相关",
+            "business": {
+                "rating": "4.8",
+                "cost": "60",
+                "tel": "010-85007421",
+                "tag": "故宫,紫禁城",
+                "opentime_today": "08:30-17:00",
+                "opentime_week": "周一至周日:08:30-17:00",
+                "alias": "紫禁城",
+                "business_area": "天安门",
+            },
+        }
+        result = AmapClient._normalize_poi(poi)
+        self.assertEqual(result["alias"], "紫禁城")
+
+    def test_normalize_poi_extracts_business_area(self):
+        """测试 business_area（商圈）字段正确提取。"""
+        poi = {
+            "name": "某餐厅",
+            "location": "116.400,39.920",
+            "address": "某地址",
+            "type": "餐饮服务;中餐厅",
+            "business": {
+                "rating": "4.5",
+                "cost": "120",
+                "tel": "010-12345678",
+                "tag": "烤鸭",
+                "opentime_today": "10:00-22:00",
+                "opentime_week": "",
+                "alias": "",
+                "business_area": "王府井",
+            },
+        }
+        result = AmapClient._normalize_poi(poi)
+        self.assertEqual(result["business_area"], "王府井")
+
+    def test_normalize_poi_alias_empty_when_missing(self):
+        """测试 alias 为空时不报错。"""
+        poi = {
+            "name": "某地点",
+            "location": "116.0,40.0",
+            "address": "",
+            "type": "",
+            "business": {},
+        }
+        result = AmapClient._normalize_poi(poi)
+        self.assertEqual(result["alias"], "")
+        self.assertEqual(result["business_area"], "")
+
+
+class TestAmapClientRouteExtractors(unittest.TestCase):
+    """AmapClient 路线提取方法测试。"""
+
+    def test_extract_transit_route_cost(self):
+        """测试公交路线提取包含 cost（票价）。"""
+        resp = {
+            "route": {
+                "transits": [
+                    {"distance": "3500", "duration": "1500", "cost": "6"},
+                ],
+            },
+        }
+        result = AmapClient._extract_transit_route(resp)
+        self.assertEqual(result["distance"], 3500)
+        self.assertEqual(result["duration"], 1500)
+        self.assertEqual(result["cost"], 6)
+
+    def test_extract_driving_route_tolls(self):
+        """测试驾车路线提取包含 tolls（过路费）。"""
+        resp = {
+            "route": {
+                "paths": [
+                    {"distance": "4200", "duration": "900", "tolls": "15"},
+                ],
+            },
+        }
+        result = AmapClient._extract_driving_route(resp)
+        self.assertEqual(result["distance"], 4200)
+        self.assertEqual(result["duration"], 900)
+        self.assertEqual(result["tolls"], 15)
 
 
 if __name__ == "__main__":

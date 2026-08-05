@@ -60,7 +60,9 @@ def _fmt_weather(data: Dict[str, Any]) -> str:
     rain = data.get("rain_probability", 0)
     uv = data.get("uv_index", 0)
     wind = data.get("wind_kmh", 0)
-    return f"{cond} {temp}°C | 降雨概率 {rain}% | UV {uv} | 风速 {wind}km/h"
+    wind_dir = data.get("wind_dir", "")
+    wind_str = f"{wind_dir}风 {wind}km/h" if wind_dir else f"{wind}km/h"
+    return f"{cond} {temp}°C | 降雨概率 {rain}% | UV {uv} | {wind_str}"
 
 
 def _fmt_traffic(data: Dict[str, Any]) -> str:
@@ -70,8 +72,9 @@ def _fmt_traffic(data: Dict[str, Any]) -> str:
     delay = data.get("delay_min", 0)
     mode = data.get("mode", "?")
     note = data.get("note", "")
+    dist = data.get("distance_km", 0)
     delay_str = f" ⚠延误 {delay}min" if delay > 0 else ""
-    return f"{mode} {dur}min | {cong}{delay_str} | {note}"
+    return f"{mode} {dur}min | {dist}km | {cong}{delay_str} | {note}"
 
 
 def _fmt_scenic(data: Dict[str, Any]) -> str:
@@ -80,9 +83,11 @@ def _fmt_scenic(data: Dict[str, Any]) -> str:
     queue = data.get("queue_min", 0)
     hours = data.get("open_hours", "未知")
     price = data.get("price", 0)
+    rating = data.get("rating", 0)
     ticket = "需预约" if data.get("ticket_required") else "免预约"
     queue_str = f"排队 {queue}min" if queue > 0 else "无需排队"
-    return f"{place} | {queue_str} | {ticket} ¥{price} | 营业 {hours}"
+    rating_str = f" ⭐{rating}" if rating > 0 else ""
+    return f"{place}{rating_str} | {queue_str} | {ticket} ¥{price} | 营业 {hours}"
 
 
 def _fmt_food(results: List[Dict[str, Any]]) -> str:
@@ -96,7 +101,14 @@ def _fmt_food(results: List[Dict[str, Any]]) -> str:
         price = r.get("price_per_person", 0)
         cuisine = r.get("cuisine", "")
         dist = r.get("distance_km", 0)
-        lines.append(f"  🍽️  {name} | ⭐{rating} | ¥{price}/人 | {cuisine} | {dist}km")
+        open_hours = r.get("open_hours", "")
+        specialty = r.get("specialty", "")
+        parts = [f"  🍽️  {name} | ⭐{rating} | ¥{price}/人 | {cuisine} | {dist}km"]
+        if open_hours:
+            parts.append(f"营业 {open_hours}")
+        if specialty:
+            parts.append(f"特色 {specialty}")
+        lines.append(" | ".join(parts))
     return "\n".join(lines)
 
 
