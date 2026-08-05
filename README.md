@@ -315,14 +315,15 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 2. `tools/` —— 统一工具抽象层 + 6 个领域 Tool（Mock，含剧情模拟）
 3. `monitor/monitor_scheduler.py` —— asyncio 定时监控调度器
 4. `execution/execution_agent.py` —— 持续监控执行体（影响阈值判定 + 决策请求组装）
-5. `booking/booking_manager.py` —— 预约状态机（prepare→confirm→mark_confirmed 完整闭环）+ scenic 自动填充 + ActionQueue 契约 + 付款人工提醒
+5. `booking/booking_manager.py` —— 预约状态机（prepare→confirm→mark_confirmed 完整闭环）+ scenic/food 自动填充 + ActionQueue 契约 + 付款人工提醒
 6. `itinerary/` —— `.ics` 日历 + Markdown 行程单导出
-7. `tests/` —— 工具 / 预约 / 调度 / 执行 / 导出 单元测试（125 个测试全部通过）
+7. `tests/` —— 工具 / 预约 / 调度 / 执行 / 导出 / 服务层 单元测试（174 个测试全部通过）
 8. `demo/demo_scenario.py` —— 比赛 Demo 剧情闭环脚本（混合模式：真实 API + 模拟突发事件）
 9. `tools/qweather_client.py` —— QWeatherClient 共享客户端（API KEY 认证 + Location ID/坐标缓存）
 10. `tools/amap_client.py` —— AmapClient 共享客户端（地理编码缓存 + 路线规划）
 11. 天气 Live 版 4 个（实况/预警/空气质量/预报）+ 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已全部接入真实 API
 12. `tool_introduction.md` — 完整工具层接口文档（含 API 端点映射、字段对照、v3→v5 升级说明）
+13. `app/service.py` — FastAPI 服务层（17 个端点，供 C 的 Web 前端调用）+ ExecutionAgent ↔ BookingManager 自动预约集成
 
 ### 7.2 待办（按优先级）
 
@@ -346,7 +347,7 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 
 ```bash
 # 单元测试（核心零依赖，标准库即可）
-python -m unittest discover -s tests -v
+python -m pytest tests/ -v
 
 # Demo 剧情脚本（完整闭环演示）
 python -m demo.demo_scenario
@@ -354,9 +355,27 @@ python -m demo.demo_scenario
 # 可选：FastAPI 服务层（供 C 的 Web 前端）
 pip install -r requirements.txt
 uvicorn app.service:app --reload --port 8000
+# Swagger UI: http://localhost:8000/docs
+# API 文档: app/API.md
 ```
 
 > 接入真实天气 API：复制 `config/local_settings.example.py` 为 `config/local_settings.py`，填入和风天气 Key 与 Host，删除该文件则回退 Mock 模式。
+
+### C 接入指南
+
+服务层提供完整 REST API，C 的 Web 前端可通过 HTTP 调用所有 B 侧功能：
+
+| 端点分类 | 说明 |
+|----------|------|
+| `/timeline` | 行程时间轴 GET/POST |
+| `/booking/*` | 预约管理（prepare/confirm/cancel/payment/query） |
+| `/actions/*` | Action Queue（列表/approve/reject） |
+| `/events` | 监控事件历史（支持增量查询） |
+| `/execution/*` | 手动触发轮询/到达前检查（Demo/调试） |
+| `/export/*` | 导出 .ics / Markdown |
+| `/tools/*` | 工具调用 |
+
+详见 **[app/API.md](app/API.md)** — 包含完整端点说明、请求/响应示例和典型工作流。
 
 ---
 
@@ -366,7 +385,7 @@ uvicorn app.service:app --reload --port 8000
 2. **零第三方依赖**：核心代码纯标准库即可跑通测试与 Demo；fastapi 只是可选服务层。
 3. **dataclass 契约**：未来可平滑迁移 pydantic（字段名不变）。
 4. **Mock 优先**：真实 API 通过环境变量注入 Key，切换时调用方零改动。
-5. **可注入 hook**：`decision_hook`（A）、`on_event`（C）、`now_fn`（模拟时钟），保证可测试性与并行开发。
+5. **可注入 hook**：`decision_hook`（A）、`on_event`（C）、`now_fn`（模拟时钟）、`booking_manager`（自动预约），保证可测试性与并行开发。
 6. **可解释决策**：`ReplanRequest.diff_summary` 记录每次修改点。
 7. **安全边界**：付款永远 `PermissionLevel.MANUAL`，预约需用户确认——Agent 不代付。
 

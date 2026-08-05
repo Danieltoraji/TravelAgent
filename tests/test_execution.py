@@ -147,5 +147,139 @@ class TestReplanLoopback(unittest.TestCase):
         self.assertIs(agent.timeline, original_timeline)  # 未替换
 
 
+class TestAutoBooking(unittest.TestCase):
+    """自动预约集成测试：ExecutionAgent ↔ BookingManager。"""
+
+    def _make_timeline_with_ticket(self) -> TripTimeline:
+        """故宫 ticket_required=True，景山 ticket_required=False。"""
+        return TripTimeline(
+            city="北京",
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 1),
+            days=[
+                DayPlan(day=1, date=date(2026, 8, 1), items=[
+                    Place(name="故宫", category="scenic", arrival="09:00",
+                          ticket_required=True, price=60.0),
+                    Place(name="景山公园", category="scenic", arrival="14:00",
+                          ticket_required=False),
+                    Place(name="全聚德(前门店)", category="food", arrival="18:00"),
+                ]),
+            ],
+        )
+
+    def _make_agent_with_bm(self, timeline: TripTimeline):
+        from booking.booking_manager import BookingManager
+        from tools import build_registry
+        from tools.mock_data import MockWorld
+        world = MockWorld()
+        registry = build_registry(world)
+        bm = BookingManager(registry)
+        agent = ExecutionAgent(
+            timeline=timeline,
+            registry=registry,
+            booking_manager=bm,
+        )
+        return agent, bm
+
+    def test_auto_book_scenic_with_ticket(self) -> None:
+        """ticket_required=True 的景点 → 自动预约，ActionItem 产出。"""
+        agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
+        # 故宫 09:00 到达，提前 20min = 08:40；08:45 触发
+        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        records = bm.records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].place, "故宫")
+        self.assertEqual(records[0].booking_type, "scenic")
+        self.assertIn("故宫", agent._booked_places)
+        # ActionItem 应已产出
+        actions = bm.actions()
+        self.assertTrue(any("故宫" in a.title for a in actions))
+
+    def test_auto_book_scenic_without_ticket(self) -> None:
+        """ticket_required=False 的景点 → 不预约。"""
+        agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
+        # 景山 14:00 到达，提前 20min = 13:40；13:45 触发
+        agent.check_lookahead(datetime(2026, 8, 1, 13, 45))
+        # 景山不应被预约（ticket_required=False）
+        records = bm.records()
+        places = [r.place for r in records]
+        self.assertNotIn("景山公园", places)
+        self.assertNotIn("景山公园", agent._booked_places)
+
+    def test_auto_book_food(self) -> None:
+        """餐厅 → 自动预约（food 类型）。"""
+        agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
+        # 先触发故宫（08:45），再触发全聚德（17:35）
+        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        agent.check_lookahead(datetime(2026, 8, 1, 17, 35))
+        records = bm.records()
+        # 故宫 + 全聚德 都应被预约
+        self.assertEqual(len(records), 2)
+        food_recs = [r for r in records if r.booking_type == "food"]
+        self.assertEqual(len(food_recs), 1)
+        self.assertEqual(food_recs[0].place, "全聚德(前门店)")
+        self.assertIn("全聚德(前门店)", agent._booked_places)
+
+    def test_no_duplicate_booking(self) -> None:
+        """同一地点触发两次 → 只预约一次。"""
+        agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
+        # 第一次触发
+        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        self.assertEqual(len(bm.records()), 1)
+        # 第二次触发（时间更晚，但 rule.fired=True 不会再次触发）
+        agent.check_lookahead(datetime(2026, 8, 1, 9, 0))
+        self.assertEqual(len(bm.records()), 1)
+
+    def test_no_booking_manager_noop(self) -> None:
+        """booking_manager=None → 不报错，不预约。"""
+        from tools import build_registry
+        from tools.mock_data import MockWorld
+        agent = ExecutionAgent(
+            timeline=self._make_timeline_with_ticket(),
+            registry=build_registry(MockWorld()),
+            # booking_manager 不传
+        )
+        # 应不报错
+        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        self.assertEqual(len(agent._booked_places), 0)
+
+    def test_replan_clears_booked_places(self) -> None:
+        """重规划后 _booked_places 保留仍在新 timeline 中的地点（防重复预约），
+        新地点可预约，被移除的地点从 _booked_places 中清除。"""
+        from core.schemas import ReplanRequest
+        agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
+        # 先触发故宫预约
+        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        self.assertIn("故宫", agent._booked_places)
+        self.assertEqual(len(bm.records()), 1)
+
+        # 重规划：新 timeline 加一个新景点（故宫仍在）
+        new_timeline = self._make_timeline_with_ticket()
+        new_timeline.days[0].items.append(
+            Place(name="天坛", category="scenic", arrival="09:00",
+                  ticket_required=True, price=15.0)
+        )
+        replan = ReplanRequest(
+            new_timeline=new_timeline,
+            reason="测试重规划",
+            diff_summary=["新增 天坛"],
+        )
+        agent.apply_replan(replan)
+
+        # 故宫仍在 _booked_places 中（防重复预约）
+        self.assertIn("故宫", agent._booked_places)
+        # _place_info 应包含新地点
+        self.assertIn("天坛", agent._place_info)
+
+        # 触发新地点的 lookahead（天坛 09:00，提前 20min = 08:40）
+        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        # 天坛应被预约
+        places = [r.place for r in bm.records()]
+        self.assertIn("天坛", places)
+        # 故宫不应被重复预约（仍在 _booked_places 中）
+        gu_gong_count = sum(1 for p in places if p == "故宫")
+        self.assertEqual(gu_gong_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

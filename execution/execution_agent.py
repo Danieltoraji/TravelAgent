@@ -15,13 +15,15 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
+from booking.booking_manager import BookingManager
 from config.settings import settings
 from core.schemas import (
     DecisionRequest,
     EventType,
     MonitorEvent,
+    Place,
     ReplanRequest,
     TripTimeline,
 )
@@ -35,10 +37,12 @@ logger = logging.getLogger("execution")
 class ExecutionAgent:
     """持续监控执行体。
 
-    timeline      : 行程时间轴（Route Planner 产出，A/B 之间由 A 提供）
-    decision_hook : 注入 A 的 Decision Engine（可空，空则仅日志）
-    on_event      : 注入 C 的日志/前端推送（可空）
-    impact_threshold : 影响评分阈值，达到即触发决策请求（默认 50）
+    timeline          : 行程时间轴（Route Planner 产出，A/B 之间由 A 提供）
+    decision_hook     : 注入 A 的 Decision Engine（可空，空则仅日志）
+    on_event          : 注入 C 的日志/前端推送（可空）
+    impact_threshold  : 影响评分阈值，达到即触发决策请求（默认 50）
+    booking_manager   : 注入 BookingManager（可空，空则不自动预约）
+    default_party_size: 自动预约时的默认人数
     """
 
     timeline: TripTimeline
@@ -46,6 +50,8 @@ class ExecutionAgent:
     decision_hook: Optional[Callable[[DecisionRequest], Any]] = None
     on_event: Optional[Callable[[MonitorEvent], Any]] = None
     impact_threshold: float = 50.0
+    booking_manager: Optional[BookingManager] = None
+    default_party_size: int = 1
     # 可注入的“当前时间”函数：生产用 datetime.now，Demo/测试可注入模拟时钟
     now_fn: Callable[[], datetime] = datetime.now
 
@@ -53,6 +59,9 @@ class ExecutionAgent:
         self.scheduler = MonitorScheduler()
         self.periodic_rules: List[MonitorRule] = []
         self.lookahead_rules: List[MonitorRule] = []
+        # 自动预约状态跟踪
+        self._booked_places: Set[str] = set()
+        self._place_info: Dict[str, Place] = {}
         self._build_rules()
 
     # -- 规则构建 ----------------------------------------------------------
@@ -98,8 +107,12 @@ class ExecutionAgent:
         # 到达前触发规则：景点（前20min）、餐饮（前30min）
         # 注意：必须先清空，否则 apply_replan 重建时会累积旧规则
         self.lookahead_rules = []
+        # 重建地点信息映射；保留仍在新 timeline 中的已预约记录（防重复预约）
+        new_place_names: Set[str] = set()
         for day in self.timeline.days:
             for item in day.items:
+                new_place_names.add(item.name)
+                self._place_info[item.name] = item
                 if item.category == "scenic":
                     self.lookahead_rules.append(MonitorRule(
                         name=f"scenic-{item.name}",
@@ -120,6 +133,8 @@ class ExecutionAgent:
                         fire_at=self._fire_at(day.date, item.arrival, settings.food_lookahead_min),
                         call=lambda n=item.name: self._poll(EventType.FOOD, near=n),
                     ))
+        # 清除已不在新 timeline 中的已预约记录（重规划可能移除某些地点）
+        self._booked_places &= new_place_names
 
     def _first_scenic_name(self) -> str:
         """返回行程中第一个景点的名称（供交通查询做目的地）；无景点时回退到城市名。"""
@@ -209,6 +224,7 @@ class ExecutionAgent:
         """触发已到 fire_at 的到达前规则（一次性）。
 
         生产环境由调度器周期性调用本方法；Demo/测试中直接调用。
+        触发后自动为需要预约的景点/餐厅准备预约（若 booking_manager 已注入）。
         """
         events: List[MonitorEvent] = []
         for rule in self.lookahead_rules:
@@ -218,7 +234,59 @@ class ExecutionAgent:
                 event = self.scheduler.emit(rule, data)
                 events.append(event)
                 self.handle_event(event)
+                self._maybe_auto_book(rule, event)
         return events
+
+    # -- 自动预约 ----------------------------------------------------------
+    def _maybe_auto_book(self, rule: MonitorRule, event: MonitorEvent) -> None:
+        """到达前触发后自动准备预约（若 booking_manager 已注入）。
+
+        - 景点：仅当 ticket_required=True 时预约
+        - 餐厅：一律自动预约
+        - 同一地点不重复预约
+        - 预约产出 PENDING 状态的 ActionItem，需用户通过 C 端确认
+        """
+        if self.booking_manager is None:
+            return
+        if rule.place in self._booked_places:
+            return
+        place_info = self._place_info.get(rule.place)
+        if place_info is None:
+            return
+        # 根据事件类型决定是否预约及预约类型
+        if rule.event_type == EventType.SCENIC:
+            if not place_info.ticket_required:
+                return
+            booking_type = "scenic"
+        elif rule.event_type == EventType.FOOD:
+            booking_type = "food"
+        else:
+            return
+        # 查找目标日期：遍历 timeline 找到包含该地点的 DayPlan.date
+        target_date = ""
+        for day in self.timeline.days:
+            for item in day.items:
+                if item.name == rule.place:
+                    target_date = day.date.isoformat()
+                    break
+            if target_date:
+                break
+        if not target_date:
+            return
+        try:
+            record = self.booking_manager.prepare(
+                place=rule.place,
+                target_date=target_date,
+                party_size=self.default_party_size,
+                booking_type=booking_type,
+            )
+            self._booked_places.add(rule.place)
+            # 将 booking_id 附加到事件数据，供下游感知
+            if isinstance(event.data, dict):
+                event.data["auto_booking_id"] = record.booking_id
+            logger.info("自动预约: %s (type=%s, id=%s)", rule.place, booking_type, record.booking_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("自动预约失败: %s", rule.place)
 
     async def run_forever(self, on_event: Optional[Callable[[MonitorEvent], Any]] = None) -> None:
         """生产入口：启动异步调度器持续运行（阻塞）。

@@ -158,6 +158,23 @@ class TestBookingManagerPrepare(unittest.TestCase):
         self.assertEqual(rec.booking_type, "hotel")
         self.assertEqual(rec.price, 0.0)  # 未填充
 
+    def test_prepare_food_type_auto_fills(self) -> None:
+        """booking_type=food 时调用 food Tool 自动填充人均消费/电话/地址。"""
+        # 需要注册 food Tool
+        from tools.food_tool import FoodTool
+        from tools.mock_data import MockWorld
+        self.registry.register(FoodTool())
+        rec = self.bm.prepare("全聚德(前门店)", target_date="2026-08-01",
+                             party_size=2, booking_type="food")
+        self.assertEqual(rec.booking_type, "food")
+        self.assertTrue(rec.ticket_required)   # 餐厅默认需要预约
+        # MockWorld 中全聚德 price_per_person=180
+        self.assertEqual(rec.price, 180.0)
+        self.assertEqual(rec.tel, "010-65112418")
+        # ActionItem title 应使用"预订"动词
+        act = self.bm.actions()[-1]
+        self.assertTrue(act.title.startswith("预订"))
+
     def test_prepare_creates_confirm_action_item(self) -> None:
         rec = self.bm.prepare("故宫", target_date="2026-08-01", party_size=2)
         actions = self.bm.actions()

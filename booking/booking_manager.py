@@ -35,7 +35,7 @@ class BookingRecord:
     status: BookingStatus
     payment_required: bool
     note: str = ""
-    booking_type: str = "scenic"          # scenic / hotel / transport
+    booking_type: str = "scenic"          # scenic / hotel / transport / food
     price: float = 0.0                    # 票价/房费（自动填充）
     tel: str = ""                         # 联系电话（自动填充）
     ticket_required: bool = True          # 是否需要预约
@@ -88,6 +88,18 @@ class BookingManager:
                 ticket_required = bool(sd.get("ticket_required", True))
                 address = str(sd.get("address", ""))
                 open_hours = str(sd.get("open_hours", ""))
+        elif booking_type == "food":
+            food_result = self._registry.call("food", near=place)
+            if food_result.status == ToolStatus.OK and food_result.data:
+                # food Tool 返回餐厅列表，取第一条匹配的
+                restaurants = food_result.data
+                if isinstance(restaurants, list) and restaurants:
+                    rd = restaurants[0]
+                    price = float(rd.get("price_per_person", 0.0))
+                    tel = str(rd.get("tel", ""))
+                    ticket_required = True   # 餐厅默认需要预约
+                    address = str(rd.get("address", ""))
+                    open_hours = str(rd.get("open_hours", ""))
 
         result = self._registry.call(
             "booking", action="prepare", place=place,
@@ -117,7 +129,7 @@ class BookingManager:
         )
         self._records[record.booking_id] = record
         # ActionItem.title 根据 booking_type 调整动词
-        verb = {"scenic": "预约", "hotel": "预订", "transport": "购买"}.get(booking_type, "预约")
+        verb = {"scenic": "预约", "hotel": "预订", "transport": "购买", "food": "预订"}.get(booking_type, "预约")
         self._actions.append(ActionItem(
             action_id=f"act-{record.booking_id}",
             title=f"{verb} {place}（{target_date}，{party_size}人）",
@@ -176,6 +188,7 @@ class BookingManager:
             "scenic": "门票",
             "hotel": "房费/订金",
             "transport": "车票",
+            "food": "餐费",
         }.get(rec.booking_type, "费用")
         item = ActionItem(
             action_id=f"pay-{rec.booking_id}",

@@ -191,11 +191,15 @@ def run_demo() -> None:
         decision_printer(req, replan)
         return replan
 
+    # BookingManager 提前创建，注入 ExecutionAgent 实现自动预约
+    bm = BookingManager(registry)
+
     agent = ExecutionAgent(
         timeline=timeline,
         registry=registry,
         decision_hook=decision_hook,
         on_event=make_event_printer(),
+        booking_manager=bm,
     )
 
     mode_label = "混合模式（真实 API + 模拟突发事件）" if settings.use_real_api else "纯 Mock 模式"
@@ -252,10 +256,18 @@ def run_demo() -> None:
     world.set_traffic_delay("北京", "故宫", delay_min=45, congestion="拥堵")
 
     # ── 【3b】到达前触发 + 再次轮询 ───────────────────────────────
-    print(f"\n{_sep('【3b】突发事件后：到达前触发 + 再次轮询', '═')}")
+    print(f"\n{_sep('【3b】到达前触发 + 再次轮询（自动预约）', '═')}")
     print("  模拟时间 08:45（故宫 09:00 到达前 15 分钟）到达前监控触发：")
     now = datetime(2026, 8, 1, 8, 45)
     agent.check_lookahead(now)
+
+    print("\n  模拟时间 17:30（全聚德 18:00 到达前 30 分钟）到达前监控触发：")
+    now_food = datetime(2026, 8, 1, 17, 30)
+    agent.check_lookahead(now_food)
+
+    print("\n  模拟时间 08:40（天坛 09:00 到达前 20 分钟）Day2 到达前监控触发：")
+    now_tiantan = datetime(2026, 8, 2, 8, 40)
+    agent.check_lookahead(now_tiantan)
 
     print("\n  模拟时间 08:50 再次轮询天气 + 交通，确认影响：")
     agent.poll_once()
@@ -268,23 +280,23 @@ def run_demo() -> None:
     if total > 0:
         print(f"  影响评分表：天气=40 / 景点排队=80 / 交通=20 / 餐饮=5（阈值=50）")
 
-    # ── 【5】预约闭环 ─────────────────────────────────────────────
-    print(f"\n{_sep('【5】预约闭环（Booking Agent：准备→提交→确认→付款提醒）', '═')}")
-    bm = BookingManager(registry)
-    # Step 1: prepare — 自动调用 scenic Tool 填充景点信息
-    rec = bm.prepare("故宫", target_date="2026-08-01", party_size=2)
-    print(f"  ✔ 已准备预约 {rec.place}：id={rec.booking_id}，状态={rec.status.value}")
-    print(f"    类型={rec.booking_type}，票价=¥{rec.price}，电话={rec.tel or '无'}")
-    print(f"    地址={rec.address or '无'}，营业时间={rec.open_hours or '无'}")
-    # Step 2: confirm — 用户确认后调用 submit 模拟提交
-    rec = bm.confirm(rec.booking_id)
-    print(f"  ✔ 用户已确认，提交成功：确认码={rec.confirm_code}，状态={rec.status.value}")
-    # Step 3: mark_confirmed — 服务方确认
-    rec = bm.mark_confirmed(rec.booking_id)
-    print(f"  ✔ 服务方已确认：状态={rec.status.value}")
-    # Step 4: payment_action — 付款提醒（人工执行）
-    pay = bm.payment_action(rec.booking_id)
-    print(f"  ⚠ 付款提醒（人工执行）：{pay.title} [{pay.permission.value}]")
+    # ── 【5】自动预约结果 ─────────────────────────────────────────
+    print(f"\n{_sep('【5】自动预约结果（到达前触发 → BookingManager 自动准备）', '═')}")
+    print(f"  到达前检查已自动为以下地点准备预约：")
+    for rec in bm.records():
+        print(f"  ✔ {rec.place}：id={rec.booking_id}，状态={rec.status.value}，"
+              f"类型={rec.booking_type}，票价=¥{rec.price}")
+        if rec.tel:
+            print(f"    电话={rec.tel}，地址={rec.address or '无'}，营业={rec.open_hours or '无'}")
+    # 演示用户确认流程：取第一个预约进行确认
+    if bm.records():
+        first_rec = bm.records()[0]
+        first_rec = bm.confirm(first_rec.booking_id)
+        print(f"\n  ✔ 用户确认 {first_rec.place}：确认码={first_rec.confirm_code}，状态={first_rec.status.value}")
+        first_rec = bm.mark_confirmed(first_rec.booking_id)
+        print(f"  ✔ 服务方已确认：状态={first_rec.status.value}")
+        pay = bm.payment_action(first_rec.booking_id)
+        print(f"  ⚠ 付款提醒（人工执行）：{pay.title} [{pay.permission.value}]")
     print(f"  {'─' * 50}")
     print(f"  Action Queue（{len(bm.actions())} 项）：")
     for action in bm.actions():
