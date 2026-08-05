@@ -9,6 +9,10 @@
   1. 注册 https://id.qweather.com/
   2. 控制台 → 项目管理 → 创建项目 → 添加 API KEY 凭据
   3. 控制台 → 设置 → 查看 API Host（形如 abc1234xyz.def.qweatherapi.com）
+
+获取高德地图 API Key：
+  1. 注册 https://lbs.amap.com/
+  2. 控制台 → 应用管理 → 创建新应用 → 添加 Key（选择 Web 服务）
 """
 
 
@@ -17,4 +21,4 @@ def apply_local_settings(settings):
     settings.demo_mode = False
     settings.qweather_api_key = "填写你的和风天气 API Key"
     settings.qweather_api_host = "填写你的 API Host"  # 不带 https://
-    # settings.amap_api_key = "高德地图 Key（后续接入时用）"
+    settings.amap_api_key = "填写你的高德地图 Key"

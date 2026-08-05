@@ -42,12 +42,19 @@ class Settings:
 
     @property
     def use_real_api(self) -> bool:
-        """当前是否应使用真实 API（Demo 关闭且有 Key 时）。
+        """当前是否应使用真实天气 API（Demo 关闭且有 Key 时）。
 
-        天气 Tool 只需 qweather_api_key + qweather_api_host；
-        地图/交通 Tool 需 amap_api_key（后续接入时启用）。
+        天气 Tool 只需 qweather_api_key + qweather_api_host。
         """
         return not self.demo_mode and bool(self.qweather_api_key and self.qweather_api_host)
+
+    @property
+    def use_real_map_api(self) -> bool:
+        """当前是否应使用真实地图 API（Demo 关闭且有 Key 时）。
+
+        地图 Tool 需 amap_api_key，与天气的 use_real_api 独立判断。
+        """
+        return not self.demo_mode and bool(self.amap_api_key)
 
 
 settings = Settings()

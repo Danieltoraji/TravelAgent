@@ -13,14 +13,25 @@ Demo 剧情需共享同一个 MockWorld（以便触发天气/排队变化）时�
 
 from __future__ import annotations
 
+from tools.amap_client import AmapClient
 from tools.base_tool import BaseTool, ToolRegistry
 from tools.booking_tool import BookingTool
 from tools.food_tool import FoodTool
-from tools.map_tool import MapTool
+from tools.map_tool import MapTool, MapToolLive
 from tools.mock_data import PLACES, MockWorld, WeatherData
+from tools.qweather_client import QWeatherClient
 from tools.scenic_tool import ScenicTool
 from tools.traffic_tool import TrafficTool
-from tools.weather_tool import WeatherTool, WeatherToolLive
+from tools.weather_tool import (
+    AirQualityTool,
+    AirQualityToolLive,
+    WeatherForecastTool,
+    WeatherForecastToolLive,
+    WeatherTool,
+    WeatherToolLive,
+    WeatherWarningTool,
+    WeatherWarningToolLive,
+)
 
 
 def build_registry(world: MockWorld | None = None) -> ToolRegistry:
@@ -33,17 +44,29 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
 
     registry = ToolRegistry()
     world = world or MockWorld()
-    registry.register(MapTool())
 
-    # 天气 Tool：按配置自动切换 Mock / Live
+    # 地图 Tool：按配置自动切换 Mock / Live
+    if settings.use_real_map_api:
+        amap_client = AmapClient(api_key=settings.amap_api_key)
+        registry.register(MapToolLive(amap_client))
+    else:
+        registry.register(MapTool())
+
+    # 天气相关 Tool：按配置自动切换 Mock / Live
     if settings.use_real_api:
-        weather_tool = WeatherToolLive(
+        client = QWeatherClient(
             api_key=settings.qweather_api_key,
             api_host=settings.qweather_api_host,
         )
+        registry.register(WeatherToolLive(client))
+        registry.register(WeatherWarningToolLive(client))
+        registry.register(AirQualityToolLive(client))
+        registry.register(WeatherForecastToolLive(client))
     else:
-        weather_tool = WeatherTool(world)
-    registry.register(weather_tool)
+        registry.register(WeatherTool(world))
+        registry.register(WeatherWarningTool(world))
+        registry.register(AirQualityTool(world))
+        registry.register(WeatherForecastTool(world))
 
     registry.register(ScenicTool(world))
     registry.register(TrafficTool())
@@ -57,12 +80,22 @@ default_registry: ToolRegistry = build_registry()
 
 __all__ = [
     "PLACES",
+    "AirQualityTool",
+    "AirQualityToolLive",
+    "AmapClient",
     "BaseTool",
+    "MapTool",
+    "MapToolLive",
     "MockWorld",
+    "QWeatherClient",
     "ToolRegistry",
     "WeatherData",
+    "WeatherForecastTool",
+    "WeatherForecastToolLive",
     "WeatherTool",
     "WeatherToolLive",
+    "WeatherWarningTool",
+    "WeatherWarningToolLive",
     "build_registry",
     "default_registry",
 ]
