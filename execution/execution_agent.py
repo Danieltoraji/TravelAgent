@@ -119,6 +119,7 @@ class ExecutionAgent:
                         event_type=EventType.SCENIC,
                         interval_s=cfg.scenic_interval_s,
                         place=item.name,
+                        spot_id=item.id,
                         lookahead_min=settings.scenic_lookahead_min,
                         fire_at=self._fire_at(day.date, item.arrival, settings.scenic_lookahead_min),
                         call=lambda n=item.name: self._poll(EventType.SCENIC, place=n),
@@ -129,6 +130,7 @@ class ExecutionAgent:
                         event_type=EventType.FOOD,
                         interval_s=cfg.food_interval_s,
                         place=item.name,
+                        spot_id=item.id,
                         lookahead_min=settings.food_lookahead_min,
                         fire_at=self._fire_at(day.date, item.arrival, settings.food_lookahead_min),
                         call=lambda n=item.name: self._poll(EventType.FOOD, near=n),
@@ -151,15 +153,19 @@ class ExecutionAgent:
         return arrival_dt - timedelta(minutes=lookahead_min)
 
     # -- 事件处理 ----------------------------------------------------------
-    def handle_event(self, event: MonitorEvent) -> Optional[DecisionRequest]:
+    async def handle_event(self, event: MonitorEvent) -> Optional[DecisionRequest]:
         """处理一次观测：回调 on_event；达到阈值则组装并发送 DecisionRequest。
 
         若 decision_hook 返回 ReplanRequest，则立即应用重规划（更新时间轴 + 重建规则），
         闭合"监控 → 决策 → 重规划 → 新监控"回环。
+
+        支持同步和异步的 on_event / decision_hook（自动检测返回值是否为协程）。
         """
         if self.on_event is not None:
             try:
-                self.on_event(event)
+                result = self.on_event(event)
+                if asyncio.iscoroutine(result):
+                    await result
             except Exception:  # noqa: BLE001
                 logger.exception("on_event handler failed")
         if not self._significant(event):
@@ -172,6 +178,8 @@ class ExecutionAgent:
         if self.decision_hook is not None:
             try:
                 replan = self.decision_hook(req)
+                if asyncio.iscoroutine(replan):
+                    replan = await replan
                 if isinstance(replan, ReplanRequest):
                     self.apply_replan(replan)
             except Exception:  # noqa: BLE001
@@ -209,18 +217,18 @@ class ExecutionAgent:
             return int(data.get("delay_min", 0)) >= 30
         return False
 
-    # -- 驱动入口（Demo / 测试用同步驱动） ---------------------------------
-    def poll_once(self) -> List[MonitorEvent]:
-        """同步轮询所有周期性规则一次，返回本次观测事件。"""
+    # -- 驱动入口（Demo / 测试用异步驱动） ---------------------------------
+    async def poll_once(self) -> List[MonitorEvent]:
+        """异步轮询所有周期性规则一次，返回本次观测事件。"""
         events: List[MonitorEvent] = []
         for rule in self.periodic_rules:
             data = rule.call()
             event = self.scheduler.emit(rule, data)
             events.append(event)
-            self.handle_event(event)
+            await self.handle_event(event)
         return events
 
-    def check_lookahead(self, now: datetime) -> List[MonitorEvent]:
+    async def check_lookahead(self, now: datetime) -> List[MonitorEvent]:
         """触发已到 fire_at 的到达前规则（一次性）。
 
         生产环境由调度器周期性调用本方法；Demo/测试中直接调用。
@@ -233,12 +241,12 @@ class ExecutionAgent:
                 data = rule.call()
                 event = self.scheduler.emit(rule, data)
                 events.append(event)
-                self.handle_event(event)
-                self._maybe_auto_book(rule, event)
+                await self.handle_event(event)
+                await self._maybe_auto_book(rule, event)
         return events
 
     # -- 自动预约 ----------------------------------------------------------
-    def _maybe_auto_book(self, rule: MonitorRule, event: MonitorEvent) -> None:
+    async def _maybe_auto_book(self, rule: MonitorRule, event: MonitorEvent) -> None:
         """到达前触发后自动准备预约（若 booking_manager 已注入）。
 
         - 景点：仅当 ticket_required=True 时预约
@@ -302,7 +310,7 @@ class ExecutionAgent:
         self.scheduler.start(handler)  # 内部用 get_running_loop
         try:
             while True:
-                self.check_lookahead(self.now_fn())
+                await self.check_lookahead(self.now_fn())
                 await asyncio.sleep(1)
         finally:
             await self.scheduler.stop()

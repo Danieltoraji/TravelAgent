@@ -129,11 +129,13 @@ class PlannerOutput:
 @dataclass
 class Place:
     """行程中的一个地点。"""
-    name: str
+    id: str = ""                    # 景点 ID（如 "BJ_001"），供 A/C 引用
+    name: str = ""                  # 景点名称，B 内部用于 Tool 调用
     lat: float = 0.0
     lng: float = 0.0
     category: str = "scenic"        # scenic / food / hotel / transport / shopping
     arrival: str = "09:00"          # 到达时间 HH:MM
+    end_time: str = ""              # 离开时间 HH:MM（对应 A/C 的 end 字段）
     open_time: str = "09:00-17:00"
     queue_min: int = 0
     ticket_required: bool = False
@@ -154,10 +156,13 @@ class TripTimeline:
 
     人物B 的 Execution Agent 据此契约驱动持续监控。
     """
-    city: str
-    start_date: date
-    end_date: date
+    id: str = ""                    # 计划 ID（如 "plan_001"）
+    city: str = ""
+    start_date: date = field(default_factory=lambda: date.today())
+    end_date: date = field(default_factory=lambda: date.today())
     days: List[DayPlan] = field(default_factory=list)
+    total_cost: float = 0.0        # 总费用
+    walking_distance: float = 0.0  # 总步行距离（km）
 
 
 # ---------------------------------------------------------------------------
@@ -169,9 +174,10 @@ class MonitorEvent:
     """Monitor Scheduler 产出的一次观测事件，回传给 Decision Engine。"""
     event_id: str
     event_type: EventType
-    place: str
+    place: str                     # 景点名称（B 内部用）
     observed_at: datetime
     rule_name: str
+    spot_id: str = ""              # 景点 ID（供 A/C 引用）
     data: Any = None
     impact_score: float = 0.0       # 由 A 的 Decision Engine 评估，B 侧默认 0
 
@@ -197,6 +203,9 @@ class ReplanRequest:
     new_timeline: Optional[TripTimeline] = None
     reason: str = ""
     diff_summary: List[str] = field(default_factory=list)   # 修改点说明（Explainable）
+    need_replan: bool = True        # 是否需要重规划（B 侧：返回 ReplanRequest 即视为 True）
+    impact: float = 0.0            # 影响评分（0-1）
+    affected_spots: List[str] = field(default_factory=list)  # 受影响的景点 ID 列表
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +222,10 @@ class ActionItem:
     permission: PermissionLevel = PermissionLevel.AUTO
     target: str = ""               # 例如 "booking:ABC123", "calendar:update"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    # 以下字段供 C 消费（对齐 A/C 数据格式）
+    type: str = ""                 # 动作类型，如 "BOOK_TICKET"
+    date: str = ""                 # 目标日期 YYYY-MM-DD
+    quantity: int = 0              # 数量（如购票张数）
 
 
 @dataclass

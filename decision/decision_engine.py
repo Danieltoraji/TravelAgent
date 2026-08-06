@@ -117,6 +117,9 @@ class DecisionEngine:
             new_timeline=timeline,
             reason=reason,
             diff_summary=diff,
+            need_replan=True,
+            impact=IMPACT_SCORES.get(top_event.event_type, 0) / 100.0,
+            affected_spots=[top_event.spot_id] if top_event.spot_id else [top_event.place],
         )
 
     @staticmethod

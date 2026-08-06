@@ -472,5 +472,57 @@ class TestServiceConfigReload(unittest.TestCase):
         self.assertIn("use_real_map_api", data)
 
 
+@unittest.skipUnless(_HAS_FASTAPI, "fastapi not installed")
+class TestTimelineActivitiesKey(unittest.TestCase):
+    """验证 POST /timeline 接受 activities 键作为 items 的替代。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from app.service import create_app, state
+        state.timeline = None
+        state.execution_agent = None
+        state.events.clear()
+        cls.state = state
+        cls.app = create_app()
+        cls.client = TestClient(cls.app)
+
+    def test_timeline_accepts_activities_key(self) -> None:
+        """用 activities 代替 items，端点应正常解析。"""
+        payload = {
+            "city": "北京",
+            "start_date": "2026-08-01",
+            "end_date": "2026-08-01",
+            "days": [
+                {
+                    "day": 1,
+                    "date": "2026-08-01",
+                    "activities": [
+                        {
+                            "id": "BJ_001",
+                            "name": "故宫",
+                            "category": "scenic",
+                            "arrival": "09:00",
+                            "end_time": "12:00",
+                            "ticket_required": True,
+                            "price": 60.0,
+                        },
+                    ],
+                },
+            ],
+        }
+        r = self.client.post("/timeline", json=payload)
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["status"], "ok")
+        # 验证解析后的 timeline 包含故宫
+        tl = data["timeline"]
+        self.assertEqual(tl["city"], "北京")
+        items = tl["days"][0]["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["name"], "故宫")
+        self.assertEqual(items[0]["id"], "BJ_001")
+        self.assertEqual(items[0]["end_time"], "12:00")
+
+
 if __name__ == "__main__":
     unittest.main()

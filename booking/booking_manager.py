@@ -137,6 +137,9 @@ class BookingManager:
             status=ActionStatus.PENDING,
             permission=PermissionLevel.CONFIRM,     # 需用户确认后执行
             target=f"booking:{record.booking_id}",
+            type="BOOK_TICKET",
+            date=target_date,
+            quantity=party_size,
         ))
         return record
 
@@ -197,6 +200,9 @@ class BookingManager:
             status=ActionStatus.PENDING,
             permission=PermissionLevel.MANUAL,
             target=f"payment:{rec.booking_id}",
+            type="PAYMENT",
+            date=rec.target_date,
+            quantity=1,
         )
         self._actions.append(item)
         return item

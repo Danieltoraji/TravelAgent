@@ -11,23 +11,58 @@
 
 ## 目录
 
-- [一、与 A/C 协商项](#一与-ac-协商项)
-  - [协商项 1：决策流程步骤数不同](#协商项-1决策流程步骤数不同)
-  - [协商项 2：TripTimeline 必须携带完整 Place 对象](#协商项-2triptimeline-必须携带完整-place-对象)
-  - [协商项 3：标识方式 — name vs spot_id](#协商项-3标识方式--name-vs-spot_id)
-  - [协商项 4：Plan 键名 — items vs activities](#协商项-4plan-键名--items-vs-activities)
-  - [协商项 5：事件类型粒度 — 类别级 vs 具体级](#协商项-5事件类型粒度--类别级-vs-具体级)
-  - [协商项 6：ActionItem 字段差异](#协商项-6actionitem-字段差异)
-  - [协商项 7：ActionStatus 枚举值差异](#协商项-7actionstatus-枚举值差异)
-  - [协商项 8：decision_hook 异步支持](#协商项-8decision_hook-异步支持)
-- [二、B 内部调整项](#二b-内部调整项)
-  - [调整项 1：Place 加 id 字段](#调整项-1place-加-id-字段)
-  - [调整项 2：Place 加 end_time 字段](#调整项-2place-加-end_time-字段)
-  - [调整项 3：MonitorEvent 加 spot_id 字段](#调整项-3monitorevent-加-spot_id-字段)
-  - [调整项 4：ActionItem 加 type / date / quantity 字段](#调整项-4actionitem-加-type--date--quantity-字段)
-  - [调整项 5：ReplanRequest 加 need_replan / impact / affected_spots 字段](#调整项-5replanrequest-加-need_replan--impact--affected_spots-字段)
-  - [调整项 6：TripTimeline 加 id / total_cost / walking_distance 字段](#调整项-6triptimeline-加-id--total_cost--walking_distance-字段)
-- [三、完整字段对照表](#三完整字段对照表)
+- [数据结构对齐文档](#数据结构对齐文档)
+  - [目录](#目录)
+  - [一、与 A/C 协商项](#一与-ac-协商项)
+    - [协商项 1：决策流程步骤数不同](#协商项-1决策流程步骤数不同)
+      - [A/C 期望的流程（4 步）](#ac-期望的流程4-步)
+      - [B 侧实际流程（2 步）](#b-侧实际流程2-步)
+      - [为什么 B 无法改为 4 步](#为什么-b-无法改为-4-步)
+      - [协商方案](#协商方案)
+    - [协商项 2：TripTimeline 必须携带完整 Place 对象](#协商项-2triptimeline-必须携带完整-place-对象)
+      - [A/C 期望的 Plan 格式](#ac-期望的-plan-格式)
+      - [B 侧的 TripTimeline 格式](#b-侧的-triptimeline-格式)
+      - [为什么 B 无法改为纯 ID 引用](#为什么-b-无法改为纯-id-引用)
+      - [B 侧需要的 Place 字段及用途](#b-侧需要的-place-字段及用途)
+      - [协商方案](#协商方案-1)
+    - [协商项 3：标识方式 — name vs spot\_id](#协商项-3标识方式--name-vs-spot_id)
+      - [差异](#差异)
+      - [B 侧为什么用 name](#b-侧为什么用-name)
+      - [协商方案](#协商方案-2)
+    - [协商项 4：Plan 键名 — items vs activities](#协商项-4plan-键名--items-vs-activities)
+      - [差异](#差异-1)
+      - [B 侧为什么用 items + arrival](#b-侧为什么用-items--arrival)
+      - [协商方案](#协商方案-3)
+    - [协商项 5：事件类型粒度 — 类别级 vs 具体级](#协商项-5事件类型粒度--类别级-vs-具体级)
+      - [差异](#差异-2)
+      - [B 侧 EventType 枚举](#b-侧-eventtype-枚举)
+      - [B 侧 MonitorEvent.data 实际内容](#b-侧-monitoreventdata-实际内容)
+      - [协商方案](#协商方案-4)
+    - [协商项 6：ActionItem 字段差异](#协商项-6actionitem-字段差异)
+      - [字段对照](#字段对照)
+      - [B 侧 PermissionLevel 枚举](#b-侧-permissionlevel-枚举)
+      - [协商方案](#协商方案-5)
+    - [协商项 7：ActionStatus 枚举值差异](#协商项-7actionstatus-枚举值差异)
+      - [差异](#差异-3)
+      - [协商方案](#协商方案-6)
+    - [协商项 8：decision\_hook 异步支持](#协商项-8decision_hook-异步支持)
+      - [问题](#问题)
+      - [LLM 延迟的实际影响分析](#llm-延迟的实际影响分析)
+      - [协商方案](#协商方案-7)
+  - [二、B 内部调整项](#二b-内部调整项)
+    - [调整项 1：Place 加 id 字段](#调整项-1place-加-id-字段)
+    - [调整项 2：Place 加 end\_time 字段](#调整项-2place-加-end_time-字段)
+    - [调整项 3：MonitorEvent 加 spot\_id 字段](#调整项-3monitorevent-加-spot_id-字段)
+    - [调整项 4：ActionItem 加 type / date / quantity 字段](#调整项-4actionitem-加-type--date--quantity-字段)
+    - [调整项 5：ReplanRequest 加 need\_replan / impact / affected\_spots 字段](#调整项-5replanrequest-加-need_replan--impact--affected_spots-字段)
+    - [调整项 6：TripTimeline 加 id / total\_cost / walking\_distance 字段](#调整项-6triptimeline-加-id--total_cost--walking_distance-字段)
+  - [三、完整字段对照表](#三完整字段对照表)
+    - [Place ↔ A/C 景点信息 / Plan activity](#place--ac-景点信息--plan-activity)
+    - [MonitorEvent ↔ A/C 事件变化](#monitorevent--ac-事件变化)
+    - [ReplanRequest ↔ A/C 决定](#replanrequest--ac-决定)
+    - [ActionItem ↔ A/C 行为](#actionitem--ac-行为)
+    - [TripTimeline ↔ A/C 计划](#triptimeline--ac-计划)
+  - [附：协商优先级排序](#附协商优先级排序)
 
 ---
 
@@ -91,6 +126,9 @@ def handle_event(self, event: MonitorEvent) -> Optional[DecisionRequest]:
 - B 只负责：预判是否显著 → 调用 `decision_hook` → 应用返回的新时间轴
 
 **LLM 延迟问题**：见 [协商项 8](#协商项-8decision_hook-异步支持)。
+
+
+**按此方案进行**。
 
 ---
 
@@ -190,6 +228,8 @@ registry.call("food", near="全聚德")                      # 高德餐厅搜�
 
 **方案 B**：A 发给 B 的计划只有 `spot_id`，但 B 侧增加一个"景点知识库查询"步骤，通过 `spot_id` 查询完整信息。但这需要 B 侧维护景点数据库，与当前架构不符（知识库是 A 的职责）。
 
+**解决：A将会返回完整的 Place 对象**，B 侧不需要维护景点数据库。
+
 ---
 
 ### 协商项 3：标识方式 — name vs spot_id
@@ -224,6 +264,8 @@ B 侧在 `Place`、`MonitorEvent`、`ActionItem` 中加 `id` / `spot_id` 字段�
 - B 内部用 `name` 调 Tool、构建监控规则
 - 两者的映射关系由 A 在生成计划时提供（Place 对象同时包含 `id` 和 `name`）
 
+**A将会返回完整的 Place 对象。**
+
 ---
 
 ### 协商项 4：Plan 键名 — items vs activities
@@ -247,6 +289,8 @@ B 侧在 `Place`、`MonitorEvent`、`ActionItem` 中加 `id` / `spot_id` 字段�
 **方案 A（推荐）**：A/C 适配 B 的格式，用 `items` + `arrival`。B 侧可加 `end_time` 字段（见 B 内部调整项 2），但不改 `items` 键名。
 
 **方案 B**：B 侧在 `service.py` 的 `POST /timeline` 端点做键名兼容——接受 `activities` 也接受 `items`，内部统一转为 `items`。改动范围小，仅 `service.py` 的反序列化逻辑。
+
+**按照方案B，即仅改变B的代码。**
 
 ---
 
@@ -294,6 +338,8 @@ B 侧 `data` 字段是灵活的 dict，不同事件类型携带不同数据：
 - `place` 可加 `spot_id` 字段（见 B 内部调整项 3）
 - `data` 字段已兼容 `old_value` / `new_value`，A/C 可直接使用
 
+**给B加字段，不改变A的字段。**
+
 ---
 
 ### 协商项 6：ActionItem 字段差异
@@ -329,6 +375,8 @@ class PermissionLevel(str, Enum):
 - `id` ↔ `action_id`：C 侧适配 `action_id`，或 B 侧序列化时加 `id` 别名
 - `target` 引用方式：B 侧 `target` 格式为 `"booking:{booking_id}"`，C 侧可解析冒号后的 ID
 
+**改B的字段，不改变A的字段。**
+
 ---
 
 ### 协商项 7：ActionStatus 枚举值差异
@@ -349,6 +397,8 @@ class PermissionLevel(str, Enum):
 
 - C 侧适配 B 的枚举值（`pending` / `approved` / `executed` / `rejected` / `blocked`）
 - 或 B 侧在序列化时做映射（但会增加复杂度，不推荐）
+
+**改B的字段，不改变A的字段。**
 
 ---
 
@@ -385,6 +435,8 @@ run_forever()                          ← async 主循环
 #### 协商方案
 
 **方案 A（B 侧改，推荐）**：让 `decision_hook` 支持返回协程，B 侧 `await` 调用：
+
+**按方案A进行。**
 
 ```python
 # handle_event 改为 async

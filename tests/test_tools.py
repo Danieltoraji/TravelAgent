@@ -1383,5 +1383,58 @@ class TestRetry(unittest.TestCase):
             settings.retry_backoff_base = old_backoff
 
 
+class TestSchemaFieldAlignment(unittest.TestCase):
+    """验证数据结构对齐后的新字段存在且有默认值。"""
+
+    def test_place_has_id_and_end_time(self) -> None:
+        from core.schemas import Place
+        p = Place(name="故宫")
+        self.assertTrue(hasattr(p, "id"))
+        self.assertEqual(p.id, "")
+        self.assertTrue(hasattr(p, "end_time"))
+        self.assertEqual(p.end_time, "")
+
+    def test_triptimeline_has_new_fields(self) -> None:
+        from datetime import date
+        from core.schemas import TripTimeline
+        tl = TripTimeline(city="北京", start_date=date(2026, 8, 1), end_date=date(2026, 8, 2))
+        self.assertTrue(hasattr(tl, "id"))
+        self.assertEqual(tl.id, "")
+        self.assertTrue(hasattr(tl, "total_cost"))
+        self.assertEqual(tl.total_cost, 0.0)
+        self.assertTrue(hasattr(tl, "walking_distance"))
+        self.assertEqual(tl.walking_distance, 0.0)
+
+    def test_monitorevent_has_spot_id(self) -> None:
+        from datetime import datetime
+        from core.schemas import MonitorEvent, EventType
+        ev = MonitorEvent(
+            event_id="test-1", event_type=EventType.WEATHER,
+            place="北京", observed_at=datetime.now(), rule_name="test",
+        )
+        self.assertTrue(hasattr(ev, "spot_id"))
+        self.assertEqual(ev.spot_id, "")
+
+    def test_replanrequest_has_new_fields(self) -> None:
+        from core.schemas import ReplanRequest
+        req = ReplanRequest(reason="test")
+        self.assertTrue(hasattr(req, "need_replan"))
+        self.assertTrue(req.need_replan)
+        self.assertTrue(hasattr(req, "impact"))
+        self.assertEqual(req.impact, 0.0)
+        self.assertTrue(hasattr(req, "affected_spots"))
+        self.assertEqual(req.affected_spots, [])
+
+    def test_actionitem_has_new_fields(self) -> None:
+        from core.schemas import ActionItem
+        item = ActionItem(action_id="act-1", title="test")
+        self.assertTrue(hasattr(item, "type"))
+        self.assertEqual(item.type, "")
+        self.assertTrue(hasattr(item, "date"))
+        self.assertEqual(item.date, "")
+        self.assertTrue(hasattr(item, "quantity"))
+        self.assertEqual(item.quantity, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

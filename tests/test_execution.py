@@ -50,53 +50,53 @@ class TestBuildRules(unittest.TestCase):
         self.assertIn("food-全聚德(前门店)", names)
 
 
-class TestSignificance(unittest.TestCase):
-    def test_rain_triggers_decision(self) -> None:
+class TestSignificance(unittest.IsolatedAsyncioTestCase):
+    async def test_rain_triggers_decision(self) -> None:
         decisions: list = []
         agent = ExecutionAgent(make_timeline(), decision_hook=lambda req: decisions.append(req))
-        req = agent.handle_event(make_event(EventType.WEATHER, {"rain_probability": 85}))
+        req = await agent.handle_event(make_event(EventType.WEATHER, {"rain_probability": 85}))
         self.assertIsInstance(req, DecisionRequest)
         self.assertEqual(len(decisions), 1)
 
-    def test_mild_rain_no_decision(self) -> None:
+    async def test_mild_rain_no_decision(self) -> None:
         agent = ExecutionAgent(make_timeline())
-        req = agent.handle_event(make_event(EventType.WEATHER, {"rain_probability": 20}))
+        req = await agent.handle_event(make_event(EventType.WEATHER, {"rain_probability": 20}))
         self.assertIsNone(req)
 
-    def test_queue_over_threshold_triggers(self) -> None:
+    async def test_queue_over_threshold_triggers(self) -> None:
         decisions: list = []
         agent = ExecutionAgent(make_timeline(), decision_hook=lambda req: decisions.append(req))
-        req = agent.handle_event(make_event(EventType.SCENIC, {"queue_min": 120}))
+        req = await agent.handle_event(make_event(EventType.SCENIC, {"queue_min": 120}))
         self.assertIsInstance(req, DecisionRequest)
 
-    def test_traffic_delay_triggers(self) -> None:
+    async def test_traffic_delay_triggers(self) -> None:
         agent = ExecutionAgent(make_timeline())
-        req = agent.handle_event(make_event(EventType.TRAFFIC, {"delay_min": 45}))
+        req = await agent.handle_event(make_event(EventType.TRAFFIC, {"delay_min": 45}))
         self.assertIsInstance(req, DecisionRequest)
 
 
-class TestLookahead(unittest.TestCase):
-    def test_fires_when_within_window(self) -> None:
+class TestLookahead(unittest.IsolatedAsyncioTestCase):
+    async def test_fires_when_within_window(self) -> None:
         from tools import build_registry
         from tools.mock_data import MockWorld
         world = MockWorld()
         agent = ExecutionAgent(make_timeline(), registry=build_registry(world))
         # 故宫 09:00 到达，提前 20 分钟 = 08:40；当前 08:45 应触发
-        events = agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        events = await agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
         places = [e.place for e in events]
         self.assertIn("故宫", places)
 
-    def test_does_not_fire_before_window(self) -> None:
+    async def test_does_not_fire_before_window(self) -> None:
         from tools import build_registry
         from tools.mock_data import MockWorld
         world = MockWorld()
         agent = ExecutionAgent(make_timeline(), registry=build_registry(world))
-        events = agent.check_lookahead(datetime(2026, 8, 1, 8, 0))   # 早于 08:40
+        events = await agent.check_lookahead(datetime(2026, 8, 1, 8, 0))   # 早于 08:40
         self.assertEqual(events, [])
 
 
-class TestReplanLoopback(unittest.TestCase):
-    def test_replan_replaces_timeline_and_rebuilds_rules(self) -> None:
+class TestReplanLoopback(unittest.IsolatedAsyncioTestCase):
+    async def test_replan_replaces_timeline_and_rebuilds_rules(self) -> None:
         from core.schemas import ReplanRequest
         from tools import build_registry
         from tools.mock_data import MockWorld
@@ -121,7 +121,7 @@ class TestReplanLoopback(unittest.TestCase):
 
         agent.decision_hook = hook
         # 触发一次显著事件（暴雨）让 handle_event 调用 hook
-        agent.handle_event(make_event(EventType.WEATHER, {"rain_probability": 85}))
+        await agent.handle_event(make_event(EventType.WEATHER, {"rain_probability": 85}))
 
         # 断言时间轴已替换、规则已重建（lookahead 规则数应 +1）
         self.assertIs(agent.timeline, new_timeline)
@@ -130,7 +130,7 @@ class TestReplanLoopback(unittest.TestCase):
         names = [r.name for r in agent.lookahead_rules]
         self.assertIn("scenic-天安门", names)
 
-    def test_replan_without_new_timeline_is_noop(self) -> None:
+    async def test_replan_without_new_timeline_is_noop(self) -> None:
         from core.schemas import ReplanRequest
         from tools import build_registry
         from tools.mock_data import MockWorld
@@ -143,11 +143,11 @@ class TestReplanLoopback(unittest.TestCase):
             return replan
 
         agent.decision_hook = hook
-        agent.handle_event(make_event(EventType.WEATHER, {"rain_probability": 85}))
+        await agent.handle_event(make_event(EventType.WEATHER, {"rain_probability": 85}))
         self.assertIs(agent.timeline, original_timeline)  # 未替换
 
 
-class TestAutoBooking(unittest.TestCase):
+class TestAutoBooking(unittest.IsolatedAsyncioTestCase):
     """自动预约集成测试：ExecutionAgent ↔ BookingManager。"""
 
     def _make_timeline_with_ticket(self) -> TripTimeline:
@@ -181,11 +181,11 @@ class TestAutoBooking(unittest.TestCase):
         )
         return agent, bm
 
-    def test_auto_book_scenic_with_ticket(self) -> None:
+    async def test_auto_book_scenic_with_ticket(self) -> None:
         """ticket_required=True 的景点 → 自动预约，ActionItem 产出。"""
         agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
         # 故宫 09:00 到达，提前 20min = 08:40；08:45 触发
-        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        await agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
         records = bm.records()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].place, "故宫")
@@ -195,23 +195,23 @@ class TestAutoBooking(unittest.TestCase):
         actions = bm.actions()
         self.assertTrue(any("故宫" in a.title for a in actions))
 
-    def test_auto_book_scenic_without_ticket(self) -> None:
+    async def test_auto_book_scenic_without_ticket(self) -> None:
         """ticket_required=False 的景点 → 不预约。"""
         agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
         # 景山 14:00 到达，提前 20min = 13:40；13:45 触发
-        agent.check_lookahead(datetime(2026, 8, 1, 13, 45))
+        await agent.check_lookahead(datetime(2026, 8, 1, 13, 45))
         # 景山不应被预约（ticket_required=False）
         records = bm.records()
         places = [r.place for r in records]
         self.assertNotIn("景山公园", places)
         self.assertNotIn("景山公园", agent._booked_places)
 
-    def test_auto_book_food(self) -> None:
+    async def test_auto_book_food(self) -> None:
         """餐厅 → 自动预约（food 类型）。"""
         agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
         # 先触发故宫（08:45），再触发全聚德（17:35）
-        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
-        agent.check_lookahead(datetime(2026, 8, 1, 17, 35))
+        await agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        await agent.check_lookahead(datetime(2026, 8, 1, 17, 35))
         records = bm.records()
         # 故宫 + 全聚德 都应被预约
         self.assertEqual(len(records), 2)
@@ -220,17 +220,17 @@ class TestAutoBooking(unittest.TestCase):
         self.assertEqual(food_recs[0].place, "全聚德(前门店)")
         self.assertIn("全聚德(前门店)", agent._booked_places)
 
-    def test_no_duplicate_booking(self) -> None:
+    async def test_no_duplicate_booking(self) -> None:
         """同一地点触发两次 → 只预约一次。"""
         agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
         # 第一次触发
-        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        await agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
         self.assertEqual(len(bm.records()), 1)
         # 第二次触发（时间更晚，但 rule.fired=True 不会再次触发）
-        agent.check_lookahead(datetime(2026, 8, 1, 9, 0))
+        await agent.check_lookahead(datetime(2026, 8, 1, 9, 0))
         self.assertEqual(len(bm.records()), 1)
 
-    def test_no_booking_manager_noop(self) -> None:
+    async def test_no_booking_manager_noop(self) -> None:
         """booking_manager=None → 不报错，不预约。"""
         from tools import build_registry
         from tools.mock_data import MockWorld
@@ -240,16 +240,16 @@ class TestAutoBooking(unittest.TestCase):
             # booking_manager 不传
         )
         # 应不报错
-        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        await agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
         self.assertEqual(len(agent._booked_places), 0)
 
-    def test_replan_clears_booked_places(self) -> None:
+    async def test_replan_clears_booked_places(self) -> None:
         """重规划后 _booked_places 保留仍在新 timeline 中的地点（防重复预约），
         新地点可预约，被移除的地点从 _booked_places 中清除。"""
         from core.schemas import ReplanRequest
         agent, bm = self._make_agent_with_bm(self._make_timeline_with_ticket())
         # 先触发故宫预约
-        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        await agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
         self.assertIn("故宫", agent._booked_places)
         self.assertEqual(len(bm.records()), 1)
 
@@ -272,7 +272,7 @@ class TestAutoBooking(unittest.TestCase):
         self.assertIn("天坛", agent._place_info)
 
         # 触发新地点的 lookahead（天坛 09:00，提前 20min = 08:40）
-        agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
+        await agent.check_lookahead(datetime(2026, 8, 1, 8, 45))
         # 天坛应被预约
         places = [r.place for r in bm.records()]
         self.assertIn("天坛", places)

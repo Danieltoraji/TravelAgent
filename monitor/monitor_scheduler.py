@@ -37,6 +37,7 @@ class MonitorRule:
     interval_s: float
     call: Callable[[], Any]
     place: str = ""
+    spot_id: str = ""              # 景点 ID（供 A/C 引用）
     lookahead_min: Optional[int] = None
     fire_at: Optional[datetime] = None
     fired: bool = False
@@ -69,6 +70,7 @@ class MonitorScheduler:
             event_id=f"{rule.event_type.value}-{next(self._seq):04d}",
             event_type=rule.event_type,
             place=rule.place,
+            spot_id=rule.spot_id,
             observed_at=datetime.now(),
             rule_name=rule.name,
             data=data,

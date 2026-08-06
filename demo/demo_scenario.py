@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from datetime import date, datetime
@@ -178,7 +179,7 @@ def make_event_printer():
 
 # ── Demo 主流程 ─────────────────────────────────────────────────────────
 
-def run_demo() -> None:
+async def run_demo() -> None:
     world = MockWorld()
     registry = build_registry(world)
     timeline = build_timeline()
@@ -221,7 +222,7 @@ def run_demo() -> None:
 
     # ── 【2】首次轮询（真实 API） ─────────────────────────────────
     print(f"\n{_sep('【2】首次轮询：天气 + 交通（真实 API 快照）', '═')}")
-    events = agent.poll_once()
+    events = await agent.poll_once()
     for ev in events:
         # on_event 回调已打印格式化输出，这里补充说明
         if ev.event_type.value == "weather":
@@ -265,14 +266,14 @@ def run_demo() -> None:
 
     print("\n  模拟时间 17:30（全聚德 18:00 到达前 30 分钟）到达前监控触发：")
     now_food = datetime(2026, 8, 1, 17, 30)
-    agent.check_lookahead(now_food)
+    await agent.check_lookahead(now_food)
 
     print("\n  模拟时间 08:40（天坛 09:00 到达前 20 分钟）Day2 到达前监控触发：")
     now_tiantan = datetime(2026, 8, 2, 8, 40)
-    agent.check_lookahead(now_tiantan)
+    await agent.check_lookahead(now_tiantan)
 
     print("\n  模拟时间 08:50 再次轮询天气 + 交通，确认影响：")
-    agent.poll_once()
+    await agent.poll_once()
 
     # ── 【4】决策汇总 ─────────────────────────────────────────────
     print(f"\n{_sep('【4】决策汇总', '═')}")
@@ -321,4 +322,4 @@ def render_snippet(path: str, max_lines: int = 8) -> str:
 
 
 if __name__ == "__main__":
-    run_demo()
+    asyncio.run(run_demo())

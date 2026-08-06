@@ -220,13 +220,15 @@ def create_app() -> Any:
                 d_date = d.get("date", "")
                 d_date_val = date_cls.fromisoformat(d_date) if isinstance(d_date, str) else d_date
                 items = []
-                for it in d.get("items", []):
+                for it in d.get("items", d.get("activities", [])):
                     items.append(Place(
+                        id=it.get("id", ""),
                         name=it.get("name", ""),
                         lat=it.get("lat", 0.0),
                         lng=it.get("lng", 0.0),
                         category=it.get("category", "scenic"),
                         arrival=it.get("arrival", "09:00"),
+                        end_time=it.get("end_time", ""),
                         open_time=it.get("open_time", "09:00-17:00"),
                         queue_min=it.get("queue_min", 0),
                         ticket_required=it.get("ticket_required", False),
@@ -235,10 +237,13 @@ def create_app() -> Any:
                 days.append(DayPlan(day=d.get("day", 1), date=d_date_val, items=items))
 
             timeline = TripTimeline(
+                id=payload.get("id", ""),
                 city=city,
                 start_date=start_date,
                 end_date=end_date,
                 days=days,
+                total_cost=payload.get("total_cost", 0.0),
+                walking_distance=payload.get("walking_distance", 0.0),
             )
             state.init_timeline(timeline)
             return {"status": "ok", "message": "Timeline set", "timeline": to_dict(timeline)}
@@ -342,10 +347,10 @@ def create_app() -> Any:
         }
 
     @app.post("/execution/poll")
-    def execution_poll() -> Dict[str, Any]:
+    async def execution_poll() -> Dict[str, Any]:
         """手动触发一次轮询（Demo/调试用）。"""
         agent = state.require_execution_agent()
-        events = agent.poll_once()
+        events = await agent.poll_once()
         return {
             "status": "ok",
             "events": [to_dict(e) for e in events],
@@ -353,7 +358,7 @@ def create_app() -> Any:
         }
 
     @app.post("/execution/lookahead")
-    def execution_lookahead(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def execution_lookahead(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """手动触发到达前检查（Demo/调试用）。
 
         可选 body: {"now": "2026-08-01T08:45:00"} 指定模拟时间；
@@ -364,7 +369,7 @@ def create_app() -> Any:
             now = datetime.fromisoformat(payload["now"])
         else:
             now = datetime.now()
-        events = agent.check_lookahead(now)
+        events = await agent.check_lookahead(now)
         return {
             "status": "ok",
             "events": [to_dict(e) for e in events],
