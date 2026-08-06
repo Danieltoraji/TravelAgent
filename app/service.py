@@ -174,6 +174,47 @@ def create_app() -> Any:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    # ── 网页抓取/搜索（便捷端点，转发到 web_fetch / web_search 工具） ──
+
+    @app.post("/web/fetch")
+    def web_fetch(payload: Dict[str, Any] = {}) -> Dict[str, Any]:
+        """抓取指定 URL 的网页内容，提取标题、正文和链接。
+
+        参数: url (必填), selector (可选 CSS 选择器), max_length (默认 5000)
+        """
+        url = payload.get("url", "")
+        if not url:
+            raise HTTPException(status_code=400, detail="url is required")
+        try:
+            result = state.registry.call(
+                "web_fetch",
+                url=url,
+                selector=payload.get("selector", ""),
+                max_length=int(payload.get("max_length", 5000)),
+            )
+            return result.to_dict()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/web/search")
+    def web_search(payload: Dict[str, Any] = {}) -> Dict[str, Any]:
+        """搜索关键词，返回相关网页列表。
+
+        参数: query (必填), max_results (默认 5)
+        """
+        query = payload.get("query", "")
+        if not query:
+            raise HTTPException(status_code=400, detail="query is required")
+        try:
+            result = state.registry.call(
+                "web_search",
+                query=query,
+                max_results=int(payload.get("max_results", 5)),
+            )
+            return result.to_dict()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     # ── 行程时间轴 ──────────────────────────────────────────────────
 
     @app.get("/timeline")

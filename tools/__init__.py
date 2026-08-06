@@ -32,6 +32,9 @@ from tools.weather_tool import (
     WeatherWarningTool,
     WeatherWarningToolLive,
 )
+from tools.web_client import WebClient
+from tools.web_fetch_tool import WebFetchTool, WebFetchToolLive
+from tools.web_search_tool import WebSearchTool, WebSearchToolLive
 
 
 def build_registry(world: MockWorld | None = None) -> ToolRegistry:
@@ -75,6 +78,16 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(WeatherForecastTool(world))
 
     registry.register(BookingTool())
+
+    # 网页抓取/搜索 Tool：按配置自动切换 Mock / Live（无需 API Key）
+    if settings.use_real_web:
+        web_client = WebClient()
+        registry.register(WebFetchToolLive(web_client))
+        registry.register(WebSearchToolLive(web_client))
+    else:
+        registry.register(WebFetchTool())
+        registry.register(WebSearchTool())
+
     return registry
 
 

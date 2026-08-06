@@ -9,3 +9,6 @@
 # --- 可选: 服务层 ---
 fastapi>=0.110
 uvicorn>=0.29
+
+# --- 可选: 网页抓取工具 (WebFetchTool / WebSearchTool) ---
+beautifulsoup4>=4.12

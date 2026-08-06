@@ -65,6 +65,14 @@ class Settings:
         """
         return not self.demo_mode and bool(self.amap_api_key)
 
+    @property
+    def use_real_web(self) -> bool:
+        """当前是否应使用真实网页抓取（Demo 关闭即启用）。
+
+        网页抓取无需 API Key，只要非 Demo 模式就用真实抓取。
+        """
+        return not self.demo_mode
+
     def reload(self) -> None:
         """热更新：重新从环境变量读取 API Key + 重新加载 local_settings.py。
 
