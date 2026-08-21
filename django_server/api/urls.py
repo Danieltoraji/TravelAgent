@@ -1,0 +1,43 @@
+from django.urls import path
+
+from . import views
+
+urlpatterns = [
+    path("health/", views.health, name="health"),
+    path("status/", views.status, name="status"),
+    path("agent/", views.agent_info, name="agent_info"),
+    path("profile/", views.profile, name="profile"),
+
+    path("tools/", views.list_tools, name="list_tools"),
+    path("tools/invoke/", views.invoke_tool_llm, name="invoke_tool_llm"),
+    path("tools/<str:name>/", views.get_tool_spec, name="get_tool_spec"),
+    path("tools/<str:name>/invoke/", views.invoke_tool, name="invoke_tool"),
+
+    path("timeline/history/", views.timeline_history, name="timeline_history"),
+    path("timeline/", views.timeline, name="timeline"),
+
+    path("booking/prepare/", views.booking_prepare, name="booking_prepare"),
+    path("booking/<str:booking_id>/confirm/", views.booking_confirm, name="booking_confirm"),
+    path("booking/<str:booking_id>/cancel/", views.booking_cancel, name="booking_cancel"),
+    path("booking/<str:booking_id>/payment/", views.booking_payment, name="booking_payment"),
+    path("booking/", views.list_bookings, name="list_bookings"),
+    path("booking/<str:booking_id>/", views.get_booking, name="get_booking"),
+
+    path("actions/", views.list_actions, name="list_actions"),
+    path("actions/<str:action_id>/approve/", views.approve_action, name="approve_action"),
+    path("actions/<str:action_id>/reject/", views.reject_action, name="reject_action"),
+
+    path("events/", views.list_events, name="list_events"),
+    path("replans/", views.list_replans, name="list_replans"),
+    path("replans/<int:index>/", views.get_replan, name="get_replan"),
+    path("tool-calls/", views.tool_calls, name="tool_calls"),
+
+    path("execution/poll/", views.execution_poll, name="execution_poll"),
+    path("execution/lookahead/", views.execution_lookahead, name="execution_lookahead"),
+
+    path("export/ics/", views.export_ics, name="export_ics"),
+    path("export/markdown/", views.export_markdown, name="export_markdown"),
+
+    path("config/", views.config_info, name="config_info"),
+    path("config/reload/", views.config_reload, name="config_reload"),
+]
