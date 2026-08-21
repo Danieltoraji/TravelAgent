@@ -111,6 +111,26 @@ class ToolResult:
     def to_json(self) -> str:
         return to_json(self)
 
+@dataclass
+class ToolSpec:
+    """工具元数据契约：供 A 侧 LLM 理解并直接调用 B 封装的工具。
+
+    - ``input_schema`` 直接复用各 Tool 的 JSON Schema 风格入参说明；
+    - ``readonly`` 标记该工具是否只读；有副作用工具（如 booking）默认不应让 LLM 直调。
+    """
+    name: str
+    description: str
+    input_schema: Dict[str, Any] = field(default_factory=dict)
+    readonly: bool = True
+    source: str = "mock"            # mock / live
+
+    def to_dict(self) -> Dict[str, Any]:
+        return to_dict(self)
+
+    def to_json(self) -> str:
+        return to_json(self)
+
+
 
 # ---------------------------------------------------------------------------
 # Planner / Route Planner 契约（A 负责产出，B 据此消费）

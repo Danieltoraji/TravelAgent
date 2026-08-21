@@ -9,7 +9,9 @@
 端点一览：
   基础:
     GET  /health                         健康检查
-    GET  /tools                          列出所有已注册工具
+    GET  /tools                          列出所有已注册工具（names + specs）
+    GET  /tools/{name}                   获取单个工具元数据
+    POST /tools/invoke                   调用工具（LLM 友好：{"name", "arguments"}）
     POST /tools/{name}/invoke            调用指定工具
 
   行程时间轴:
@@ -57,7 +59,7 @@ from core.schemas import (
 from execution.execution_agent import ExecutionAgent
 from itinerary.ics_exporter import build_ics
 from itinerary.markdown_exporter import render_markdown
-from tools import ToolRegistry, build_registry, default_registry
+from tools import ToolProvider, ToolRegistry, build_registry, default_registry
 
 logger = logging.getLogger("app.service")
 
@@ -165,7 +167,38 @@ def create_app() -> Any:
 
     @app.get("/tools")
     def list_tools() -> Dict[str, Any]:
-        return {"tools": state.registry.names()}
+        """列出工具：`tools` 为名称列表（兼容），`specs` 为完整元数据（供 LLM）。"""
+        names = state.registry.names()
+        specs = state.registry.list_specs()
+        return {
+            "tools": names,
+            "specs": [to_dict(s) for s in specs],
+            "count": len(names),
+        }
+
+    @app.get("/tools/{name}")
+    def get_tool_spec(name: str) -> Dict[str, Any]:
+        """获取单个工具的元数据（name / description / input_schema）。"""
+        try:
+            return to_dict(state.registry.get_spec(name))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/tools/invoke")
+    def invoke_tool_llm(payload: Dict[str, Any] = {}) -> Dict[str, Any]:
+        """LLM 友好入口：body 为 {"name": "...", "arguments": {...}}。
+
+        只允许调用 ToolProvider 默认白名单内的只读工具（booking 等有副作用工具不可直调）。
+        """
+        name = payload.get("name", "")
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        arguments = payload.get("arguments") or {}
+        provider = ToolProvider(state.registry)
+        try:
+            return provider.call_json(name, arguments)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/tools/{name}/invoke")
     def invoke_tool(name: str, payload: Dict[str, Any] = {}) -> Dict[str, Any]:

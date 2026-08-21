@@ -83,9 +83,47 @@ class TestServiceBase(unittest.TestCase):
     def test_list_tools(self) -> None:
         r = self.client.get("/tools")
         self.assertEqual(r.status_code, 200)
-        tools = r.json()["tools"]
+        data = r.json()
+        tools = data["tools"]
         self.assertIn("booking", tools)
         self.assertIn("weather", tools)
+        self.assertIn("specs", data)
+        spec_names = [s["name"] for s in data["specs"]]
+        self.assertIn("weather", spec_names)
+        self.assertIn("booking", spec_names)
+
+    def test_get_tool_spec(self) -> None:
+        r = self.client.get("/tools/weather")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["name"], "weather")
+        self.assertIn("description", data)
+        self.assertIn("input_schema", data)
+
+    def test_get_tool_spec_404(self) -> None:
+        r = self.client.get("/tools/nosuchtool")
+        self.assertEqual(r.status_code, 404)
+
+    def test_invoke_tool_llm(self) -> None:
+        r = self.client.post("/tools/invoke", json={
+            "name": "weather",
+            "arguments": {"city": "北京"},
+        })
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["tool"], "weather")
+        self.assertIn("status", data)
+
+    def test_invoke_tool_llm_missing_name_400(self) -> None:
+        r = self.client.post("/tools/invoke", json={"arguments": {}})
+        self.assertEqual(r.status_code, 400)
+
+    def test_invoke_tool_llm_rejects_side_effect(self) -> None:
+        r = self.client.post("/tools/invoke", json={
+            "name": "booking",
+            "arguments": {"action": "prepare", "place": "故宫"},
+        })
+        self.assertEqual(r.status_code, 404)
 
     def test_invoke_tool_weather(self) -> None:
         r = self.client.post("/tools/weather/invoke", json={"city": "北京"})

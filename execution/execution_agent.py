@@ -29,6 +29,7 @@ from core.schemas import (
 )
 from monitor.monitor_scheduler import MonitorRule, MonitorScheduler
 from tools import ToolRegistry, default_registry
+from tools.tool_provider import ToolProvider
 
 logger = logging.getLogger("execution")
 
@@ -52,6 +53,7 @@ class ExecutionAgent:
     impact_threshold: float = 50.0
     booking_manager: Optional[BookingManager] = None
     default_party_size: int = 1
+    tool_provider: Optional[ToolProvider] = None
     # 可注入的“当前时间”函数：生产用 datetime.now，Demo/测试可注入模拟时钟
     now_fn: Callable[[], datetime] = datetime.now
 
@@ -62,6 +64,9 @@ class ExecutionAgent:
         # 自动预约状态跟踪
         self._booked_places: Set[str] = set()
         self._place_info: Dict[str, Place] = {}
+        # 默认给 A 侧 LLM 暴露一个只读工具门面
+        if self.tool_provider is None:
+            self.tool_provider = ToolProvider(self.registry)
         self._build_rules()
 
     # -- 规则构建 ----------------------------------------------------------
@@ -173,7 +178,10 @@ class ExecutionAgent:
         req = DecisionRequest(
             events=[event],
             current_timeline=self.timeline,
-            context={"impact_threshold": self.impact_threshold},
+            context={
+                "impact_threshold": self.impact_threshold,
+                "tool_specs": self.tool_provider.list_tools_json(),
+            },
         )
         if self.decision_hook is not None:
             try:

@@ -14,7 +14,7 @@ import time
 from typing import Any, ClassVar
 from urllib.error import URLError
 
-from core.schemas import ToolResult, ToolStatus
+from core.schemas import ToolResult, ToolSpec, ToolStatus
 
 logger = logging.getLogger("tools.base")
 
@@ -35,10 +35,22 @@ class BaseTool(abc.ABC):
     name: str = "base"
     description: str = "Base tool"
     source: str = "mock"
+    readonly: bool = True           # 是否只读；有副作用工具应设为 False
     input_schema: ClassVar[dict] = {}
 
     def __init__(self) -> None:
         self._registry_ref: ToolRegistry | None = None
+
+    def spec(self) -> ToolSpec:
+        """返回该工具的元数据，供 A 侧 LLM 理解与调用。"""
+        return ToolSpec(
+            name=self.name,
+            description=self.description,
+            input_schema=dict(self.input_schema),
+            readonly=self.readonly,
+            source=self.source,
+        )
+
 
     def execute(self, **kwargs: Any) -> ToolResult:
         """统一的执行入口：计时 + 异常捕获 + 重试 + 统一返回契约。
@@ -118,6 +130,17 @@ class ToolRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._tools)
+
+    def list_specs(self, allowlist: set[str] | None = None) -> list[ToolSpec]:
+        """返回全部（或白名单内）工具的元数据，按名称排序。"""
+        names = self.names()
+        if allowlist is not None:
+            names = [n for n in names if n in allowlist]
+        return [self._tools[n].spec() for n in names]
+
+    def get_spec(self, name: str) -> ToolSpec:
+        return self.get(name).spec()
+
 
     def call(self, name: str, **kwargs: Any) -> ToolResult:
         return self.get(name).execute(**kwargs)

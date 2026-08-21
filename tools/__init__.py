@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from tools.amap_client import AmapClient
 from tools.base_tool import BaseTool, ToolRegistry
+from tools.tool_provider import ToolProvider
 from tools.booking_tool import BookingTool
 from tools.food_tool import FoodTool, FoodToolLive
 from tools.map_tool import MapTool, MapToolLive
@@ -108,6 +109,7 @@ __all__ = [
     "QWeatherClient",
     "ScenicTool",
     "ScenicToolLive",
+    "ToolProvider",
     "ToolRegistry",
     "TrafficTool",
     "TrafficToolLive",

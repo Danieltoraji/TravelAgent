@@ -21,6 +21,7 @@ class BookingTool(BaseTool):
     name = "booking"
     description = "预约服务：为景点/酒店准备预约（填写信息），不涉及付款。"
     source = "mock"
+    readonly = False
     input_schema = {
         "type": "object",
         "properties": {
