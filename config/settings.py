@@ -26,7 +26,8 @@ class PollingConfig:
 class Settings:
     project_name: str = "TravelAgent"
     version: str = "0.1.0"
-    demo_mode: bool = False                 # 比赛 Demo 用 Mock 数据，不调真实 API
+    demo_mode: bool = field(default_factory=lambda: os.environ.get(
+        "DEMO_MODE", "false").lower() in ("1", "true", "yes"))  # 比赛 Demo 用 Mock 数据，不调真实 API
 
     polling: PollingConfig = field(default_factory=PollingConfig)
     scenic_lookahead_min: int = 20         # 景点：到达前 20 分钟查看

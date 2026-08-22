@@ -1,2 +1,4 @@
 # Django 单用户 Demo 依赖
 Django>=5.0,<6.0
+gunicorn>=22.0
+

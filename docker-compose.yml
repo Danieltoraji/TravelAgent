@@ -1,0 +1,11 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: django_server/Dockerfile
+    container_name: travelagent-django
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped

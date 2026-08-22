@@ -1,0 +1,14 @@
+.git
+.gitignore
+logs
+output
+app
+docs
+demo
+tests
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+django_server/db.sqlite3
+config/local_settings.py
