@@ -1,0 +1,60 @@
+{
+  "city": "北京",
+  "currency": "CNY",
+  "hotels": [
+    {
+      "id": "BJ_H001",
+      "name": "皇城景观酒店",
+      "location": {"lat": 39.916, "lng": 116.405},
+      "room_types": [{"name": "舒适大床房", "price": 688}, {"name": "皇城景观房", "price": 988}, {"name": "家庭套房", "price": 1288}],
+      "rating": 4.7,
+      "tags": {"dining": ["自助早餐", "中餐厅"], "service": ["24小时前台", "行李寄存"], "environment": ["皇城景观", "安静客房"]},
+      "nearby_spot_ids": ["BJ_001", "BJ_006", "BJ_010", "BJ_011", "BJ_026", "BJ_027"]
+    },
+    {
+      "id": "BJ_H002",
+      "name": "什刹海胡同精品酒店",
+      "location": {"lat": 39.941, "lng": 116.388},
+      "room_types": [{"name": "胡同大床房", "price": 568}, {"name": "庭院双床房", "price": 768}],
+      "rating": 4.6,
+      "tags": {"dining": ["中式早餐", "下午茶"], "service": ["旅行咨询", "洗衣服务"], "environment": ["四合院", "胡同文化"]},
+      "nearby_spot_ids": ["BJ_008", "BJ_013", "BJ_014", "BJ_015"]
+    },
+    {
+      "id": "BJ_H003",
+      "name": "海淀园林商务酒店",
+      "location": {"lat": 39.989, "lng": 116.294},
+      "room_types": [{"name": "商务大床房", "price": 498}, {"name": "园景双床房", "price": 628}, {"name": "亲子房", "price": 758}],
+      "rating": 4.5,
+      "tags": {"dining": ["自助早餐", "素食选择"], "service": ["会议室", "行李寄存"], "environment": ["园林安静", "近地铁"]},
+      "nearby_spot_ids": ["BJ_003", "BJ_012", "BJ_019", "BJ_020", "BJ_021", "BJ_024", "BJ_025"]
+    },
+    {
+      "id": "BJ_H004",
+      "name": "北城会展酒店",
+      "location": {"lat": 40.003, "lng": 116.4},
+      "room_types": [{"name": "高级大床房", "price": 598}, {"name": "行政双床房", "price": 798}],
+      "rating": 4.6,
+      "tags": {"dining": ["自助早餐", "大堂吧"], "service": ["健身房", "延迟退房"], "environment": ["现代简约", "城市景观"]},
+      "nearby_spot_ids": ["BJ_016", "BJ_017", "BJ_018", "BJ_030"]
+    },
+    {
+      "id": "BJ_H005",
+      "name": "长城山居客栈",
+      "location": {"lat": 40.36, "lng": 116.025},
+      "room_types": [{"name": "山景大床房", "price": 428}, {"name": "长城家庭房", "price": 688}],
+      "rating": 4.4,
+      "tags": {"dining": ["农家早餐", "晚餐预订"], "service": ["景区接送", "路线咨询"], "environment": ["山景", "乡村安静"]},
+      "nearby_spot_ids": ["BJ_002", "BJ_005", "BJ_007", "BJ_009", "BJ_022", "BJ_028"]
+    },
+    {
+      "id": "BJ_H006",
+      "name": "东部乐园亲子酒店",
+      "location": {"lat": 39.861, "lng": 116.67},
+      "room_types": [{"name": "主题双床房", "price": 788}, {"name": "亲子套房", "price": 1088}],
+      "rating": 4.7,
+      "tags": {"dining": ["儿童早餐", "全天餐厅"], "service": ["儿童用品", "接驳车"], "environment": ["主题装饰", "亲子友好"]},
+      "nearby_spot_ids": ["BJ_004", "BJ_023", "BJ_029"]
+    }
+  ]
+}

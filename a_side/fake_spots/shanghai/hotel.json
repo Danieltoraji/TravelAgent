@@ -1,0 +1,60 @@
+{
+  "city": "上海",
+  "currency": "CNY",
+  "hotels": [
+    {
+      "id": "SH_H001",
+      "name": "外滩江景酒店",
+      "location": {"lat": 31.232, "lng": 121.488},
+      "room_types": [{"name": "城市大床房", "price": 788}, {"name": "江景大床房", "price": 1188}, {"name": "外滩套房", "price": 1688}],
+      "rating": 4.8,
+      "tags": {"dining": ["自助早餐", "江景餐厅"], "service": ["24小时前台", "礼宾服务"], "environment": ["外滩夜景", "历史建筑风格"]},
+      "nearby_spot_ids": ["SH_001", "SH_003", "SH_004", "SH_010", "SH_014", "SH_025"]
+    },
+    {
+      "id": "SH_H002",
+      "name": "陆家嘴云际酒店",
+      "location": {"lat": 31.237, "lng": 121.502},
+      "room_types": [{"name": "高级大床房", "price": 988}, {"name": "天际景观房", "price": 1388}],
+      "rating": 4.7,
+      "tags": {"dining": ["行政酒廊", "西餐厅"], "service": ["健身房", "延迟退房"], "environment": ["高层景观", "现代商务"]},
+      "nearby_spot_ids": ["SH_002", "SH_006", "SH_012", "SH_016", "SH_017", "SH_019"]
+    },
+    {
+      "id": "SH_H003",
+      "name": "法租界梧桐精品酒店",
+      "location": {"lat": 31.208, "lng": 121.454},
+      "room_types": [{"name": "梧桐大床房", "price": 658}, {"name": "露台套房", "price": 928}],
+      "rating": 4.6,
+      "tags": {"dining": ["西式早餐", "下午茶"], "service": ["旅行咨询", "自行车租赁"], "environment": ["梧桐街区", "安静庭院"]},
+      "nearby_spot_ids": ["SH_005", "SH_007", "SH_008", "SH_015", "SH_023", "SH_024", "SH_027", "SH_030"]
+    },
+    {
+      "id": "SH_H004",
+      "name": "浦东乐园亲子酒店",
+      "location": {"lat": 31.15, "lng": 121.65},
+      "room_types": [{"name": "主题双床房", "price": 898}, {"name": "亲子套房", "price": 1288}],
+      "rating": 4.7,
+      "tags": {"dining": ["儿童早餐", "全天餐厅"], "service": ["乐园接驳", "儿童用品"], "environment": ["主题装饰", "亲子友好"]},
+      "nearby_spot_ids": ["SH_011", "SH_018"]
+    },
+    {
+      "id": "SH_H005",
+      "name": "虹桥古镇商务酒店",
+      "location": {"lat": 31.16, "lng": 121.35},
+      "room_types": [{"name": "商务大床房", "price": 468}, {"name": "家庭双床房", "price": 628}],
+      "rating": 4.4,
+      "tags": {"dining": ["中式早餐", "简餐吧"], "service": ["机场接送预约", "行李寄存"], "environment": ["交通便利", "古镇邻近"]},
+      "nearby_spot_ids": ["SH_009", "SH_021", "SH_022", "SH_028"]
+    },
+    {
+      "id": "SH_H006",
+      "name": "临港湖景度假酒店",
+      "location": {"lat": 30.905, "lng": 121.93},
+      "room_types": [{"name": "园景大床房", "price": 598}, {"name": "湖景双床房", "price": 758}, {"name": "家庭套房", "price": 968}],
+      "rating": 4.6,
+      "tags": {"dining": ["自助早餐", "海鲜餐厅"], "service": ["免费停车", "亲子活动"], "environment": ["滴水湖景", "度假安静"]},
+      "nearby_spot_ids": ["SH_013", "SH_020", "SH_026", "SH_029"]
+    }
+  ]
+}

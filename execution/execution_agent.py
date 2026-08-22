@@ -215,6 +215,8 @@ class ExecutionAgent:
         - 天气：降雨概率 >= 60%
         - 景点：排队 >= impact_threshold
         - 交通：延误 >= 30 分钟
+        - 预订：含 hotel_id 且满房（hotel_full）或价格变动（price_delta）→ 放行
+          （AB 合码方案 §三.6，与上面分支同一风格）
         """
         data = event.data or {}
         if event.event_type == EventType.WEATHER:
@@ -223,6 +225,10 @@ class ExecutionAgent:
             return int(data.get("queue_min", 0)) >= int(self.impact_threshold)
         if event.event_type == EventType.TRAFFIC:
             return int(data.get("delay_min", 0)) >= 30
+        if event.event_type == EventType.BOOKING:
+            return bool(data.get("hotel_id")) and bool(
+                data.get("hotel_full") or data.get("price_delta") is not None
+            )
         return False
 
     # -- 驱动入口（Demo / 测试用异步驱动） ---------------------------------

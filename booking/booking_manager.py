@@ -12,8 +12,9 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from core.schemas import (
     ActionItem,
@@ -23,6 +24,8 @@ from core.schemas import (
     ToolStatus,
 )
 from tools import ToolRegistry, default_registry
+
+logger = logging.getLogger("booking")
 
 
 @dataclass
@@ -45,12 +48,22 @@ class BookingRecord:
 
 
 class BookingManager:
-    """预约状态机。每个动作同步产出一个 ActionItem（供 C 的 Action Queue 展示/确认）。"""
+    """预约状态机。每个动作同步产出一个 ActionItem（供 C 的 Action Queue 展示/确认）。
 
-    def __init__(self, registry: Optional[ToolRegistry] = None) -> None:
+    ``on_booking_failed``：可选回调（由 AgentRuntime 注入），预订提交失败时
+    在状态置 FAILED / Action 置 BLOCKED 之后调用，用于补发 BOOKING 事件
+    闭合「确认预订 → 失败 → 事件 → A 换酒店」闭环（AB 合码方案 §三.7）。
+    """
+
+    def __init__(
+        self,
+        registry: Optional[ToolRegistry] = None,
+        on_booking_failed: Optional[Callable[["BookingRecord"], None]] = None,
+    ) -> None:
         self._registry = registry or default_registry
         self._records: Dict[str, BookingRecord] = {}
         self._actions: List[ActionItem] = []
+        self._on_booking_failed = on_booking_failed
 
     # -- 查询 --------------------------------------------------------------
     def records(self) -> List[BookingRecord]:
@@ -157,6 +170,11 @@ class BookingManager:
             rec.status = BookingStatus.FAILED
             rec.note = result.error or "submit failed"
             self._mark_action(booking_id, ActionStatus.BLOCKED)
+            if self._on_booking_failed is not None:
+                try:
+                    self._on_booking_failed(rec)
+                except Exception:  # noqa: BLE001  回调失败不阻断 confirm 的报错返回
+                    logger.exception("on_booking_failed handler failed")
             raise RuntimeError(result.error or f"booking submit failed: {booking_id}")
         rec.status = BookingStatus.SUBMITTED
         rec.confirm_code = result.data.get("confirm_code", "")

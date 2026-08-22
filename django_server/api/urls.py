@@ -16,6 +16,8 @@ urlpatterns = [
     path("timeline/history/", views.timeline_history, name="timeline_history"),
     path("timeline/", views.timeline, name="timeline"),
 
+    path("plan/", views.plan, name="plan"),
+
     path("booking/prepare/", views.booking_prepare, name="booking_prepare"),
     path("booking/<str:booking_id>/confirm/", views.booking_confirm, name="booking_confirm"),
     path("booking/<str:booking_id>/cancel/", views.booking_cancel, name="booking_cancel"),

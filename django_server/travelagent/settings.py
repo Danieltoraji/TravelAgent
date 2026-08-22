@@ -9,6 +9,12 @@ REPO_ROOT = os.path.dirname(BASE_DIR)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# AB 合码方案 §二铁律 2：a_side 用 append 不用 insert——B 的模块永远优先，
+# A 的顶层导入（from algorithoms.xxx 等）仍可解析；禁止新增顶层 config 模块遮蔽 B 的 config/ 包。
+A_SIDE_ROOT = os.path.join(REPO_ROOT, "a_side")
+if A_SIDE_ROOT not in sys.path:
+    sys.path.append(A_SIDE_ROOT)
+
 SECRET_KEY = "django-insecure-travelagent-demo"
 DEBUG = True
 ALLOWED_HOSTS = ["*"]

@@ -1,0 +1,1144 @@
+﻿[
+    {
+        "id": "SH_001",
+        "name": "上海外滩",
+        "alias": [
+            "外滩",
+            "万国建筑群",
+            "黄浦滩"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.23,
+            "lng": 121.49
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 90,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "商业娱乐",
+            "城市地标",
+            "滨江滨海",
+            "夜景灯光",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "全天24h",
+            "排队时间长"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "情侣打卡",
+            "震撼出片",
+            "市井烟火"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_002",
+        "name": "东方明珠广播电视塔",
+        "alias": [
+            "东方明珠",
+            "明珠塔"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.239,
+            "lng": 121.499
+        },
+        "price": 199,
+        "guide_price": 100,
+        "duration": 120,
+        "opening_time": "09:00",
+        "closing_time": "21:30",
+        "content_tags": [
+            "商业娱乐",
+            "城市地标",
+            "高空观景",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "中度1-3h",
+            "高价观光",
+            "夜景延长",
+            "排队时间长"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "情侣打卡",
+            "震撼出片",
+            "亲子出游"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_003",
+        "name": "豫园",
+        "alias": [
+            "豫园园林",
+            "城隍庙园林"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.223,
+            "lng": 121.486
+        },
+        "price": 40,
+        "guide_price": 20,
+        "duration": 110,
+        "opening_time": "08:30",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "园林古迹",
+            "古建筑",
+            "民俗市井"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "短途1h内",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "古风诗意",
+            "文艺青年",
+            "摄影观景",
+            "休闲松弛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_004",
+        "name": "南京路步行街",
+        "alias": [
+            "南京路",
+            "中华商业第一街"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.233,
+            "lng": 121.475
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 100,
+        "opening_time": "09:00",
+        "closing_time": "22:00",
+        "content_tags": [
+            "商业娱乐",
+            "商业街古街",
+            "网红打卡",
+            "美食小吃"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "夜景延长",
+            "排队时间长"
+        ],
+        "experience_tags": [
+            "市井烟火",
+            "休闲松弛",
+            "购物",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_005",
+        "name": "武康路历史文化名街",
+        "alias": [
+            "武康路",
+            "网红梧桐大道"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.207,
+            "lng": 121.44
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 80,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "历史文化",
+            "古建筑",
+            "商业街古街",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "全天24h",
+            "错峰友好"
+        ],
+        "experience_tags": [
+            "安静治愈",
+            "文艺青年",
+            "摄影观景",
+            "情侣打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_006",
+        "name": "上海之巅观光厅（上海中心）",
+        "alias": [
+            "上海中心",
+            "上海之巅",
+            "陆家嘴第一高楼"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.234,
+            "lng": 121.501
+        },
+        "price": 180,
+        "guide_price": 90,
+        "duration": 100,
+        "opening_time": "08:30",
+        "closing_time": "22:00",
+        "content_tags": [
+            "商业娱乐",
+            "城市地标",
+            "高空观景",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "强制预约",
+            "短途1h内",
+            "高价观光",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "震撼出片",
+            "情侣打卡",
+            "摄影观景"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_007",
+        "name": "田子坊",
+        "alias": [
+            "田子坊弄堂",
+            "石库门文创街区"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.199,
+            "lng": 121.47
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 120,
+        "opening_time": "10:00",
+        "closing_time": "21:00",
+        "content_tags": [
+            "历史文化",
+            "民俗市井",
+            "商业街古街",
+            "文创购物"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "免费开放",
+            "夜景延长",
+            "排队时间长"
+        ],
+        "experience_tags": [
+            "市井烟火",
+            "文艺青年",
+            "美食小吃",
+            "休闲松弛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_008",
+        "name": "静安寺",
+        "alias": [
+            "静安古寺",
+            "沪上名刹"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.224,
+            "lng": 121.447
+        },
+        "price": 50,
+        "guide_price": 25,
+        "duration": 70,
+        "opening_time": "07:30",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "宗教古刹",
+            "古建筑",
+            "祈福参拜"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "短途1h内",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "安静治愈",
+            "古风诗意",
+            "祈福参拜",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_009",
+        "name": "朱家角古镇",
+        "alias": [
+            "朱家角",
+            "淀山湖古镇",
+            "上海威尼斯"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.112,
+            "lng": 121.052
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 210,
+        "opening_time": "08:00",
+        "closing_time": "21:30",
+        "content_tags": [
+            "自然景观",
+            "山水湖景",
+            "历史文化",
+            "民俗市井",
+            "游船骑行"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "全天3h以上",
+            "免费开放",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "古风诗意",
+            "休闲松弛",
+            "美食小吃",
+            "亲子出游"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_010",
+        "name": "上海博物馆",
+        "alias": [
+            "上博",
+            "上海博物院"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.23,
+            "lng": 121.467
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 150,
+        "opening_time": "09:00",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "博物馆",
+            "研学教育",
+            "传统文化"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "强制预约",
+            "中度1-3h",
+            "免费开放",
+            "日间游览",
+            "错峰友好"
+        ],
+        "experience_tags": [
+            "安静治愈",
+            "历史爱好者",
+            "研学教育",
+            "文艺青年"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_011",
+        "name": "上海迪士尼乐园",
+        "alias": [
+            "上海迪士尼",
+            "迪士尼"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.143,
+            "lng": 121.657
+        },
+        "price": 475,
+        "guide_price": 238,
+        "duration": 600,
+        "opening_time": "08:30",
+        "closing_time": "21:30",
+        "content_tags": [
+            "商业娱乐",
+            "城市地标",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "全天3h以上",
+            "高价观光",
+            "排队时间长",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "情侣打卡",
+            "震撼出片",
+            "拍照打卡"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_012",
+        "name": "上海科技馆",
+        "alias": [
+            "科技馆",
+            "浦东科技馆"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.222,
+            "lng": 121.544
+        },
+        "price": 45,
+        "guide_price": 22,
+        "duration": 240,
+        "opening_time": "09:00",
+        "closing_time": "17:00",
+        "content_tags": [
+            "博物馆",
+            "研学教育",
+            "近现代纪念"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "全天3h以上",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "研学教育",
+            "休闲松弛"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_013",
+        "name": "上海自然博物馆",
+        "alias": [
+            "自然博物馆",
+            "上海自然馆"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.242,
+            "lng": 121.463
+        },
+        "price": 30,
+        "guide_price": 15,
+        "duration": 240,
+        "opening_time": "09:00",
+        "closing_time": "17:00",
+        "content_tags": [
+            "博物馆",
+            "研学教育",
+            "自然景观"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "全天3h以上",
+            "低价亲民",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "研学教育",
+            "摄影观景"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_014",
+        "name": "上海城隍庙",
+        "alias": [
+            "城隍庙",
+            "老城隍庙"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.227,
+            "lng": 121.492
+        },
+        "price": 10,
+        "guide_price": 5,
+        "duration": 100,
+        "opening_time": "08:30",
+        "closing_time": "16:30",
+        "content_tags": [
+            "历史文化",
+            "宗教古刹",
+            "商业街古街",
+            "民俗市井"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "无需预约",
+            "短途1h内",
+            "低价亲民",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "市井烟火",
+            "祈福参拜",
+            "美食小吃",
+            "拍照打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_015",
+        "name": "上海新天地",
+        "alias": [
+            "新天地",
+            "新天地石库门"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.22,
+            "lng": 121.475
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 120,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "历史文化",
+            "商业娱乐",
+            "商业街古街",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "无需预约",
+            "中度1-3h",
+            "免费开放",
+            "全天24h"
+        ],
+        "experience_tags": [
+            "文艺青年",
+            "情侣打卡",
+            "散步闲逛",
+            "拍照打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_016",
+        "name": "陆家嘴中心绿地",
+        "alias": [
+            "陆家嘴",
+            "陆家嘴绿地"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.236,
+            "lng": 121.503
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 90,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "城市地标",
+            "城市公园",
+            "商业娱乐",
+            "夜景灯光"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "全天24h"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "摄影观景",
+            "散步闲逛",
+            "情侣打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_017",
+        "name": "世纪公园",
+        "alias": [
+            "浦东世纪公园",
+            "世纪公园景区"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.215,
+            "lng": 121.55
+        },
+        "price": 10,
+        "guide_price": 5,
+        "duration": 180,
+        "opening_time": "05:00",
+        "closing_time": "21:00",
+        "content_tags": [
+            "自然景观",
+            "城市公园",
+            "绿植花海",
+            "山水湖景"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "休闲松弛",
+            "散步闲逛",
+            "摄影观景"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_018",
+        "name": "上海野生动物园",
+        "alias": [
+            "上野",
+            "浦东野生动物园"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.056,
+            "lng": 121.722
+        },
+        "price": 165,
+        "guide_price": 82,
+        "duration": 420,
+        "opening_time": "09:00",
+        "closing_time": "17:00",
+        "content_tags": [
+            "自然景观",
+            "城市公园",
+            "研学教育"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "全天3h以上",
+            "高价观光",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "研学教育",
+            "摄影观景"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_019",
+        "name": "上海海洋水族馆",
+        "alias": [
+            "海洋水族馆",
+            "陆家嘴水族馆"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.241,
+            "lng": 121.501
+        },
+        "price": 160,
+        "guide_price": 80,
+        "duration": 180,
+        "opening_time": "09:00",
+        "closing_time": "21:00",
+        "content_tags": [
+            "商业娱乐",
+            "研学教育",
+            "城市地标"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "中度1-3h",
+            "高价观光",
+            "排队时间长",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "研学教育",
+            "情侣打卡"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_020",
+        "name": "中华艺术宫",
+        "alias": [
+            "中国馆",
+            "上海美术馆中华艺术宫"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.186,
+            "lng": 121.491
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 180,
+        "opening_time": "10:00",
+        "closing_time": "18:00",
+        "content_tags": [
+            "博物馆",
+            "近现代纪念",
+            "城市地标"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "强制预约",
+            "中度1-3h",
+            "免费开放",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "文艺青年",
+            "研学教育",
+            "恢弘大气",
+            "安静治愈"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_021",
+        "name": "上海影视乐园",
+        "alias": [
+            "车墩影视基地",
+            "上海影视基地"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.018,
+            "lng": 121.314
+        },
+        "price": 80,
+        "guide_price": 40,
+        "duration": 240,
+        "opening_time": "08:30",
+        "closing_time": "16:30",
+        "content_tags": [
+            "近现代纪念",
+            "商业街古街",
+            "城市地标"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "全天3h以上",
+            "高价观光",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "拍照打卡",
+            "文艺青年",
+            "摄影观景",
+            "古风诗意"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_022",
+        "name": "七宝古镇",
+        "alias": [
+            "七宝老街",
+            "七宝"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.158,
+            "lng": 121.35
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 150,
+        "opening_time": "09:00",
+        "closing_time": "21:00",
+        "content_tags": [
+            "历史文化",
+            "商业街古街",
+            "民俗市井",
+            "传统文化"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "免费开放",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "市井烟火",
+            "美食小吃",
+            "古风诗意",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_023",
+        "name": "徐家汇天主教堂",
+        "alias": [
+            "徐家汇教堂",
+            "圣依纳爵主教座堂"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.19,
+            "lng": 121.437
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 60,
+        "opening_time": "09:00",
+        "closing_time": "16:00",
+        "content_tags": [
+            "历史文化",
+            "宗教古刹",
+            "古建筑",
+            "近现代纪念"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "安静治愈",
+            "文艺青年",
+            "摄影观景",
+            "古风诗意"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_024",
+        "name": "龙华寺",
+        "alias": [
+            "上海龙华寺",
+            "龙华古寺"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.174,
+            "lng": 121.451
+        },
+        "price": 10,
+        "guide_price": 5,
+        "duration": 90,
+        "opening_time": "07:00",
+        "closing_time": "16:30",
+        "content_tags": [
+            "历史文化",
+            "宗教古刹",
+            "古建筑",
+            "祈福参拜"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "短途1h内",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "祈福参拜",
+            "安静治愈",
+            "古风诗意",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_025",
+        "name": "上海杜莎夫人蜡像馆",
+        "alias": [
+            "杜莎夫人蜡像馆",
+            "上海杜莎"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.235,
+            "lng": 121.474
+        },
+        "price": 190,
+        "guide_price": 95,
+        "duration": 120,
+        "opening_time": "10:00",
+        "closing_time": "21:00",
+        "content_tags": [
+            "商业娱乐",
+            "网红打卡",
+            "近现代纪念"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "中度1-3h",
+            "高价观光",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "情侣打卡",
+            "拍照打卡",
+            "震撼出片"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_026",
+        "name": "上海天文馆",
+        "alias": [
+            "临港天文馆",
+            "上海天文博物馆"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 30.914,
+            "lng": 121.926
+        },
+        "price": 30,
+        "guide_price": 15,
+        "duration": 240,
+        "opening_time": "09:30",
+        "closing_time": "16:00",
+        "content_tags": [
+            "博物馆",
+            "研学教育",
+            "城市地标"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "全天3h以上",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "研学教育",
+            "震撼出片",
+            "摄影观景"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "SH_027",
+        "name": "思南公馆",
+        "alias": [
+            "思南路公馆区",
+            "思南公馆街区"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.214,
+            "lng": 121.466
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 90,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "历史文化",
+            "古建筑",
+            "商业街古街",
+            "近现代纪念"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "全天24h"
+        ],
+        "experience_tags": [
+            "文艺青年",
+            "摄影观景",
+            "散步闲逛",
+            "拍照打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_028",
+        "name": "M50创意园",
+        "alias": [
+            "莫干山路50号",
+            "M50艺术区"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.247,
+            "lng": 121.45
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 120,
+        "opening_time": "10:00",
+        "closing_time": "18:00",
+        "content_tags": [
+            "近现代纪念",
+            "商业娱乐",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "中度1-3h",
+            "免费开放",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "文艺青年",
+            "摄影观景",
+            "散步闲逛",
+            "拍照打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_029",
+        "name": "滴水湖",
+        "alias": [
+            "临港滴水湖",
+            "南汇新城滴水湖"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 30.896,
+            "lng": 121.93
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 180,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "自然景观",
+            "山水湖景",
+            "城市公园",
+            "城市地标"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "中度1-3h",
+            "免费开放",
+            "全天24h"
+        ],
+        "experience_tags": [
+            "休闲松弛",
+            "摄影观景",
+            "游船骑行",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "SH_030",
+        "name": "上海植物园",
+        "alias": [
+            "上植",
+            "龙吴路植物园"
+        ],
+        "city": "上海",
+        "location": {
+            "lat": 31.147,
+            "lng": 121.447
+        },
+        "price": 15,
+        "guide_price": 8,
+        "duration": 180,
+        "opening_time": "07:00",
+        "closing_time": "17:00",
+        "content_tags": [
+            "自然景观",
+            "绿植花海",
+            "城市公园",
+            "森林步道"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "安静治愈",
+            "亲子出游",
+            "摄影观景",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    }
+]

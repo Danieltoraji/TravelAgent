@@ -1,0 +1,1156 @@
+﻿[
+    {
+        "id": "BJ_001",
+        "name": "故宫博物院",
+        "alias": [
+            "故宫",
+            "紫禁城",
+            "皇宫"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.916,
+            "lng": 116.397
+        },
+        "price": 60,
+        "guide_price": 30,
+        "duration": 180,
+        "opening_time": "08:30",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "古建筑",
+            "皇家文化",
+            "博物馆"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "中度1-3h",
+            "低价亲民",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "历史爱好者",
+            "摄影观景",
+            "震撼出片"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_002",
+        "name": "八达岭长城",
+        "alias": [
+            "八达岭",
+            "北长城",
+            "好汉坡长城"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.356,
+            "lng": 116.012
+        },
+        "price": 40,
+        "guide_price": 20,
+        "duration": 240,
+        "opening_time": "07:30",
+        "closing_time": "17:30",
+        "content_tags": [
+            "自然景观",
+            "山地长城",
+            "历史文化",
+            "历史遗迹"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "全天3h以上",
+            "低价亲民",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "徒步登山党",
+            "摄影观景",
+            "情侣打卡"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_003",
+        "name": "颐和园",
+        "alias": [
+            "清漪园",
+            "皇家后花园"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.992,
+            "lng": 116.276
+        },
+        "price": 30,
+        "guide_price": 15,
+        "duration": 150,
+        "opening_time": "08:00",
+        "closing_time": "18:00",
+        "content_tags": [
+            "自然景观",
+            "山水湖景",
+            "历史文化",
+            "园林古迹",
+            "皇家文化"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "低价亲民",
+            "错峰友好",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "古风诗意",
+            "休闲松弛",
+            "散步闲逛",
+            "亲子出游"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_004",
+        "name": "天坛公园",
+        "alias": [
+            "天坛",
+            "祭天坛",
+            "祈年殿景区"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.882,
+            "lng": 116.41
+        },
+        "price": 15,
+        "guide_price": 8,
+        "duration": 120,
+        "opening_time": "06:00",
+        "closing_time": "22:00",
+        "content_tags": [
+            "历史文化",
+            "古建筑",
+            "传统文化",
+            "城市公园"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "低价亲民",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "安静治愈",
+            "休闲松弛",
+            "散步闲逛",
+            "古风诗意"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_005",
+        "name": "黄花城水长城",
+        "alias": [
+            "水长城",
+            "水上长城"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.394,
+            "lng": 116.295
+        },
+        "price": 60,
+        "guide_price": 30,
+        "duration": 300,
+        "opening_time": "08:00",
+        "closing_time": "17:30",
+        "content_tags": [
+            "自然景观",
+            "山地长城",
+            "山水湖景",
+            "历史遗迹"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "全天3h以上",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "古风诗意",
+            "徒步登山党",
+            "摄影观景",
+            "休闲松弛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_006",
+        "name": "景山公园",
+        "alias": [
+            "景山",
+            "万岁山",
+            "故宫全景观景台"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.923,
+            "lng": 116.396
+        },
+        "price": 2,
+        "guide_price": 1,
+        "duration": 60,
+        "opening_time": "06:30",
+        "closing_time": "21:00",
+        "content_tags": [
+            "自然景观",
+            "城市公园",
+            "城市地标",
+            "观景"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "短途1h内",
+            "低价亲民",
+            "早晚人少",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "摄影观景",
+            "休闲松弛",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_007",
+        "name": "居庸关长城",
+        "alias": [
+            "居庸关",
+            "天下第一雄关",
+            "居庸叠翠"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.281,
+            "lng": 116.024
+        },
+        "price": 40,
+        "guide_price": 20,
+        "duration": 220,
+        "opening_time": "07:30",
+        "closing_time": "17:00",
+        "content_tags": [
+            "自然景观",
+            "山地长城",
+            "历史文化",
+            "石刻碑刻"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "全天3h以上",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "历史爱好者",
+            "徒步登山党",
+            "摄影观景"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_008",
+        "name": "什刹海",
+        "alias": [
+            "后海",
+            "前海",
+            "西海",
+            "北京老胡同湖区"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.943,
+            "lng": 116.382
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 100,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "商业娱乐",
+            "商业街古街",
+            "自然景观",
+            "山水湖景",
+            "民俗市井"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "全天24h",
+            "排队时间长"
+        ],
+        "experience_tags": [
+            "市井烟火",
+            "休闲松弛",
+            "美食小吃",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_009",
+        "name": "慕田峪长城",
+        "alias": [
+            "慕田峪",
+            "慕田峪独秀长城"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.431,
+            "lng": 116.57
+        },
+        "price": 45,
+        "guide_price": 22,
+        "duration": 300,
+        "opening_time": "07:30",
+        "closing_time": "17:30",
+        "content_tags": [
+            "自然景观",
+            "山地长城",
+            "历史文化",
+            "历史遗迹"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "强制预约",
+            "全天3h以上",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "徒步登山党",
+            "情侣打卡",
+            "摄影观景"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_010",
+        "name": "国家博物馆",
+        "alias": [
+            "国博",
+            "中国国家博物馆"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.916,
+            "lng": 116.399
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 200,
+        "opening_time": "09:00",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "博物馆",
+            "研学教育",
+            "近现代纪念"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "全天3h以上",
+            "免费开放",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "历史爱好者",
+            "研学教育",
+            "安静治愈"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_011",
+        "name": "北海公园",
+        "alias": [
+            "北海",
+            "北海皇家园林"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.925,
+            "lng": 116.389
+        },
+        "price": 10,
+        "guide_price": 5,
+        "duration": 120,
+        "opening_time": "06:30",
+        "closing_time": "21:00",
+        "content_tags": [
+            "自然景观",
+            "城市公园",
+            "园林古迹",
+            "皇家文化"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "古风诗意",
+            "休闲松弛",
+            "游船骑行",
+            "摄影观景"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_012",
+        "name": "圆明园遗址公园",
+        "alias": [
+            "圆明园",
+            "万园之园"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.009,
+            "lng": 116.303
+        },
+        "price": 25,
+        "guide_price": 12,
+        "duration": 180,
+        "opening_time": "07:00",
+        "closing_time": "19:00",
+        "content_tags": [
+            "历史文化",
+            "历史遗迹",
+            "园林古迹",
+            "皇家文化"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "历史爱好者",
+            "古风诗意",
+            "散步闲逛",
+            "摄影观景"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_013",
+        "name": "雍和宫",
+        "alias": [
+            "雍和宫寺院",
+            "雍和宫藏传佛教寺院"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.947,
+            "lng": 116.417
+        },
+        "price": 25,
+        "guide_price": 12,
+        "duration": 100,
+        "opening_time": "09:00",
+        "closing_time": "16:30",
+        "content_tags": [
+            "历史文化",
+            "宗教古刹",
+            "古建筑",
+            "祈福参拜"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "短途1h内",
+            "低价亲民",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "祈福参拜",
+            "古风诗意",
+            "安静治愈",
+            "摄影观景"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_014",
+        "name": "恭王府博物馆",
+        "alias": [
+            "恭王府",
+            "和珅府"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.937,
+            "lng": 116.386
+        },
+        "price": 40,
+        "guide_price": 20,
+        "duration": 120,
+        "opening_time": "08:30",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "古建筑",
+            "皇家文化",
+            "博物馆"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "中度1-3h",
+            "低价亲民",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "历史爱好者",
+            "古风诗意",
+            "摄影观景",
+            "恢弘大气"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_015",
+        "name": "南锣鼓巷",
+        "alias": [
+            "南锣",
+            "南锣鼓巷历史街区"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.938,
+            "lng": 116.403
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 90,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "历史文化",
+            "商业街古街",
+            "民俗市井",
+            "商业娱乐"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "排队时间长",
+            "全天24h"
+        ],
+        "experience_tags": [
+            "市井烟火",
+            "美食小吃",
+            "散步闲逛",
+            "拍照打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_016",
+        "name": "798艺术区",
+        "alias": [
+            "798",
+            "北京798"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.984,
+            "lng": 116.495
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 150,
+        "opening_time": "10:00",
+        "closing_time": "20:00",
+        "content_tags": [
+            "商业娱乐",
+            "近现代纪念",
+            "城市地标",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "免费开放",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "文艺青年",
+            "摄影观景",
+            "散步闲逛",
+            "拍照打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_017",
+        "name": "北京奥林匹克公园",
+        "alias": [
+            "奥林匹克公园",
+            "奥森中心区"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.0,
+            "lng": 116.39
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 150,
+        "opening_time": "06:00",
+        "closing_time": "22:00",
+        "content_tags": [
+            "城市地标",
+            "城市公园",
+            "近现代纪念",
+            "夜景灯光"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "免费开放",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "恢弘大气",
+            "散步闲逛",
+            "摄影观景",
+            "亲子出游"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_018",
+        "name": "中国科学技术馆",
+        "alias": [
+            "中国科技馆",
+            "科技馆"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.007,
+            "lng": 116.384
+        },
+        "price": 30,
+        "guide_price": 15,
+        "duration": 240,
+        "opening_time": "09:30",
+        "closing_time": "17:00",
+        "content_tags": [
+            "博物馆",
+            "研学教育",
+            "近现代纪念"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "强制预约",
+            "全天3h以上",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "研学教育",
+            "休闲松弛"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_019",
+        "name": "北京动物园",
+        "alias": [
+            "北动",
+            "西直门动物园"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.938,
+            "lng": 116.339
+        },
+        "price": 15,
+        "guide_price": 8,
+        "duration": 240,
+        "opening_time": "07:30",
+        "closing_time": "18:00",
+        "content_tags": [
+            "自然景观",
+            "城市公园",
+            "研学教育"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "无需预约",
+            "全天3h以上",
+            "低价亲民",
+            "排队时间长",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "摄影观景",
+            "散步闲逛"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_020",
+        "name": "香山公园",
+        "alias": [
+            "香山",
+            "静宜园"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.99,
+            "lng": 116.19
+        },
+        "price": 10,
+        "guide_price": 5,
+        "duration": 240,
+        "opening_time": "06:00",
+        "closing_time": "18:30",
+        "content_tags": [
+            "自然景观",
+            "森林步道",
+            "绿植花海",
+            "园林古迹"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "全天3h以上",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "徒步登山党",
+            "摄影观景",
+            "休闲松弛",
+            "登山徒步"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_021",
+        "name": "国家植物园",
+        "alias": [
+            "北京植物园",
+            "国家植物园北园"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.996,
+            "lng": 116.21
+        },
+        "price": 10,
+        "guide_price": 5,
+        "duration": 180,
+        "opening_time": "06:00",
+        "closing_time": "20:00",
+        "content_tags": [
+            "自然景观",
+            "绿植花海",
+            "森林步道",
+            "城市公园"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "中度1-3h",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "安静治愈",
+            "摄影观景",
+            "散步闲逛",
+            "亲子出游"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_022",
+        "name": "明十三陵",
+        "alias": [
+            "十三陵",
+            "明朝皇家陵寝"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.255,
+            "lng": 116.22
+        },
+        "price": 80,
+        "guide_price": 40,
+        "duration": 240,
+        "opening_time": "08:30",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "历史遗迹",
+            "皇家文化",
+            "石刻碑刻"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "全天3h以上",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "历史爱好者",
+            "恢弘大气",
+            "摄影观景",
+            "古风诗意"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_023",
+        "name": "古北水镇",
+        "alias": [
+            "古北口水镇",
+            "司马台水镇"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.65,
+            "lng": 117.267
+        },
+        "price": 140,
+        "guide_price": 70,
+        "duration": 360,
+        "opening_time": "09:00",
+        "closing_time": "22:30",
+        "content_tags": [
+            "历史文化",
+            "商业街古街",
+            "山水湖景",
+            "民俗市井"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "强制预约",
+            "全天3h以上",
+            "高价观光",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "古风诗意",
+            "市井烟火",
+            "情侣打卡",
+            "美食小吃"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_024",
+        "name": "中国人民革命军事博物馆",
+        "alias": [
+            "军事博物馆",
+            "军博"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.908,
+            "lng": 116.322
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 180,
+        "opening_time": "09:00",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "博物馆",
+            "近现代纪念",
+            "研学教育"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "强制预约",
+            "中度1-3h",
+            "免费开放",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "历史爱好者",
+            "研学教育",
+            "恢弘大气"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_025",
+        "name": "首都博物馆",
+        "alias": [
+            "首博",
+            "北京首都博物馆"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.907,
+            "lng": 116.343
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 180,
+        "opening_time": "09:00",
+        "closing_time": "17:00",
+        "content_tags": [
+            "历史文化",
+            "博物馆",
+            "传统文化",
+            "研学教育"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "强制预约",
+            "中度1-3h",
+            "免费开放",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "历史爱好者",
+            "研学教育",
+            "安静治愈",
+            "文艺青年"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_026",
+        "name": "前门大街",
+        "alias": [
+            "前门",
+            "正阳门商业街"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.899,
+            "lng": 116.397
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 100,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "历史文化",
+            "商业街古街",
+            "商业娱乐",
+            "民俗市井"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "全天24h",
+            "排队时间长"
+        ],
+        "experience_tags": [
+            "市井烟火",
+            "美食小吃",
+            "散步闲逛",
+            "拍照打卡"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_027",
+        "name": "大栅栏历史文化街区",
+        "alias": [
+            "大栅栏",
+            "廊房头条"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.896,
+            "lng": 116.393
+        },
+        "price": 0,
+        "guide_price": 0,
+        "duration": 90,
+        "opening_time": "00:00",
+        "closing_time": "24:00",
+        "content_tags": [
+            "历史文化",
+            "商业街古街",
+            "传统文化",
+            "民俗市井"
+        ],
+        "plan_tags": [
+            "常规人气",
+            "无需预约",
+            "短途1h内",
+            "免费开放",
+            "全天24h"
+        ],
+        "experience_tags": [
+            "市井烟火",
+            "美食小吃",
+            "散步闲逛",
+            "文艺青年"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_028",
+        "name": "潭柘寺",
+        "alias": [
+            "潭柘古寺",
+            "北京潭柘寺"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.903,
+            "lng": 116.03
+        },
+        "price": 50,
+        "guide_price": 25,
+        "duration": 150,
+        "opening_time": "08:30",
+        "closing_time": "16:30",
+        "content_tags": [
+            "历史文化",
+            "宗教古刹",
+            "古建筑",
+            "祈福参拜"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "无需预约",
+            "中度1-3h",
+            "低价亲民",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "祈福参拜",
+            "安静治愈",
+            "古风诗意",
+            "摄影观景"
+        ],
+        "reservation_required": false
+    },
+    {
+        "id": "BJ_029",
+        "name": "北京环球度假区",
+        "alias": [
+            "北京环球影城",
+            "环球影城"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 39.855,
+            "lng": 116.674
+        },
+        "price": 500,
+        "guide_price": 250,
+        "duration": 600,
+        "opening_time": "09:00",
+        "closing_time": "21:00",
+        "content_tags": [
+            "商业娱乐",
+            "城市地标",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "顶流热门",
+            "强制预约",
+            "全天3h以上",
+            "高价观光",
+            "排队时间长",
+            "夜景延长"
+        ],
+        "experience_tags": [
+            "亲子出游",
+            "情侣打卡",
+            "震撼出片",
+            "拍照打卡"
+        ],
+        "reservation_required": true
+    },
+    {
+        "id": "BJ_030",
+        "name": "红砖美术馆",
+        "alias": [
+            "红砖",
+            "红砖艺术馆"
+        ],
+        "city": "北京",
+        "location": {
+            "lat": 40.038,
+            "lng": 116.505
+        },
+        "price": 120,
+        "guide_price": 60,
+        "duration": 150,
+        "opening_time": "10:00",
+        "closing_time": "17:30",
+        "content_tags": [
+            "近现代纪念",
+            "园林古迹",
+            "网红打卡"
+        ],
+        "plan_tags": [
+            "小众清净",
+            "强制预约",
+            "中度1-3h",
+            "高价观光",
+            "日间游览"
+        ],
+        "experience_tags": [
+            "文艺青年",
+            "安静治愈",
+            "摄影观景",
+            "拍照打卡"
+        ],
+        "reservation_required": true
+    }
+]

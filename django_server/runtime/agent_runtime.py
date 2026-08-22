@@ -14,9 +14,9 @@ from typing import Any, Dict, List, Optional
 
 from booking.booking_manager import BookingManager
 from config.settings import settings
-from core.schemas import DayPlan, MonitorEvent, Place, TripTimeline, to_dict
+from core.schemas import DayPlan, EventType, MonitorEvent, Place, TripTimeline, to_dict
 from execution.execution_agent import ExecutionAgent
-from runtime.a_interface import build_decision_hook
+from runtime.a_interface import build_decision_hook, build_planner_hook
 from tools import ToolProvider, ToolRegistry, build_registry
 
 logger = logging.getLogger("runtime.agent")
@@ -28,7 +28,10 @@ class AgentRuntime:
     def __init__(self) -> None:
         self.registry: ToolRegistry = build_registry()
         self.tool_provider = ToolProvider(self.registry)
-        self.booking_manager = BookingManager(self.registry)
+        self.booking_manager = BookingManager(
+            self.registry, on_booking_failed=self._on_booking_failed
+        )
+        self.requirement: Optional[Dict[str, Any]] = None   # A 侧结构化需求（/api/plan/ 提交时存）
         self.timeline: Optional[TripTimeline] = None
         self.agent: Optional[ExecutionAgent] = None
         self.events: List[MonitorEvent] = []
@@ -37,6 +40,7 @@ class AgentRuntime:
         self.tool_call_log: List[Dict[str, Any]] = []
         self.started_at: str = datetime.now().isoformat(timespec="seconds")
         self._decision_hook: Any = None
+        self._last_planner_error: Optional[str] = None
         self._wrap_tool_call_logging()
 
     # -- C 侧事件回调 -----------------------------------------------------
@@ -45,6 +49,55 @@ class AgentRuntime:
         """C 的接入点：Demo 中把事件追加到内存列表供 /api/events 轮询。"""
         self.events.append(event)
         logger.info("Event buffered: %s @ %s", event.event_type.value, event.place)
+
+    def _on_booking_failed(self, record: Any) -> None:
+        """预订确认失败 → 组装 BOOKING MonitorEvent 交 ExecutionAgent（酒店满房闭环）。
+
+        AB 合码方案 §三.7（闭环最后一环）：confirm 失败置 FAILED + Action 置
+        BLOCKED 后，这里补发事件，A 的 BDecisionHook 走硬规则触发换酒店。
+        事件 data 按 b_contract._booking_to_hotel_event 约定（hotel_id 必填）；
+        hotel_id 优先按名称从 A 侧酒店池映射，保证 replanner 能把原酒店排除掉。
+        """
+        agent = self.agent
+        if agent is None:
+            return
+        hotel_id, hotel_name = str(record.booking_id), str(record.place)
+        try:
+            from data_transmission.hotel import load_hotels
+
+            city = self.timeline.city if self.timeline is not None else ""
+            place_key = str(record.place).replace("（满房）", "").replace("满房", "").strip()
+            match = None
+            for h in load_hotels(city):
+                if h.name == place_key or str(h.id) == place_key:
+                    match = h
+                    break
+            if match is None:
+                match = next(
+                    (h for h in load_hotels(city)
+                     if place_key.startswith(h.name) or h.name.startswith(place_key)),
+                    None,
+                )
+            if match is not None:
+                hotel_id, hotel_name = str(match.id), match.name
+        except Exception:  # noqa: BLE001  池映射失败回退 booking_id 作 hotel_id
+            pass
+        event = MonitorEvent(
+            event_id=f"bevt-{record.booking_id}",
+            event_type=EventType.BOOKING,
+            place=record.place,
+            observed_at=datetime.now(),
+            rule_name="booking-confirm",
+            spot_id="",
+            data={
+                "hotel_id": hotel_id,
+                "hotel_name": hotel_name,
+                "hotel_full": True,
+            },
+        )
+        # 先缓冲（/api/events 轮询可见），再交 ExecutionAgent 决策 → 重规划
+        self._on_event(event)
+        asyncio.run(agent.handle_event(event))
 
     # -- A 侧接入点 -------------------------------------------------------
 
@@ -120,6 +173,34 @@ class AgentRuntime:
             "timeline": to_dict(timeline),
         })
         logger.info("Timeline set: city=%s, days=%d", timeline.city, len(timeline.days))
+
+    def init_from_requirement(self, payload: Dict[str, Any]) -> TripTimeline:
+        """A 侧需求（POST /api/plan/）→ A 的 Planner → TripTimeline。
+
+        AB 合码方案 §三.4：``build_planner_hook(payload).generate_timeline()``
+        → ``init_timeline(timeline)``。新需求视为新会话，清空上一份行程的内存态。
+        规划失败时 BPlannerHook 返回空时间轴并记 ``last_error``（本方法不抛异常），
+        由视图层检查 ``days`` 是否为空并给出 HTTP 提示。
+        """
+        requirement = payload if isinstance(payload, dict) else {}
+        self.requirement = requirement
+        self._decision_hook = None
+        self._last_planner_error = None
+        # 新需求 = 新会话：清空上一份行程的运行时状态（单用户 Demo 内存态）
+        self.events = []
+        self.replan_history = []
+        self.timeline_history = []
+        self.tool_call_log = []
+        self.booking_manager = BookingManager(
+            self.registry, on_booking_failed=self._on_booking_failed
+        )
+        planner_hook = build_planner_hook(
+            requirement=requirement, tool_provider=self.tool_provider
+        )
+        timeline = planner_hook.generate_timeline()
+        self._last_planner_error = getattr(planner_hook, "last_error", None)
+        self.init_timeline(timeline)
+        return timeline
 
     def status(self) -> Dict[str, Any]:
         """汇总当前运行时状态，供 C 首页/调试展示。"""

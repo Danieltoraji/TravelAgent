@@ -1,0 +1,78 @@
+{
+  "city": "北京",
+  "currency": "CNY",
+  "restaurants": [
+    {
+      "id": "BJ_R001",
+      "name": "京味御膳坊",
+      "location": {"lat": 39.918, "lng": 116.399},
+      "tags": {"cuisine": ["北京菜", "宫廷菜"], "signature": ["烤鸭", "豌豆黄"], "service": ["可预约", "家庭友好"], "popularity": ["热门", "游客友好"]},
+      "average_cost": 168,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["11:00-14:00", "17:00-21:30"]}],
+      "nearby_spot_ids": ["BJ_001", "BJ_006", "BJ_010", "BJ_011"]
+    },
+    {
+      "id": "BJ_R002",
+      "name": "胡同小馆",
+      "location": {"lat": 39.94, "lng": 116.394},
+      "tags": {"cuisine": ["北京菜", "家常菜"], "signature": ["炸酱面", "爆肚"], "service": ["上菜快", "无需预约"], "popularity": ["本地人常去", "性价比高"]},
+      "average_cost": 62,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["10:30-21:30"]}],
+      "nearby_spot_ids": ["BJ_008", "BJ_013", "BJ_014", "BJ_015"]
+    },
+    {
+      "id": "BJ_R003",
+      "name": "天坛南门涮肉",
+      "location": {"lat": 39.879, "lng": 116.411},
+      "tags": {"cuisine": ["老北京火锅"], "signature": ["铜锅涮肉", "芝麻烧饼"], "service": ["多人聚餐", "排队取号"], "popularity": ["高人气", "老字号风格"]},
+      "average_cost": 118,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["11:00-14:00", "16:30-22:00"]}],
+      "nearby_spot_ids": ["BJ_004", "BJ_026", "BJ_027"]
+    },
+    {
+      "id": "BJ_R004",
+      "name": "颐园素食茶馆",
+      "location": {"lat": 39.997, "lng": 116.285},
+      "tags": {"cuisine": ["素食", "茶点"], "signature": ["素斋拼盘", "桂花糕"], "service": ["安静", "可预约"], "popularity": ["小众", "环境出片"]},
+      "average_cost": 96,
+      "business_hours": [{"days": ["周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["10:00-19:30"]}],
+      "nearby_spot_ids": ["BJ_003", "BJ_012", "BJ_019", "BJ_020", "BJ_021"]
+    },
+    {
+      "id": "BJ_R005",
+      "name": "长城脚下农家宴",
+      "location": {"lat": 40.36, "lng": 116.02},
+      "tags": {"cuisine": ["京郊农家菜"], "signature": ["柴鸡炖蘑菇", "贴饼子"], "service": ["团体接待", "免费热水"], "popularity": ["景区周边", "分量足"]},
+      "average_cost": 88,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["09:30-20:00"]}],
+      "nearby_spot_ids": ["BJ_002", "BJ_005", "BJ_007", "BJ_009", "BJ_022"]
+    },
+    {
+      "id": "BJ_R006",
+      "name": "艺境创意餐厅",
+      "location": {"lat": 39.986, "lng": 116.5},
+      "tags": {"cuisine": ["融合菜", "西餐"], "signature": ["慢烤牛肋", "艺术甜点"], "service": ["双语服务", "可预约"], "popularity": ["年轻人热门", "拍照友好"]},
+      "average_cost": 158,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["11:00-22:00"]}],
+      "nearby_spot_ids": ["BJ_016", "BJ_017", "BJ_018", "BJ_030"]
+    },
+    {
+      "id": "BJ_R007",
+      "name": "西城博物馆餐吧",
+      "location": {"lat": 39.908, "lng": 116.335},
+      "tags": {"cuisine": ["简餐", "咖啡"], "signature": ["牛肉饭", "手冲咖啡"], "service": ["快速用餐", "充电插座"], "popularity": ["亲子友好", "工作日安静"]},
+      "average_cost": 55,
+      "business_hours": [{"days": ["周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["09:30-19:00"]}],
+      "nearby_spot_ids": ["BJ_024", "BJ_025", "BJ_028"]
+    },
+    {
+      "id": "BJ_R008",
+      "name": "东郊欢乐食集",
+      "location": {"lat": 39.858, "lng": 116.67},
+      "tags": {"cuisine": ["中式快餐", "轻食"], "signature": ["烤肉饭", "儿童套餐"], "service": ["快速出餐", "亲子设施"], "popularity": ["乐园游客热门", "高峰排队"]},
+      "average_cost": 78,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["09:00-21:30"]}],
+      "nearby_spot_ids": ["BJ_023", "BJ_029"]
+    }
+  ]
+}

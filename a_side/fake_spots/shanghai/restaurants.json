@@ -1,0 +1,78 @@
+{
+  "city": "上海",
+  "currency": "CNY",
+  "restaurants": [
+    {
+      "id": "SH_R001",
+      "name": "外滩本帮菜馆",
+      "location": {"lat": 31.231, "lng": 121.489},
+      "tags": {"cuisine": ["本帮菜", "江浙菜"], "signature": ["红烧肉", "油爆虾"], "service": ["可预约", "观景座位"], "popularity": ["高人气", "游客热门"]},
+      "average_cost": 188,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["11:00-14:00", "17:00-22:00"]}],
+      "nearby_spot_ids": ["SH_001", "SH_003", "SH_004", "SH_014"]
+    },
+    {
+      "id": "SH_R002",
+      "name": "陆家嘴云端餐厅",
+      "location": {"lat": 31.236, "lng": 121.501},
+      "tags": {"cuisine": ["融合菜", "西餐"], "signature": ["香煎银鳕鱼", "云端甜品"], "service": ["双语服务", "纪念日布置"], "popularity": ["景观热门", "需预约"]},
+      "average_cost": 328,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["11:30-14:30", "17:30-22:30"]}],
+      "nearby_spot_ids": ["SH_002", "SH_006", "SH_016", "SH_019"]
+    },
+    {
+      "id": "SH_R003",
+      "name": "梧桐里海派小馆",
+      "location": {"lat": 31.21, "lng": 121.455},
+      "tags": {"cuisine": ["海派菜", "咖啡简餐"], "signature": ["熏鱼", "葱油拌面"], "service": ["宠物友好", "露台座位"], "popularity": ["年轻人热门", "拍照友好"]},
+      "average_cost": 108,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["10:30-22:00"]}],
+      "nearby_spot_ids": ["SH_005", "SH_007", "SH_008", "SH_015", "SH_023", "SH_027"]
+    },
+    {
+      "id": "SH_R004",
+      "name": "人民广场轻食社",
+      "location": {"lat": 31.233, "lng": 121.468},
+      "tags": {"cuisine": ["轻食", "中式简餐"], "signature": ["鸡肉沙拉", "排骨年糕"], "service": ["快速出餐", "充电插座"], "popularity": ["性价比高", "工作日热门"]},
+      "average_cost": 58,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["09:30-20:30"]}],
+      "nearby_spot_ids": ["SH_010", "SH_013", "SH_025", "SH_028"]
+    },
+    {
+      "id": "SH_R005",
+      "name": "浦东亲子食堂",
+      "location": {"lat": 31.19, "lng": 121.59},
+      "tags": {"cuisine": ["中式套餐", "儿童餐"], "signature": ["儿童营养餐", "上海炒面"], "service": ["儿童座椅", "快速用餐"], "popularity": ["亲子友好", "周末热门"]},
+      "average_cost": 76,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["09:00-21:00"]}],
+      "nearby_spot_ids": ["SH_011", "SH_012", "SH_017", "SH_018"]
+    },
+    {
+      "id": "SH_R006",
+      "name": "江南古镇家宴",
+      "location": {"lat": 31.13, "lng": 121.2},
+      "tags": {"cuisine": ["江南家常菜"], "signature": ["白切鸡", "酱爆河虾"], "service": ["多人聚餐", "免费茶水"], "popularity": ["本地风味", "分量足"]},
+      "average_cost": 92,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["10:00-20:30"]}],
+      "nearby_spot_ids": ["SH_009", "SH_021", "SH_022"]
+    },
+    {
+      "id": "SH_R007",
+      "name": "滨江艺术餐吧",
+      "location": {"lat": 31.184, "lng": 121.492},
+      "tags": {"cuisine": ["创意中餐", "咖啡"], "signature": ["创意小笼", "桂花拿铁"], "service": ["展览联票咨询", "安静座位"], "popularity": ["文艺小众", "环境出片"]},
+      "average_cost": 128,
+      "business_hours": [{"days": ["周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["10:00-21:00"]}],
+      "nearby_spot_ids": ["SH_020", "SH_024", "SH_030"]
+    },
+    {
+      "id": "SH_R008",
+      "name": "临港湖畔餐厅",
+      "location": {"lat": 30.904, "lng": 121.928},
+      "tags": {"cuisine": ["海鲜", "本帮菜"], "signature": ["清蒸海鱼", "蟹粉豆腐"], "service": ["停车方便", "家庭聚餐"], "popularity": ["湖景热门", "周末需排队"]},
+      "average_cost": 148,
+      "business_hours": [{"days": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], "periods": ["10:30-21:00"]}],
+      "nearby_spot_ids": ["SH_026", "SH_029"]
+    }
+  ]
+}

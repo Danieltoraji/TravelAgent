@@ -1,0 +1,11 @@
+[
+  {
+    "event_type": "queue",
+    "spot": "故宫",
+    "severity": "high",
+    "detail": "预计排队时间从 20 分钟增至 120 分钟",
+    "metrics": {
+      "queue_delta_minutes": 100
+    }
+  }
+]

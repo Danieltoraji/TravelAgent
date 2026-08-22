@@ -140,6 +140,37 @@ def timeline_history(request: HttpRequest) -> JsonResponse:
     })
 
 
+# ── A 侧需求 → 规划（AB 合码方案 §三.5）────────────────────────────────────
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def plan(request: HttpRequest) -> JsonResponse:
+    """A 侧需求 JSON → A 的 Planner → TripTimeline（``POST /api/plan/``）。
+
+    body 为 A 侧结构化需求（沿 A 现有管线，含 ``content`` 键，见
+    ``data_transmission/requirement.py`` 的 requirement_schema），
+    例如 ``{"content": {"destination": "北京", "days": 2, "constraints": {...}}}``。
+    规划失败（BPlannerHook 降级为空时间轴）返回 400 + ``planner_error``。
+    旧 ``POST /api/timeline/`` 保留：C 直接喂时间轴的兼容路径。
+    """
+    payload = _json_body(request)
+    if not payload:
+        return _error("requirement JSON body required")
+    try:
+        timeline_obj = runtime.init_from_requirement(payload)
+    except Exception as exc:
+        return _error(f"plan failed: {exc}", status=500)
+    if not timeline_obj.days:
+        err = getattr(runtime, "_last_planner_error", None) or "planner produced empty timeline"
+        return _error(f"规划失败：{err}")
+    return JsonResponse({
+        "status": "ok",
+        "message": "Timeline generated from requirement",
+        "timeline": to_dict(timeline_obj),
+        "planner_error": None,
+    })
+
+
 # ── 预约 ────────────────────────────────────────────────────────────────
 
 @csrf_exempt

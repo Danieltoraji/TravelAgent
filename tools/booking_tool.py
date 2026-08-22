@@ -84,6 +84,11 @@ class BookingTool(BaseTool):
             draft = self._drafts.get(booking_id)
             if draft is None:
                 raise ValueError(f"booking not found: {booking_id}")
+            # 酒店满房演示触发（验收清单 3：confirm 模拟满房失败）：
+            # 酒店名含「满房」标记时 submit 必然失败 → BookingManager 置 FAILED
+            # → on_booking_failed 补发 BOOKING 事件 → A 硬规则换酒店。
+            if draft.get("booking_type") == "hotel" and "满房" in str(draft.get("place", "")):
+                raise ValueError(f"酒店 {draft['place']} 已满房，预订失败（Demo 模拟）")
             if draft["status"] == "submitted":
                 # 幂等：已提交则直接返回
                 return draft

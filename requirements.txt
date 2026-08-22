@@ -12,3 +12,7 @@ uvicorn>=0.29
 
 # --- 可选: 网页抓取工具 (WebFetchTool / WebSearchTool) ---
 beautifulsoup4>=4.12
+
+# --- A 侧依赖（a_side，AB 合码方案 §三.2；A 代码其余纯标准库）---
+rapidfuzz>=3.0
+openai>=1.0

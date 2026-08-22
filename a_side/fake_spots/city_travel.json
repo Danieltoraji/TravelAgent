@@ -1,0 +1,10 @@
+{
+  "edges": [
+    {"origin": "天津", "destination": "北京", "transport_minutes": 40, "mode": "高铁"},
+    {"origin": "北京", "destination": "天津", "transport_minutes": 40, "mode": "高铁"},
+    {"origin": "上海", "destination": "苏州", "transport_minutes": 25, "mode": "高铁"},
+    {"origin": "苏州", "destination": "上海", "transport_minutes": 25, "mode": "高铁"},
+    {"origin": "上海", "destination": "杭州", "transport_minutes": 50, "mode": "高铁"},
+    {"origin": "杭州", "destination": "上海", "transport_minutes": 50, "mode": "高铁"}
+  ]
+}

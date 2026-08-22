@@ -1,0 +1,21 @@
+{
+  "destination": "北京",
+  "start_date": "2026-04-10",
+  "days": 3,
+  "visitor_number": 2,
+  "constraints": {
+    "budget": 3000,
+    "must_visit": ["故宫"],
+    "required_tags": ["寺庙"],
+    "dismissed_tags": ["排队时间长"],
+    "daily_travel_time": 360,
+    "include_meal_time_in_daily_limit": false,
+    "walking_time": null,
+    "queue_time": null
+  },
+  "preferences": {
+    "preferred_tags": ["历史","自然","文化"],
+    "avoid_tags": []
+  },
+  "free_text_requirement": "时间紧，希望快节奏，多安排些景点"
+}
