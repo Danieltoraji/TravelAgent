@@ -13,33 +13,42 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup SSH key
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Add host to known_hosts
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Ensure remote directory
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          sshpass -e ssh -o StrictHostKeyChecking=no \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-            "mkdir -p /opt/travelagent"
+            "mkdir -p ~/travelagent"
 
       - name: Sync code to server
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           rsync -avz --delete \
-            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            -e "sshpass -e ssh -o StrictHostKeyChecking=no" \
             --exclude '.git' \
             --exclude 'logs' \
             --exclude 'output' \
             --exclude '.env' \
             --exclude 'django_server/db.sqlite3' \
             --exclude 'config/local_settings.py' \
-            ./ "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/opt/travelagent/"
+            ./ "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:~/travelagent/"
 
       - name: Deploy with Docker Compose
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          sshpass -e ssh -o StrictHostKeyChecking=no \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-            "cd /opt/travelagent && docker compose up -d --build"
+            "cd ~/travelagent && docker compose up -d --build"
