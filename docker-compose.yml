@@ -1,5 +1,6 @@
 services:
   web:
+    image: travelagent-django:latest
     build:
       context: .
       dockerfile: django_server/Dockerfile

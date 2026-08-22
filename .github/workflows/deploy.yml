@@ -13,6 +13,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Build Docker image
+        run: |
+          docker build -f django_server/Dockerfile -t travelagent-django:latest .
+
+      - name: Save Docker image
+        run: |
+          docker save travelagent-django:latest | gzip > travelagent-django.tar.gz
+
       - name: Install sshpass
         run: |
           sudo apt-get update
@@ -28,27 +36,28 @@ jobs:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           sshpass -e ssh -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=5 \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
             "mkdir -p /opt/travelagent"
 
-      - name: Sync code to server
+      - name: Sync code and image to server
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           rsync -avz --delete \
-            -e "sshpass -e ssh -o StrictHostKeyChecking=no" \
+            -e "sshpass -e ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=5" \
             --exclude '.git' \
             --exclude 'logs' \
             --exclude 'output' \
             --exclude '.env' \
-            --exclude 'django_server/db.sqlite3' \
             --exclude 'config/local_settings.py' \
             ./ "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/opt/travelagent/"
 
-      - name: Deploy with Docker Compose
+      - name: Load image and deploy
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           sshpass -e ssh -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=5 \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-            "cd /opt/travelagent && if [ -f .env ]; then set -a; . ./.env; set +a; fi && docker compose up -d --build"
+            "cd /opt/travelagent && docker load < travelagent-django.tar.gz && if [ -f .env ]; then set -a; . ./.env; set +a; fi && docker compose up -d --no-build"
