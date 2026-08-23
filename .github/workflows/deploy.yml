@@ -123,3 +123,16 @@ jobs:
           echo "== health check FAILED — collecting diagnostics =="
           SSH "echo '--- docker ps (travelagent) ---'; docker ps -a | grep -i travelagent || echo '(no travelagent container)'; echo '--- docker logs travelagent-django (tail 80) ---'; docker logs --tail 80 travelagent-django 2>&1 || echo '(no logs)'; echo '--- curl verbose ---'; curl -v --max-time 5 http://127.0.0.1:8000/api/health/ 2>&1 || true; echo '--- port 8000 ---'; (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep ':8000' || echo '(nothing listening on 8000)'"
           exit 1
+
+      - name: Server business smoke (acceptance #1 #3 #4 + LLM decision #2)
+        # 合码 0823：部署完成后在容器内执行验收冒烟（django_server/smoke/smoke_acceptance.py）：
+        #   清单 1 规划 / 清单 3 酒店满房闭环 / 清单 4 导出 走 HTTP；
+        #   清单 2 SCENIC→LLM 决策 在本进程驱动真实运行时（需 DEEPSEEK_API_KEY，缺失则跳过）。
+        # 输出即服务器侧验收报告，Actions 绿勾即验收通过。
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=5 \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+            "cd /opt/travelagent && docker compose exec -T web python smoke/smoke_acceptance.py"
