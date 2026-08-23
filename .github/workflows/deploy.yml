@@ -106,9 +106,11 @@ jobs:
           }
           ok=0
           for i in $(seq 1 30); do
-            # 注意：Django APPEND_SLASH 会把无尾斜杠的 /api/health 301 到 /api/health/，
-            # 必须访问带斜杠的 URL（curl -L 双保险跟随重定向）
-            if SSH "curl -sfL --max-time 5 http://127.0.0.1:8000/api/health/" 2>/dev/null | grep -q '"status":"ok"'; then
+            # 注意：① Django APPEND_SLASH 会把无尾斜杠的 /api/health 301 到 /api/health/，
+            #    必须访问带斜杠的 URL（curl -L 双保险跟随重定向）；
+            # ② JsonResponse 输出格式为 {"status": "ok", ...}（冒号后有空格），
+            #    grep 模式用 '"status": *"ok"' 容忍 0 或多个空格。
+            if SSH "curl -sfL --max-time 5 http://127.0.0.1:8000/api/health/" 2>/dev/null | grep -q '"status": *"ok"'; then
               echo "health OK after $((i * 10))s"
               ok=1
               break
