@@ -106,7 +106,9 @@ jobs:
           }
           ok=0
           for i in $(seq 1 30); do
-            if SSH "curl -sf --max-time 5 http://127.0.0.1:8000/api/health" 2>/dev/null | grep -q '"status":"ok"'; then
+            # 注意：Django APPEND_SLASH 会把无尾斜杠的 /api/health 301 到 /api/health/，
+            # 必须访问带斜杠的 URL（curl -L 双保险跟随重定向）
+            if SSH "curl -sfL --max-time 5 http://127.0.0.1:8000/api/health/" 2>/dev/null | grep -q '"status":"ok"'; then
               echo "health OK after $((i * 10))s"
               ok=1
               break
@@ -117,5 +119,5 @@ jobs:
             exit 0
           fi
           echo "== health check FAILED — collecting diagnostics =="
-          SSH "echo '--- docker ps (travelagent) ---'; docker ps -a | grep -i travelagent || echo '(no travelagent container)'; echo '--- docker logs travelagent-django (tail 80) ---'; docker logs --tail 80 travelagent-django 2>&1 || echo '(no logs)'; echo '--- curl verbose ---'; curl -v --max-time 5 http://127.0.0.1:8000/api/health 2>&1 || true; echo '--- port 8000 ---'; (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep ':8000' || echo '(nothing listening on 8000)'"
+          SSH "echo '--- docker ps (travelagent) ---'; docker ps -a | grep -i travelagent || echo '(no travelagent container)'; echo '--- docker logs travelagent-django (tail 80) ---'; docker logs --tail 80 travelagent-django 2>&1 || echo '(no logs)'; echo '--- curl verbose ---'; curl -v --max-time 5 http://127.0.0.1:8000/api/health/ 2>&1 || true; echo '--- port 8000 ---'; (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep ':8000' || echo '(nothing listening on 8000)'"
           exit 1
