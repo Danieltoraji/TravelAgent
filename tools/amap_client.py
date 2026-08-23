@@ -333,9 +333,9 @@ class AmapClient:
             raise ValueError("高德公交路线规划返回为空")
         first = transit[0]
         return {
-            "distance": int(first.get("distance", 0)),
-            "duration": int(first.get("duration", 0)),
-            "cost": int(first.get("cost", 0)),
+            "distance": int(float(first.get("distance", 0) or 0)),
+            "duration": int(float(first.get("duration", 0) or 0)),
+            "cost": int(float(first.get("cost", 0) or 0)),
         }
 
     @staticmethod
@@ -347,9 +347,9 @@ class AmapClient:
             raise ValueError("高德驾车路线规划返回为空")
         first = paths[0]
         return {
-            "distance": int(first.get("distance", 0)),
-            "duration": int(first.get("duration", 0)),
-            "tolls": int(first.get("tolls", 0)),
+            "distance": int(float(first.get("distance", 0) or 0)),
+            "duration": int(float(first.get("duration", 0) or 0)),
+            "tolls": int(float(first.get("tolls", 0) or 0)),
         }
 
     @staticmethod
@@ -364,8 +364,8 @@ class AmapClient:
             raise ValueError("高德骑行路线规划返回为空")
         first = paths[0]
         return {
-            "distance": int(first.get("distance", 0)),
-            "duration": int(first.get("duration", 0)),
+            "distance": int(float(first.get("distance", 0) or 0)),
+            "duration": int(float(first.get("duration", 0) or 0)),
         }
 
     @staticmethod
@@ -377,8 +377,8 @@ class AmapClient:
             raise ValueError("高德步行路线规划返回为空")
         first = paths[0]
         return {
-            "distance": int(first.get("distance", 0)),
-            "duration": int(first.get("duration", 0)),
+            "distance": int(float(first.get("distance", 0) or 0)),
+            "duration": int(float(first.get("duration", 0) or 0)),
         }
 
     @property
