@@ -260,21 +260,33 @@ def make_live_spots_provider(tool_provider: Any) -> LiveSpotsSource:
 # ---------------------------------------------------------------------------
 
 
-def make_live_eta_fn(tool_provider: Any) -> Callable[[str, str], Tuple[float, int]]:
+def make_live_eta_fn(
+    tool_provider: Any,
+    city: Optional[str] = None,
+) -> Callable[[str, str], Tuple[float, int]]:
     """返回 ``eta_fn(origin_name, destination_name) -> (distance_km, minutes)``。
 
-    调用 ``tool_provider.call("map", action="route", ...)``；拿不到时长 →
-    ``LiveDataError``。B3（批量 ETA）落地后在此处加批量路径，签名不变。
+    调用 ``tool_provider.call("map", action="route", mode="driving", ...)``；
+    拿不到时长 → ``LiveDataError``。
+
+    0825 修复（C 端真源联调暴露）：
+    - ``mode="driving"``（驾车）：公交（transit）对相邻景点返回空（高德
+      「公交路线规划返回为空」）、对怪名 POI 报 30001——任一对失败即整链回退
+      假源；驾车对任意两坐标稳定有返回（与 B3 批量 ETA 同为驾车口径）；
+    - 绑定 ``city``：B 端 map 工具地理编码默认限定北京，不带 city 时非北京
+      行程（如上海）全按北京上下文查询 → 高德 30001。BPlannerHook 传 ``self.city``。
     """
+    base_kwargs: Dict[str, Any] = {"action": "route", "mode": "driving"}
+    if city:
+        base_kwargs["city"] = city
 
     def eta_fn(origin: str, destination: str) -> Tuple[float, int]:
         try:
             result = tool_provider.call(
                 "map",
-                action="route",
                 origin=origin,
                 destination=destination,
-                mode="transit",
+                **base_kwargs,
             )
         except Exception as exc:  # noqa: BLE001
             raise LiveDataError(

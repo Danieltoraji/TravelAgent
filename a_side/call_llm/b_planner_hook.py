@@ -153,7 +153,7 @@ class BPlannerHook:
             self._live_spots_provider = _live_loader
             self._live_spots_source = live_source
             self._travel_time_provider = LiveTravelTimeProvider(
-                make_live_eta_fn(tool_provider),
+                make_live_eta_fn(tool_provider, city=self.city),
                 name_by_id={},
             )
 
