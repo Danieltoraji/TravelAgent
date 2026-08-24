@@ -605,13 +605,21 @@ def _repair_affected_days(
 
     # 交通矩阵覆盖：候选池 + 当前计划所有景点。
     pool_keys = {_spot_key(spot) for group in pool for spot in group}
-    plan_keys = {
-        node.get("details", {}).get("spot_id")
-        for day in raw_days
-        for node in _day_spot_nodes(day)
-    }
+    if not pool_keys:
+        # 候选池为空（如真源城市无假池兜底）→ 增量修复无从谈起，直接全量重跑兜底。
+        return {
+            **current_plan,
+            "feasible": False,
+            "fallback_needed": True,
+            "replanned": False,
+            "notes": [*translation["notes"], "候选池为空，无法增量修复，走全量重跑"],
+        }
+    # 矩阵只覆盖候选池键（可恢复的景点）：当前计划里不在候选池的景点（如真源
+    # live 的 scenic_N id，不在北京假图里）在 _restore_day_spots 中本就跳过、
+    # 不需要矩阵边——否则假图缺边 ValueError 会整条 replan 崩溃，被执行层吞掉
+    # 后 replan_history 无记录（8.26 部署门禁 smoke `replans=0` 的根因）。
     provider = travel_time_provider or JsonTravelTimeProvider(destination, graph_dir)
-    matrix = provider.get_matrix(pool_keys | plan_keys)
+    matrix = provider.get_matrix(pool_keys)
 
     pool_by_key = _pool_by_key(pool)
 
