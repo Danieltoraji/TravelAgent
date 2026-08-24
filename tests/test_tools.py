@@ -1746,6 +1746,46 @@ class TestAmapClientDistance(unittest.TestCase):
         with self.assertRaises(ValueError, msg="批量测量仅支持 driving / walk"):
             client.get_distances([(1.0, 1.0)], [(2.0, 2.0)], mode="transit")
 
+    def test_get_distances_retries_transient_then_recovers(self) -> None:
+        """B 档：单终点瞬时 10021 → 退避重试后成功（矩阵不丢行）。"""
+        from unittest.mock import patch
+
+        client = AmapClient(api_key="test-key")
+        # 第一次调用抛 10021，第二次成功
+        client._get = MagicMock(side_effect=[
+            ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
+            {"status": "1", "results": [
+                {"origin_id": "0", "distance": "2100", "duration": "900"}]},
+        ])
+        with patch("tools.amap_client._DISTANCE_INTER_REQUEST_DELAY", 0), \
+             patch("tools.amap_client._DISTANCE_RETRY_BACKOFF", 0):
+            rows = client.get_distances(
+                [(39.916, 116.397)], [(39.925, 116.396)]
+            )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(client._get.call_count, 2, "瞬时错误应重试一次")
+
+    def test_get_distances_skips_destination_after_persistent_failure(self) -> None:
+        """B 档：单终点持续失败 → 跳过该终点（不拖垮整矩阵），其余终点照常返回。"""
+        from unittest.mock import patch
+
+        client = AmapClient(api_key="test-key")
+        client._get = MagicMock(side_effect=[
+            ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),  # 终点A 持续失败
+            ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
+            ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
+            {"status": "1", "results": [          # 终点B 成功
+                {"origin_id": "0", "distance": "4200", "duration": "1200"}]},
+        ])
+        with patch("tools.amap_client._DISTANCE_INTER_REQUEST_DELAY", 0), \
+             patch("tools.amap_client._DISTANCE_RETRY_BACKOFF", 0):
+            rows = client.get_distances(
+                [(39.916, 116.397)],
+                [(39.925, 116.396), (39.882, 116.407)],
+            )
+        self.assertEqual(len(rows), 1, "终点A 失败应跳过，只保留终点B 的行")
+        self.assertEqual(rows[0]["destination"], (39.882, 116.407))
+
 
 if __name__ == "__main__":
     unittest.main()

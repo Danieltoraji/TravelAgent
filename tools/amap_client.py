@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.parse import urlencode
@@ -19,6 +20,22 @@ from urllib.request import Request, urlopen
 logger = logging.getLogger("tools.amap")
 
 _AMAP_BASE_URL = "https://restapi.amap.com"
+
+# 批量距离请求的瞬时失败标记（免费 key QPS 超限：10021 CUQPS_HAS_EXCEEDED_THE_LIMIT）
+_DISTANCE_TRANSIENT_MARKERS = ("10021", "CUQPS", "QPS", "EXCEEDED", "LIMIT", "429", "TIMEOUT")
+
+
+def _distance_error_transient(text: str) -> bool:
+    """判断 /v3/distance 单次请求错误是否瞬时（QPS 限流等，可退避重试）。"""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in _DISTANCE_TRANSIENT_MARKERS)
+
+
+_DISTANCE_ATTEMPTS = 3            # 单终点最大尝试次数（首次 + 2 次重试）
+_DISTANCE_RETRY_BACKOFF = 0.4     # 重试退避秒数
+_DISTANCE_INTER_REQUEST_DELAY = 0.3  # 终点间间隔秒数（防批量 QPS 突刺）
 
 
 class AmapClient:
@@ -224,10 +241,11 @@ class AmapClient:
                 chunk = origin_list[chunk_start : chunk_start + 100]
                 origins_str = "|".join(f"{o[1]},{o[0]}" for o in chunk)  # lng,lat
                 dest_str = f"{destination[1]},{destination[0]}"
-                resp = self._get(
-                    "/v3/distance",
-                    {"origins": origins_str, "destination": dest_str, "type": measure_type},
+                resp = self._distance_request(
+                    origins_str, dest_str, measure_type
                 )
+                if resp is None:
+                    continue  # 该终点瞬时失败已跳过 → 矩阵缺行由上层单边降级
                 for item in self._extract_distance_rows(resp):
                     origin_index = chunk_start + item["origin_id"]
                     if origin_index >= len(origin_list):
@@ -244,7 +262,33 @@ class AmapClient:
                             "duration_s": item["duration_s"],
                         }
                     )
+            # 8.25：免费 key 批量接口 QPS 低，终点间加间隔防突刺 10021
+            time.sleep(_DISTANCE_INTER_REQUEST_DELAY)
         return rows
+
+    def _distance_request(
+        self, origins_str: str, dest_str: str, measure_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """单次 ``/v3/distance`` 请求：瞬时 10021 退避重试；仍失败跳过（不拖垮整矩阵）。"""
+        last_error: Optional[Exception] = None
+        for attempt in range(_DISTANCE_ATTEMPTS):
+            try:
+                return self._get(
+                    "/v3/distance",
+                    {"origins": origins_str, "destination": dest_str, "type": measure_type},
+                )
+            except ValueError as exc:
+                last_error = exc
+                if _distance_error_transient(str(exc)) and attempt < _DISTANCE_ATTEMPTS - 1:
+                    time.sleep(_DISTANCE_RETRY_BACKOFF)
+                    continue
+                # 非瞬时错误 → 直接跳过该终点（单终点失败不应拖垮整矩阵）
+                break
+        logger.warning(
+            "distance 请求失败后跳过该终点：%s（%s）",
+            dest_str, last_error,
+        )
+        return None
 
     @staticmethod
     def _extract_distance_rows(resp: Dict[str, Any]) -> List[Dict[str, Any]]:

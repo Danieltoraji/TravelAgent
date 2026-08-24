@@ -396,10 +396,29 @@ def make_live_matrix_fn(
         }
         if city:
             kwargs["city"] = city
-        try:
-            result = tool_provider.call("map", **kwargs)
-        except Exception as exc:  # noqa: BLE001
-            raise LiveDataError(f"map.batch_route 调用失败：{exc}") from exc
+        result = None
+        last_error_text = ""
+        for attempt in range(_ETA_RETRIES):
+            try:
+                result = tool_provider.call("map", **kwargs)
+            except Exception as exc:  # noqa: BLE001  免费 key 批量接口 QPS 低：瞬时错误重试
+                last_error_text = str(exc)
+                if attempt == 0 and _is_transient_eta_error(last_error_text):
+                    time.sleep(_ETA_RETRY_SLEEP * 2)
+                    continue
+                raise LiveDataError(
+                    f"map.batch_route 调用失败：{last_error_text}"
+                ) from exc
+            err_text = _result_error_text(result)
+            if attempt == 0 and _is_transient_eta_error(err_text):
+                time.sleep(_ETA_RETRY_SLEEP * 2)
+                continue
+            last_error_text = err_text
+            break
+        if result is None:
+            raise LiveDataError(
+                f"map.batch_route 重试后仍失败：{last_error_text}"
+            )
         payload = _tool_payload(result)
         rows = payload.get("rows") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
