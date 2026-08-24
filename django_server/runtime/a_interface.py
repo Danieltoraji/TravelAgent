@@ -75,8 +75,10 @@ def build_planner_hook(
 ) -> Any:
     """A 侧 Planner（BPlannerHook）：requirement → TripTimeline（离线可跑）。
 
-    ``requirement`` 缺省从 runtime 单例读取；``tool_provider`` 预留（方案 §4.3 B1：
-    实时数据接入时注入规划层）。
+    ``requirement`` 缺省从 runtime 单例读取；``tool_provider`` 由 AgentRuntime
+    注入并**透传给 BPlannerHook**（方案 §4.3 B1：实时数据接入时规划层用真源；
+    修复 0825：此前签名收参但未透传，导致服务器上 USE_LIVE_DATA 即使为 true
+    也永远走假源）。
     """
     from call_llm.b_planner_hook import BPlannerHook
 
@@ -89,4 +91,5 @@ def build_planner_hook(
         start_date=content.get("start_date"),
         plan_id=DEFAULT_PLAN_ID,
         ask_user_on_conflict=False,
+        tool_provider=tool_provider,   # 真源 provider（USE_LIVE_DATA=1 时 BPlannerHook 内部启用）
     )
