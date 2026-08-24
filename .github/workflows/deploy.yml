@@ -58,13 +58,16 @@ jobs:
         # 之后无需手动 SSH 配置 key。Secrets 配置见仓库 Settings→Secrets and variables→Actions：
         #   必填：DEEPSEEK_API_KEY
         #   可选：DEMO_MODE / LLM_PROVIDER / DEEPSEEK_MODEL / QWEATHER_API_KEY /
-        #         QWEATHER_API_HOST / AMAP_API_KEY（缺省值见 ENV_CONTENT）
+        #         QWEATHER_API_HOST / AMAP_API_KEY / USE_LIVE_DATA（缺省值见 ENV_CONTENT）
         # 注意：本步会覆盖服务器上的旧 .env（维护时以 Secrets 为准）。
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
           ENV_CONTENT: |
             # TravelAgent 环境变量 —— 由 GitHub Actions 自动生成（deploy.yml），勿手动编辑
             DEMO_MODE=${{ secrets.DEMO_MODE || 'true' }}
+            # A 侧真实数据开关：默认跟随 DEMO_MODE（DEMO_MODE=false 即开启真源）；
+            # 也可用 Secret USE_LIVE_DATA 显式覆盖（如只想让工具真、矩阵仍用假图）。
+            USE_LIVE_DATA=${{ secrets.USE_LIVE_DATA || ((secrets.DEMO_MODE == 'false') && 'true' || 'false') }}
             LLM_PROVIDER=${{ secrets.LLM_PROVIDER || 'deepseek' }}
             DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
             DEEPSEEK_BASE_URL=${{ secrets.DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
