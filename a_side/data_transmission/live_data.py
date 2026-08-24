@@ -145,6 +145,20 @@ def _result_error_text(result: Any) -> str:
     return str(err or "")
 
 
+def _coord_str(location: Any) -> Optional[str]:
+    """A 侧 spot 的 location → ``"lng,lat"`` 坐标字符串（坐标缺失/全 0 → None）。
+
+    B 侧 map 工具把它当坐标直连（跳过地理编码）；与高德经纬度口径一致。
+    """
+    if not isinstance(location, dict):
+        return None
+    lat = _as_float(location.get("lat"))
+    lng = _as_float(location.get("lng"))
+    if not lat and not lng:
+        return None
+    return f"{lng},{lat}"
+
+
 def _minutes_from_payload(payload: Any) -> Optional[int]:
     """从地图 route 返回里提取通勤分钟数（兼容多种字段口径）。
 
@@ -258,6 +272,8 @@ class LiveSpotsSource:
     def __init__(self, tool_provider: Any):
         self.tool_provider = tool_provider
         self.names: Dict[str, str] = {}
+        # B 档（8.25）：缓存最近一次拉取的候选池（含 location），供矩阵构建读坐标
+        self.spots: List[Dict[str, Any]] = []
 
     def __call__(self, city: str) -> List[Dict[str, Any]]:
         try:
@@ -279,6 +295,7 @@ class LiveSpotsSource:
         self.names = {
             str(spot.get("id") or spot["name"]): spot["name"] for spot in spots
         }
+        self.spots = spots
         return spots
 
 
@@ -347,6 +364,65 @@ def make_live_eta_fn(
         )
 
     return eta_fn
+
+
+# ---------------------------------------------------------------------------
+# 交通（B 档）：一次 batch_route 取整矩阵（坐标直连，跳过地理编码）
+# ---------------------------------------------------------------------------
+
+
+def make_live_matrix_fn(
+    tool_provider: Any,
+    city: Optional[str] = None,
+) -> Callable[[Dict[str, str]], Dict[Tuple[str, str], Tuple[float, int]]]:
+    """返回 ``matrix_fn(name_to_coord) -> {(coord, coord): (km, minutes)}``。
+
+    一次 ``map action="batch_route"``（/v3/distance，驾车近似）取整矩阵：
+    - 输入 ``{景点名: "lng,lat"}``，B 侧坐标直连跳过地理编码 → 消灭 QPS 突刺
+      （10021）与怪名 POI 编码失败（30001）——C 端真源联调暴露的两个结构性失败；
+    - 整矩阵失败（调用异常 / 无 rows / 空矩阵）→ ``LiveDataError`` 交上层回退假源；
+    - 个别行缺数据时由 ``LiveTravelTimeProvider`` 单边降级，不打断主链路。
+    """
+
+    def matrix_fn(
+        name_to_coord: Dict[str, str]
+    ) -> Dict[Tuple[str, str], Tuple[float, int]]:
+        coords = [name_to_coord[name] for name in name_to_coord]
+        kwargs: Dict[str, Any] = {
+            "action": "batch_route",
+            "origins": coords,
+            "destinations": coords,
+            "mode": "driving",
+        }
+        if city:
+            kwargs["city"] = city
+        try:
+            result = tool_provider.call("map", **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            raise LiveDataError(f"map.batch_route 调用失败：{exc}") from exc
+        payload = _tool_payload(result)
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise LiveDataError(f"map.batch_route 未返回 rows：{payload!r}")
+        matrix: Dict[Tuple[str, str], Tuple[float, int]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            o, d = row.get("origin"), row.get("destination")
+            if o is None or d is None:
+                continue
+            minutes = _minutes_from_payload(row)
+            if minutes is None:
+                continue
+            matrix[(str(o), str(d))] = (
+                _as_float(row.get("distance_km")),
+                minutes,
+            )
+        if not matrix:
+            raise LiveDataError("map.batch_route 返回空矩阵")
+        return matrix
+
+    return matrix_fn
 
 
 # ---------------------------------------------------------------------------

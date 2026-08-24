@@ -127,7 +127,9 @@ class BPlannerHook:
         # 真实数据接入（USE_LIVE_DATA=1 且给了 tool_provider）
         from data_transmission.live_data import (
             LiveDataError,
+            _coord_str,
             make_live_eta_fn,
+            make_live_matrix_fn,
             make_live_spots_provider,
             use_live_data,
         )
@@ -138,6 +140,7 @@ class BPlannerHook:
         self._live_spots_provider: Optional[Callable[[str], Any]] = None
         self._travel_time_provider: Optional[LiveTravelTimeProvider] = None
         if self._use_live:
+            self._tool_provider = tool_provider
             live_source = make_live_spots_provider(tool_provider)
             ask = self._ask_user_on_conflict
 
@@ -208,6 +211,8 @@ class BPlannerHook:
 
     def _generate_live_or_fallback(self) -> TripTimeline:
         """真源优先：候选池 / 规划任一步失败 → 回退假数据管线（保留失败原因）。"""
+        from data_transmission.live_data import _coord_str, make_live_matrix_fn
+
         try:
             spots = self._live_spots_provider(self.city)
         except Exception as exc:  # noqa: BLE001
@@ -216,11 +221,29 @@ class BPlannerHook:
             self.last_data_source = "live_fallback"
             self.last_error = reason
             return timeline
-        if self._travel_time_provider is not None:
-            self._travel_time_provider.set_name_map(
-                self._live_spots_source.names
-            )
         try:
+            if self._travel_time_provider is not None:
+                self._travel_time_provider.set_name_map(
+                    self._live_spots_source.names
+                )
+                # B 档（8.25）：scenic 已返回真实坐标 → 一次 batch_route 取整矩阵。
+                # 坐标直连（B 侧跳过地理编码）：消灭 QPS 突刺（10021）与怪名 POI
+                # 编码失败（30001）；矩阵构建失败与规划失败同走回退假源。
+                source_spots = self._live_spots_source.spots or self._live_spots_source(
+                    self.city
+                )
+                name_to_coord = {
+                    spot["name"]: coord
+                    for spot in source_spots
+                    if spot.get("name") and (coord := _coord_str(spot.get("location")))
+                }
+                if name_to_coord:
+                    matrix = make_live_matrix_fn(self._tool_provider, city=self.city)(
+                        name_to_coord
+                    )
+                    self._travel_time_provider.set_matrix(
+                        matrix, name_to_coord=name_to_coord
+                    )
             plan = self._planner(
                 self.requirement,
                 spots,

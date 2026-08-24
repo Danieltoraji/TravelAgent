@@ -27,6 +27,32 @@ _MODE_TEXT: Dict[str, str] = {
 }
 
 
+def _parse_coord(text: Any) -> Optional[Tuple[float, float]]:
+    """"lng,lat" 坐标字符串 → ``(lat, lng)``（与 geocode 返回口径一致）；非坐标 → None。
+
+    8.25 B 档：让 A 侧把 scenic 已返回的真实坐标直接喂给路线规划，跳过地理编码，
+    避免怪名 POI（如"LV巨轮"）点名地理编码失败（高德 30001）拖垮整矩阵。
+    """
+    if text is None:
+        return None
+    parts = [p.strip() for p in str(text).split(",")]
+    if len(parts) != 2:
+        return None
+    try:
+        lng, lat = float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+    return (lat, lng)
+
+
+def _resolve_coord(name: str, city: str, geocode) -> Tuple[float, float]:
+    """坐标字符串 → 直接返回；否则地理编码（限定 city）。"""
+    coord = _parse_coord(name)
+    if coord is not None:
+        return coord
+    return geocode(name, city=city)
+
+
 class MapTool(BaseTool):
     name = "map"
     description = "地图服务：搜索景点位置、计算两点间路线距离与预计耗时。"
@@ -183,9 +209,13 @@ class MapToolLive(MapTool):
         先地理编码获取起终点坐标，再调路线规划 API。
         地理编码时限定 ``city``（默认北京，避免同名地点歧义）。
         """
-        # 地理编码：地址 → 坐标（限定城市，避免同名歧义）
-        origin_coord: Tuple[float, float] = self._client.geocode(origin, city=city)
-        dest_coord: Tuple[float, float] = self._client.geocode(destination, city=city)
+        # 地理编码：地址 → 坐标（限定城市，避免同名歧义）；"lng,lat" 坐标直连跳过编码
+        origin_coord: Tuple[float, float] = _resolve_coord(
+            origin, city, self._client.geocode
+        )
+        dest_coord: Tuple[float, float] = _resolve_coord(
+            destination, city, self._client.geocode
+        )
 
         # 路线规划
         route_data = self._client.get_route(origin_coord, dest_coord, mode=mode, city=city)
@@ -221,8 +251,13 @@ class MapToolLive(MapTool):
         """
         origin_names = [str(origin) for origin in origins]
         dest_names = [str(destination) for destination in destinations]
-        origin_coords = [self._client.geocode(name, city=city) for name in origin_names]
-        dest_coords = [self._client.geocode(name, city=city) for name in dest_names]
+        # "lng,lat" 坐标直连跳过地理编码（8.25 B 档），其余点名限定 city 编码
+        origin_coords = [
+            _resolve_coord(name, city, self._client.geocode) for name in origin_names
+        ]
+        dest_coords = [
+            _resolve_coord(name, city, self._client.geocode) for name in dest_names
+        ]
 
         distance_rows = self._client.get_distances(origin_coords, dest_coords, mode=mode)
         by_pair = {(d["origin"], d["destination"]): d for d in distance_rows}

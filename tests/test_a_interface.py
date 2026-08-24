@@ -45,6 +45,15 @@ class _FakeTool:
         if name == "map":
             if self.fail_map:
                 raise RuntimeError("map 故障（测试注入）")
+            if kwargs.get("action") == "batch_route":
+                rows = []
+                for o in kwargs["origins"]:
+                    for d in kwargs["destinations"]:
+                        rows.append(
+                            {"origin": o, "destination": d, "distance_km": 3.0,
+                             "transport_minutes": 25}
+                        )
+                return {"rows": rows}
             return {"transport_minutes": 30, "distance_km": 3.0}
         raise RuntimeError(f"no tool {name}")
 
@@ -81,7 +90,8 @@ class TestPlannerHookThreadsToolProvider(unittest.TestCase):
         self.assertEqual(hook.last_data_source, "live")   # 关键：透传生效
         self.assertIsNone(hook.last_error)
         map_calls = [c for c in tool.calls if c[0] == "map"]
-        self.assertTrue(map_calls, "live 模式应调用 map.route 构建交通矩阵")
+        self.assertTrue(map_calls, "live 模式应调用 map.batch_route 构建交通矩阵")
+        self.assertTrue(all(kw["action"] == "batch_route" for _, kw in map_calls))
         self.assertTrue(timeline.days)
 
     def test_live_falls_back_on_scenic_failure(self) -> None:

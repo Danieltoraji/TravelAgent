@@ -1504,6 +1504,39 @@ class TestMapBatchRoute(unittest.TestCase):
             mode="driving",
         )
 
+    def test_live_batch_route_coord_direct_skips_geocode(self) -> None:
+        """B 档：坐标字符串（"lng,lat"）直连，跳过地理编码（消灭怪名 POI 30001）。"""
+        client = self.make_mock_amap_client()
+        client.get_distances.return_value = [
+            {"origin": (39.916, 116.397), "destination": (39.882, 116.407),
+             "distance_m": 5000, "duration_s": 1500},
+        ]
+        rows = MapToolLive(client)._run(
+            action="batch_route",
+            origins=["116.397,39.916"],
+            destinations=["116.407,39.882"],
+            city="上海",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["transport_minutes"], 25)
+        client.geocode.assert_not_called()
+        client.get_distances.assert_called_once_with(
+            [(39.916, 116.397)], [(39.882, 116.407)], mode="driving"
+        )
+
+    def test_live_route_coord_direct_skips_geocode(self) -> None:
+        client = self.make_mock_amap_client()
+        client.get_route.return_value = {"distance": 3500, "duration": 1500, "cost": 6}
+        result = MapToolLive(client)._run(
+            action="route",
+            origin="116.397,39.916",
+            destination="116.407,39.882",
+            mode="driving",
+            city="上海",
+        )
+        self.assertEqual(result["transport_minutes"], 25)
+        client.geocode.assert_not_called()
+
     def test_live_route_has_transport_minutes(self) -> None:
         client = self.make_mock_amap_client()
         client.geocode.side_effect = [(39.916, 116.397), (39.882, 116.407)]

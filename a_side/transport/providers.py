@@ -136,10 +136,29 @@ class LiveTravelTimeProvider(TravelTimeProvider):
         self._degraded_km = degraded_km
         self._max_degraded_edges = max_degraded_edges
         self._degraded_count = 0
+        # B 档（8.25）：矩阵模式——一次 batch_route 预取整矩阵，get_edge 全部走缓存。
+        self._matrix: Dict[Tuple[str, str], Tuple[float, int]] = {}
+        self._name_to_coord: Dict[str, str] = {}
+        self._matrix_mode = False
 
     def set_name_map(self, name_by_id: Dict[str, str]) -> None:
         """增量补充 id → 点名映射（如从候选池/餐厅列表构建）。"""
         self._name_by_id.update(name_by_id or {})
+
+    def set_matrix(
+        self,
+        matrix: Dict[Tuple[str, str], Tuple[float, int]],
+        name_to_coord: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """注入一次 batch_route 算好的整矩阵（8.25 B 档）。
+
+        ``matrix``: ``{(coord_str, coord_str): (km, minutes)}``；
+        ``name_to_coord``: ``{景点名: "lng,lat"}``。此后 get_edge 全部由矩阵提供，
+        不再逐对打地图 API（消灭 QPS 突刺 / 怪名地理编码失败）。
+        """
+        self._matrix = dict(matrix)
+        self._name_to_coord = dict(name_to_coord or {})
+        self._matrix_mode = True
 
     def _display_name(self, node_id: str) -> str:
         return self._name_by_id.get(str(node_id), str(node_id))
@@ -161,27 +180,32 @@ class LiveTravelTimeProvider(TravelTimeProvider):
             raise ValueError(
                 f"live 地图缺少节点名称映射：{origin_id} / {destination_id}"
             )
-        try:
-            distance_km, minutes = self._eta_fn(
+        if self._matrix_mode:
+            distance_km, minutes = self._edge_from_matrix(
                 self._display_name(origin_id), self._display_name(destination_id)
             )
-        except Exception as exc:  # noqa: BLE001
-            self._degraded_count += 1
-            if self._degraded_count > self._max_degraded_edges:
-                logger.warning(
-                    "live 地图降级超过 %s 条（%s），判定地图整体不可用，上抛交给上层回退假源",
-                    self._max_degraded_edges,
-                    self._degraded_count,
+        else:
+            try:
+                distance_km, minutes = self._eta_fn(
+                    self._display_name(origin_id), self._display_name(destination_id)
                 )
-                raise
-            logger.warning(
-                "live 地图单对 ETA 失败，降级该边为默认 %s 分钟：%s → %s（%s）",
-                self._degraded_minutes,
-                origin_id,
-                destination_id,
-                exc,
-            )
-            distance_km, minutes = self._degraded_km, self._degraded_minutes
+            except Exception as exc:  # noqa: BLE001
+                self._degraded_count += 1
+                if self._degraded_count > self._max_degraded_edges:
+                    logger.warning(
+                        "live 地图降级超过 %s 条（%s），判定地图整体不可用，上抛交给上层回退假源",
+                        self._max_degraded_edges,
+                        self._degraded_count,
+                    )
+                    raise
+                logger.warning(
+                    "live 地图单对 ETA 失败，降级该边为默认 %s 分钟：%s → %s（%s）",
+                    self._degraded_minutes,
+                    origin_id,
+                    destination_id,
+                    exc,
+                )
+                distance_km, minutes = self._degraded_km, self._degraded_minutes
         edge = TravelEdge(
             origin_id,
             destination_id,
@@ -193,3 +217,31 @@ class LiveTravelTimeProvider(TravelTimeProvider):
             destination_id, origin_id, float(distance_km), int(round(minutes))
         )
         return edge
+
+    def _edge_from_matrix(self, origin_name: str, dest_name: str) -> Tuple[float, int]:
+        """矩阵模式下的单边取值：缺坐标映射 → ValueError（餐厅等非景点节点）；
+        缺矩阵行（个别地理编码失败被 batch 跳过）→ 单边降级。"""
+        o = self._name_to_coord.get(origin_name)
+        d = self._name_to_coord.get(dest_name)
+        if o is None or d is None:
+            raise ValueError(
+                f"live 矩阵缺少坐标映射：{origin_name} / {dest_name}"
+            )
+        hit = self._matrix.get((o, d))
+        if hit is None:
+            self._degraded_count += 1
+            if self._degraded_count > self._max_degraded_edges:
+                logger.warning(
+                    "live 矩阵缺失超过 %s 条（%s），上抛交给上层回退假源",
+                    self._max_degraded_edges,
+                    self._degraded_count,
+                )
+                raise RuntimeError(f"live 矩阵缺少 {origin_name} → {dest_name} 的距离数据")
+            logger.warning(
+                "live 矩阵缺 %s → %s，降级该边为默认 %s 分钟",
+                origin_name,
+                dest_name,
+                self._degraded_minutes,
+            )
+            return self._degraded_km, self._degraded_minutes
+        return hit
