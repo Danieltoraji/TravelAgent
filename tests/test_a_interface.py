@@ -53,7 +53,7 @@ class _FakeTool:
                             {"origin": o, "destination": d, "distance_km": 3.0,
                              "transport_minutes": 25}
                         )
-                return {"rows": rows}
+                return {"data": rows}   # B 侧真实形状：map 工具 data 直接是 rows 列表
             return {"transport_minutes": 30, "distance_km": 3.0}
         raise RuntimeError(f"no tool {name}")
 

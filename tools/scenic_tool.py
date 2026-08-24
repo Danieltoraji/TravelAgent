@@ -15,6 +15,7 @@ Live 版（ScenicToolLive）：调高德 POI 搜索 API，返回真实评分/地
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.base_tool import BaseTool
@@ -22,21 +23,23 @@ from tools.mock_data import MockWorld, PLACES
 
 logger = logging.getLogger("tools.scenic")
 
-# 营业时间解析失败 / 缺省时的兜底值
+# 默认营业时间
 _DEFAULT_OPEN = "09:00"
 _DEFAULT_CLOSE = "17:00"
 # 无 API 数据时的建议停留时长（分钟）
 _DEFAULT_DURATION = 120
 
+# 真实高德 opentime_today 格式繁杂（"08:30-17:00"、"09:00-22:00;18:30-22:00"、
+# "14:00 18:30-22:00"…）——取首个 "HH:MM-HH:MM" 区间，解析失败走默认值。
+_OPEN_RANGE_RE = re.compile(r"(\d{1,2}:\d{2})\s*[-—~至]\s*(\d{1,2}:\d{2})")
+
 
 def _split_open_range(open_range: str) -> Tuple[str, str]:
-    """``"08:30-17:30"`` → ``("08:30", "17:30")``；无法解析 → 默认 09:00-17:00。"""
+    """``"08:30-17:00"`` → ``("08:30", "17:00")``；多段/杂乱文本取首个区间；无法解析 → 默认 09:00-17:00。"""
     text = (open_range or "").strip()
-    if "-" not in text:
-        return _DEFAULT_OPEN, _DEFAULT_CLOSE
-    parts = [part.strip() for part in text.split("-", 1)]
-    if len(parts) == 2 and parts[0] and parts[1]:
-        return parts[0], parts[1]
+    match = _OPEN_RANGE_RE.search(text)
+    if match:
+        return match.group(1), match.group(2)
     return _DEFAULT_OPEN, _DEFAULT_CLOSE
 
 

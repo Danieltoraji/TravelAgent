@@ -158,14 +158,24 @@ def requirement_to_planner_output(requirement: Dict[str, Any]) -> PlannerOutput:
 
 def _node_to_place(node: Dict[str, Any]) -> Place:
     details = node.get("details") or {}
+    location = details.get("location")
+    lat = lng = 0.0
+    if isinstance(location, dict):
+        lat = float(location.get("lat") or 0.0)
+        lng = float(location.get("lng") or 0.0)
+    elif isinstance(location, (list, tuple)) and len(location) >= 2:
+        lat, lng = float(location[0] or 0.0), float(location[1] or 0.0)
     return Place(
         id=str(details.get("spot_id") or ""),
         name=str(node.get("name") or ""),
+        lat=lat,
+        lng=lng,
         category=NODE_TYPE_TO_CATEGORY.get(node.get("type"), "scenic"),
         arrival=format_minutes(_safe_minutes(node.get("start_minutes"))),
         end_time=format_minutes(_safe_minutes(node.get("end_minutes"))),
         queue_min=_safe_minutes(details.get("queue_min")),
         ticket_required=bool(details.get("ticket_required")),
+        price=float(details.get("price") or 0.0),
     )
 
 

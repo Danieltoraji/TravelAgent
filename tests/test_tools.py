@@ -1640,6 +1640,25 @@ class TestScenicSearch(unittest.TestCase):
         self.assertEqual(spots[0]["opening_time"], "09:00")
         self.assertEqual(spots[0]["closing_time"], "17:00")
 
+    def test_live_scenic_search_messy_opentime_sanitized(self) -> None:
+        """真实高德 opentime_today 杂乱（多段/无分隔符）→ 取首个区间，不炸下游 _parse_time。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {"name": "深夜书房", "lat": 30.6, "lng": 104.06, "opentime_today": "14:00 18:30-22:00",
+             "type": "", "tag": "", "cost": 0, "rating": 0},
+            {"name": "两段开放", "lat": 30.6, "lng": 104.07, "opentime_today": "09:00-12:00;14:00-18:00",
+             "type": "", "tag": "", "cost": 0, "rating": 0},
+            {"name": "乱文", "lat": 30.6, "lng": 104.08, "opentime_today": "随时开放",
+             "type": "", "tag": "", "cost": 0, "rating": 0},
+        ]
+        spots = ScenicToolLive(client)._run(action="search", place="成都", limit=3)
+        self.assertEqual(spots[0]["opening_time"], "18:30")
+        self.assertEqual(spots[0]["closing_time"], "22:00")
+        self.assertEqual(spots[1]["opening_time"], "09:00")
+        self.assertEqual(spots[1]["closing_time"], "12:00")
+        self.assertEqual(spots[2]["opening_time"], "09:00")   # 无法解析 → 默认
+        self.assertEqual(spots[2]["closing_time"], "17:00")
+
     def test_live_scenic_status_unaffected(self) -> None:
         client = self.make_mock_amap_client()
         client.search_poi.return_value = [

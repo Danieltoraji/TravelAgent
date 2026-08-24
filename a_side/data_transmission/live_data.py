@@ -20,6 +20,7 @@ B 的 tool-not-found / 解析失败 → 转成 ``LiveDataError``，属预期行�
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from data_transmission.city_travel import CityTravelEdge
@@ -244,11 +245,11 @@ def normalize_live_spot(raw: Any, city: str, index: int = 0) -> Optional[Dict[st
             raw.get("duration") or raw.get("suggest_duration") or raw.get("stay_minutes"),
             default=120,
         ),
-        "opening_time": _as_str(
-            raw.get("opening_time") or raw.get("open_time") or "09:00"
+        "opening_time": _sanitize_time(
+            raw.get("opening_time") or raw.get("open_time"), "09:00"
         ),
-        "closing_time": _as_str(
-            raw.get("closing_time") or raw.get("close_time") or "17:00"
+        "closing_time": _sanitize_time(
+            raw.get("closing_time") or raw.get("close_time"), "17:00"
         ),
         "content_tags": content_tags,
         "plan_tags": _str_list(raw.get("plan_tags")),
@@ -259,6 +260,32 @@ def normalize_live_spot(raw: Any, city: str, index: int = 0) -> Optional[Dict[st
             or raw.get("need_reservation")
         ),
     }
+
+
+_TIME_TOKEN_RE = re.compile(r"\d{1,2}:\d{2}")
+
+
+def _sanitize_time(value: Any, default: str) -> str:
+    """真实营业时间可能多段/杂乱（"14:00 18:30-22:00"）→ 取首个合法 HH:MM，否则默认。
+
+    下游 ``algorithoms._common._parse_time`` 只认严格 ``HH:MM``，杂串会整链回退
+    （线上成都 8.26 教训：scenic 候选池带进一个乱格式营业时间 → live 规划抛
+    ValueError → live_fallback）。清洗放在适配层，排程层零改动。
+    """
+    text = _as_str(value).strip()
+    if not text:
+        return default
+    match = _TIME_TOKEN_RE.search(text)
+    if not match:
+        return default
+    hh_text, mm_text = match.group(0).split(":", 1)
+    try:
+        hour, minute = int(hh_text), int(mm_text)
+    except (TypeError, ValueError):
+        return default
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return default
+    return f"{hour:02d}:{mm_text}"
 
 
 class LiveSpotsSource:
@@ -420,7 +447,15 @@ def make_live_matrix_fn(
                 f"map.batch_route 重试后仍失败：{last_error_text}"
             )
         payload = _tool_payload(result)
-        rows = payload.get("rows") if isinstance(payload, dict) else None
+        # B 侧 batch_route 的 data 直接是 rows 列表（8.26 实测：MapTool._batch_route
+        # 返回 List[dict]，ToolResult.data = rows）；旧式 {"rows": [...]} 包裹也兼容。
+        # 解析错形状会整链回退假源（线上三城 400/假池教训），两形状都必须在解析期接住。
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict):
+            rows = payload.get("rows")
+        else:
+            rows = None
         if not isinstance(rows, list):
             raise LiveDataError(f"map.batch_route 未返回 rows：{payload!r}")
         matrix: Dict[Tuple[str, str], Tuple[float, int]] = {}
