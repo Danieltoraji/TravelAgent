@@ -33,6 +33,16 @@ def _distance_error_transient(text: str) -> bool:
     return any(marker.lower() in lowered for marker in _DISTANCE_TRANSIENT_MARKERS)
 
 
+def _distance_origin_index(raw: Any) -> int:
+    """高德 /v3/distance 响应的 ``origin_id`` 是 **1 基**序号（实测 10 起点返回 1..10，
+    第 1 个起点为 1）——转成 0 基索引；非法值或 0 返回 -1（由上层跳过，不拖垮矩阵）。"""
+    try:
+        idx = int(raw) - 1  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return -1
+    return idx if idx >= 0 else -1
+
+
 _DISTANCE_ATTEMPTS = 3            # 单终点最大尝试次数（首次 + 2 次重试）
 _DISTANCE_RETRY_BACKOFF = 0.4     # 重试退避秒数
 _DISTANCE_INTER_REQUEST_DELAY = 0.3  # 终点间间隔秒数（防批量 QPS 突刺）
@@ -248,8 +258,8 @@ class AmapClient:
                     continue  # 该终点瞬时失败已跳过 → 矩阵缺行由上层单边降级
                 for item in self._extract_distance_rows(resp):
                     origin_index = chunk_start + item["origin_id"]
-                    if origin_index >= len(origin_list):
-                        # 异常响应（origin_id 越界）不应拖垮整个矩阵，跳过并告警
+                    if origin_index < 0 or origin_index >= len(origin_list):
+                        # 异常响应（origin_id 越界/非法）不应拖垮整个矩阵，跳过并告警
                         logger.warning(
                             "distance 响应 origin_id 越界，跳过: %s", item,
                         )
@@ -306,7 +316,8 @@ class AmapClient:
             try:
                 rows.append(
                     {
-                        "origin_id": int(item.get("origin_id", 0)),
+                        # 高德 origin_id 是 1 基序号 → 转 0 基索引（_distance_origin_index）
+                        "origin_id": _distance_origin_index(item.get("origin_id")),
                         "distance_m": int(float(raw_distance)),
                         "duration_s": int(float(raw_duration)),
                     }

@@ -1660,11 +1660,11 @@ class TestAmapClientDistance(unittest.TestCase):
         resp = {
             "status": "1",
             "results": [
-                {"origin_id": "0", "destination": "116.397,39.916",
-                 "distance": "2100", "duration": "900"},
                 {"origin_id": "1", "destination": "116.397,39.916",
-                 "distance": "3600", "duration": "1500"},
+                 "distance": "2100", "duration": "900"},
                 {"origin_id": "2", "destination": "116.397,39.916",
+                 "distance": "3600", "duration": "1500"},
+                {"origin_id": "3", "destination": "116.397,39.916",
                  "distance": "", "duration": ""},  # 非法 → 跳过
             ],
         }
@@ -1678,12 +1678,12 @@ class TestAmapClientDistance(unittest.TestCase):
     def test_get_distances_multiple_destinations(self) -> None:
         client = AmapClient(api_key="test-key")
         client._get = MagicMock(side_effect=[
-            # 终点 A（北京故宫）
+            # 终点 A（北京故宫）— 高德 origin_id 从 1 开始
             {"status": "1", "results": [
-                {"origin_id": "0", "distance": "2100", "duration": "900"}]},
+                {"origin_id": "1", "distance": "2100", "duration": "900"}]},
             # 终点 B（天坛）
             {"status": "1", "results": [
-                {"origin_id": "0", "distance": "4200", "duration": "1200"}]},
+                {"origin_id": "1", "distance": "4200", "duration": "1200"}]},
         ])
 
         origins = [(39.916, 116.397)]
@@ -1711,8 +1711,8 @@ class TestAmapClientDistance(unittest.TestCase):
             return {
                 "status": "1",
                 "results": [
-                    {"origin_id": str(i), "distance": str(1000 + i),
-                     "duration": "600"}
+                    {"origin_id": str(i + 1), "distance": str(1000 + i),
+                     "duration": "600"}   # 高德 1 基
                     for i in range(page)
                 ],
             }
@@ -1728,13 +1728,13 @@ class TestAmapClientDistance(unittest.TestCase):
         self.assertEqual(rows[-1]["origin"], origins[-1])  # 第二分片 origin_id 偏移修正
 
     def test_get_distances_skips_out_of_range_origin_id(self) -> None:
-        """异常响应（origin_id 越界）跳过而不是抛 IndexError。"""
+        """异常响应（origin_id 越界/非法）跳过而不是抛 IndexError。"""
         client = AmapClient(api_key="test-key")
         client._get = MagicMock(return_value={
             "status": "1",
             "results": [
-                {"origin_id": "0", "distance": "1000", "duration": "600"},
-                {"origin_id": "5", "distance": "2000", "duration": "700"},  # 越界
+                {"origin_id": "1", "distance": "1000", "duration": "600"},  # 合法（1 基→索引 0）
+                {"origin_id": "5", "distance": "2000", "duration": "700"},  # 越界（仅 1 个起点）
             ],
         })
         rows = client.get_distances([(39.9, 116.3)], [(39.925, 116.396)])
@@ -1755,7 +1755,7 @@ class TestAmapClientDistance(unittest.TestCase):
         client._get = MagicMock(side_effect=[
             ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
             {"status": "1", "results": [
-                {"origin_id": "0", "distance": "2100", "duration": "900"}]},
+                {"origin_id": "1", "distance": "2100", "duration": "900"}]},
         ])
         with patch("tools.amap_client._DISTANCE_INTER_REQUEST_DELAY", 0), \
              patch("tools.amap_client._DISTANCE_RETRY_BACKOFF", 0):
@@ -1775,7 +1775,7 @@ class TestAmapClientDistance(unittest.TestCase):
             ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
             ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
             {"status": "1", "results": [          # 终点B 成功
-                {"origin_id": "0", "distance": "4200", "duration": "1200"}]},
+                {"origin_id": "1", "distance": "4200", "duration": "1200"}]},
         ])
         with patch("tools.amap_client._DISTANCE_INTER_REQUEST_DELAY", 0), \
              patch("tools.amap_client._DISTANCE_RETRY_BACKOFF", 0):
