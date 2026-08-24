@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import combinations
@@ -13,6 +14,8 @@ try:
     from data_transmission.city_graph import DEFAULT_GRAPH_DIR, match_city_graph
 except ModuleNotFoundError:
     from ..data_transmission.city_graph import DEFAULT_GRAPH_DIR, match_city_graph
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -120,10 +123,19 @@ class LiveTravelTimeProvider(TravelTimeProvider):
         self,
         eta_fn: Callable[[str, str], Tuple[float, int]],
         name_by_id: Optional[Dict[str, str]] = None,
+        degraded_minutes: int = 20,
+        degraded_km: float = 2.0,
+        max_degraded_edges: int = 3,
     ):
         self._eta_fn = eta_fn
         self._name_by_id: Dict[str, str] = dict(name_by_id or {})
         self._cache: Dict[Tuple[str, str], TravelEdge] = {}
+        # A 档（8.25）：单对 ETA 失败时降级为该默认值，不中断 live 主链路；
+        # 但连续降级超过 max_degraded_edges 条（说明地图整体不可用）→ 上抛让上层回退假源。
+        self._degraded_minutes = degraded_minutes
+        self._degraded_km = degraded_km
+        self._max_degraded_edges = max_degraded_edges
+        self._degraded_count = 0
 
     def set_name_map(self, name_by_id: Dict[str, str]) -> None:
         """增量补充 id → 点名映射（如从候选池/餐厅列表构建）。"""
@@ -149,9 +161,27 @@ class LiveTravelTimeProvider(TravelTimeProvider):
             raise ValueError(
                 f"live 地图缺少节点名称映射：{origin_id} / {destination_id}"
             )
-        distance_km, minutes = self._eta_fn(
-            self._display_name(origin_id), self._display_name(destination_id)
-        )
+        try:
+            distance_km, minutes = self._eta_fn(
+                self._display_name(origin_id), self._display_name(destination_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._degraded_count += 1
+            if self._degraded_count > self._max_degraded_edges:
+                logger.warning(
+                    "live 地图降级超过 %s 条（%s），判定地图整体不可用，上抛交给上层回退假源",
+                    self._max_degraded_edges,
+                    self._degraded_count,
+                )
+                raise
+            logger.warning(
+                "live 地图单对 ETA 失败，降级该边为默认 %s 分钟：%s → %s（%s）",
+                self._degraded_minutes,
+                origin_id,
+                destination_id,
+                exc,
+            )
+            distance_km, minutes = self._degraded_km, self._degraded_minutes
         edge = TravelEdge(
             origin_id,
             destination_id,

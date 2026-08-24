@@ -113,6 +113,38 @@ def _tool_payload(result: Any) -> Any:
     return result
 
 
+# -- 单对 ETA 容错：瞬时/配额类错误退避重试（A 档，8.25） ----------------------
+
+import time  # noqa: E402
+
+_ETA_RETRIES = 2          # 首次 + 1 次重试
+_ETA_RETRY_SLEEP = 0.3    # 退避秒数（压 QPS 突刺）
+_ETA_TRANSIENT_MARKERS = (
+    "10021", "CUQPS", "QPS", "OVER_LIMIT", "EXCEEDED", "LIMIT",
+    "429", "TIMEOUT", "超时", "TIME_OUT",
+)
+
+
+def _is_transient_eta_error(text: str) -> bool:
+    """判断地图 ETA 错误是否为瞬时/配额类（可退避重试）。
+
+    高德免费 key 的 QPS/日配额超限（如 ``10021 CUQPS_HAS_EXCEEDED_THE_LIMIT``）
+    重试可恢复；``30001 ENGINE_RESPONSE_DATA_ERROR`` 等非瞬时错误不重试。
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in _ETA_TRANSIENT_MARKERS)
+
+
+def _result_error_text(result: Any) -> str:
+    """取 B 工具返回里的 error 文案（兼容 ToolResult 对象与 dict）。"""
+    err = getattr(result, "error", None)
+    if err is None and isinstance(result, dict):
+        err = result.get("error")
+    return str(err or "")
+
+
 def _minutes_from_payload(payload: Any) -> Optional[int]:
     """从地图 route 返回里提取通勤分钟数（兼容多种字段口径）。
 
@@ -281,24 +313,38 @@ def make_live_eta_fn(
         base_kwargs["city"] = city
 
     def eta_fn(origin: str, destination: str) -> Tuple[float, int]:
-        try:
-            result = tool_provider.call(
-                "map",
-                origin=origin,
-                destination=destination,
-                **base_kwargs,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise LiveDataError(
-                f"map.route 调用失败：{origin} → {destination}：{exc}"
-            ) from exc
-        payload = _tool_payload(result)
-        minutes = _minutes_from_payload(payload)
-        if minutes is None:
-            raise LiveDataError(
-                f"map.route 未返回有效时长：{origin} → {destination}（payload={payload}）"
-            )
-        return _distance_from_payload(payload), minutes
+        last_error = ""
+        for attempt in range(_ETA_RETRIES):
+            try:
+                result = tool_provider.call(
+                    "map",
+                    origin=origin,
+                    destination=destination,
+                    **base_kwargs,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                if _is_transient_eta_error(last_error):
+                    time.sleep(_ETA_RETRY_SLEEP)
+                    continue
+                raise LiveDataError(
+                    f"map.route 调用失败：{origin} → {destination}：{last_error}"
+                ) from exc
+            last_error = _result_error_text(result)
+            if _is_transient_eta_error(last_error):
+                time.sleep(_ETA_RETRY_SLEEP)
+                continue
+            payload = _tool_payload(result)
+            minutes = _minutes_from_payload(payload)
+            if minutes is None:
+                raise LiveDataError(
+                    f"map.route 未返回有效时长：{origin} → {destination}"
+                    f"（payload={payload}，error={last_error or '无'}）"
+                )
+            return _distance_from_payload(payload), minutes
+        raise LiveDataError(
+            f"map.route 重试后仍失败：{origin} → {destination}：{last_error}"
+        )
 
     return eta_fn
 
