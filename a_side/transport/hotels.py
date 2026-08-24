@@ -119,11 +119,26 @@ class HotelSelector:
         city: str,
         hotel_preferences: Optional[Dict[str, Any]] = None,
         data_dir: Path = DEFAULT_GRAPH_DIR,
+        hotel_provider: Optional[Callable[[str], List[Hotel]]] = None,
+        spot_locations_provider: Optional[Callable[[str], Dict[str, Tuple[float, float]]]] = None,
     ):
+        """酒店选择器。
+
+        ``hotel_provider``：``fn(city) -> List[Hotel]``，缺省 ``load_hotels``
+        （假数据）；真实数据接入时由 ``data_transmission.live_data.make_live_hotel_provider`` 注入。
+        ``spot_locations_provider``：``fn(city) -> {spot_id: (lat, lng)}``，缺省读
+        本地 spots.json；真源候选池时由调用方传入（保持通勤口径一致）。
+        """
         self.city = city
-        self.hotels = load_hotels(city, data_dir)
+        if hotel_provider is not None:
+            self.hotels = list(hotel_provider(city))
+        else:
+            self.hotels = load_hotels(city, data_dir)
         self.preferences = dict(hotel_preferences or {})
-        self._spot_locations = _load_spot_locations(city, data_dir)
+        if spot_locations_provider is not None:
+            self._spot_locations = dict(spot_locations_provider(city))
+        else:
+            self._spot_locations = _load_spot_locations(city, data_dir)
         self._by_id = {hotel.id: hotel for hotel in self.hotels}
 
     # ------------------------------------------------------------------
@@ -459,6 +474,8 @@ def select_hotels_for_plan(
     graph_dir: Path = DEFAULT_GRAPH_DIR,
     exclude_ids: Sequence[str] = (),
     price_deltas: Optional[Dict[str, float]] = None,
+    hotel_provider: Optional[Callable[[str], List[Hotel]]] = None,
+    spot_locations_provider: Optional[Callable[[str], Dict[str, Tuple[float, float]]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """从执行计划生成住宿安排（衔接 main.py 的编排入口）。
 
@@ -497,6 +514,8 @@ def select_hotels_for_plan(
         destination,
         hotel_preferences=content.get("hotel_preferences"),
         data_dir=graph_dir,
+        hotel_provider=hotel_provider,
+        spot_locations_provider=spot_locations_provider,
     )
     result = selector.select(
         first_last,

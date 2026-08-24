@@ -65,6 +65,8 @@ class BPlannerHook:
         planner_fn: ``fn(requirement, spots) -> plan dict``，缺省用
             ``algorithoms.planner.plan_multi_day``
         ask_user_on_conflict: 传给缺省 spots_provider 的冲突询问开关（默认关）
+        tool_provider: B 侧工具门面（真实数据接入时传入；配合 USE_LIVE_DATA=1
+            走真源，失败自动回退假数据，见 generate_timeline）
     """
 
     def __init__(
@@ -77,7 +79,18 @@ class BPlannerHook:
         spots_provider: Optional[Callable[[str], Any]] = None,
         planner_fn: Optional[Callable[..., Dict[str, Any]]] = None,
         ask_user_on_conflict: bool = False,
+        tool_provider: Any = None,
     ) -> None:
+        """构造参数见类 docstring。
+
+        ``tool_provider``：B 侧工具门面（``ToolProvider.call("scenic"/"map"/...)``）。
+        当传入且环境变量 ``USE_LIVE_DATA`` 开启时，规划层走**真实数据**：
+        - 候选池：``live_data.LiveSpotsSource``（scenic 工具）→ 失败回退假数据；
+        - 交通矩阵：``LiveTravelTimeProvider``（map 工具 ETA，双向缓存）；
+        - 餐厅/未映射节点（如本地假餐厅 id）不发真实请求，按 0 通勤降级；
+        - 结果通过 ``last_data_source`` 记录（"live" / "fake" / "live_fallback"）。
+        未传 ``tool_provider`` 或 ``USE_LIVE_DATA`` 关闭时，行为与既往完全一致（假数据）。
+        """
         self.requirement = requirement if isinstance(requirement, dict) else {}
         content = self.requirement.get("content") or {}
         if not isinstance(content, dict):
@@ -90,6 +103,8 @@ class BPlannerHook:
         self._ask_user_on_conflict = bool(ask_user_on_conflict)
         self._planner_fn = planner_fn
         self.last_error: Optional[str] = None
+        # 数据源记录：fake（假数据）/ live（真实数据）/ live_fallback（真源失败回退假）
+        self.last_data_source: str = "fake"
         # A 侧内部计划缓存：首次规划后保留，可被决策钩子（replan）复用
         self._current_plan: Optional[Dict[str, Any]] = None
         self._current_timeline: Optional[TripTimeline] = None
@@ -109,17 +124,56 @@ class BPlannerHook:
             spots_provider = _default_loader
         self._spots_provider: Callable[[str], Any] = spots_provider
 
+        # 真实数据接入（USE_LIVE_DATA=1 且给了 tool_provider）
+        from data_transmission.live_data import (
+            LiveDataError,
+            make_live_eta_fn,
+            make_live_spots_provider,
+            use_live_data,
+        )
+        from transport.providers import LiveTravelTimeProvider
+
+        self._live_data_error = LiveDataError
+        self._use_live = bool(tool_provider) and use_live_data()
+        self._live_spots_provider: Optional[Callable[[str], Any]] = None
+        self._travel_time_provider: Optional[LiveTravelTimeProvider] = None
+        if self._use_live:
+            live_source = make_live_spots_provider(tool_provider)
+            ask = self._ask_user_on_conflict
+
+            def _live_loader(_city: str) -> Any:
+                from algorithoms.select_spots import select_spots
+
+                return select_spots(
+                    self.requirement,
+                    ask_user_on_conflict=ask,
+                    spots_provider=live_source,
+                )
+
+            self._live_spots_provider = _live_loader
+            self._live_spots_source = live_source
+            self._travel_time_provider = LiveTravelTimeProvider(
+                make_live_eta_fn(tool_provider),
+                name_by_id={},
+            )
+
     # -- 内部 --------------------------------------------------------------
 
     def _planner(
         self,
         requirement: Dict[str, Any],
         spots: Any,
+        travel_time_provider: Any = None,
     ) -> Dict[str, Any]:
         if self._planner_fn is not None:
+            # 自定义 planner_fn 保持原契约 (requirement, spots)；真源接线由注入方负责
             return self._planner_fn(requirement, spots)
         from algorithoms.planner import plan_multi_day
 
+        if travel_time_provider is not None:
+            return plan_multi_day(
+                requirement, spots, travel_time_provider=travel_time_provider
+            )
         return plan_multi_day(requirement, spots)
 
     def _empty_timeline(self) -> TripTimeline:
@@ -142,14 +196,71 @@ class BPlannerHook:
         """完整跑 A 管线并返回 B 的 ``TripTimeline``。
 
         - 已缓存且非 ``regenerate`` → 直接返回缓存（幂等）；
+        - ``USE_LIVE_DATA=1`` 且注入 ``tool_provider`` → 真源优先：候选池 / 规划
+          任一步失败自动回退假数据管线（``last_data_source="live_fallback"``）；
         - 任一步骤失败 → 记录 ``last_error`` 并返回空时间轴（不抛异常）。
         """
         if not regenerate and self._current_timeline is not None:
             return self._current_timeline
+        if self._use_live:
+            return self._generate_live_or_fallback()
+        return self._run_pipeline(self._spots_provider, None, source="fake")
 
+    def _generate_live_or_fallback(self) -> TripTimeline:
+        """真源优先：候选池 / 规划任一步失败 → 回退假数据管线（保留失败原因）。"""
+        try:
+            spots = self._live_spots_provider(self.city)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"真实数据接入失败，已回退假数据：{exc}"
+            timeline = self._run_pipeline(self._spots_provider, None, source="fake")
+            self.last_data_source = "live_fallback"
+            self.last_error = reason
+            return timeline
+        if self._travel_time_provider is not None:
+            self._travel_time_provider.set_name_map(
+                self._live_spots_source.names
+            )
+        try:
+            plan = self._planner(
+                self.requirement,
+                spots,
+                travel_time_provider=self._travel_time_provider,
+            )
+        except Exception as exc:  # noqa: BLE001
+            reason = f"真实数据接入失败，已回退假数据：{exc}"
+            timeline = self._run_pipeline(self._spots_provider, None, source="fake")
+            self.last_data_source = "live_fallback"
+            self.last_error = reason
+            return timeline
+        if not isinstance(plan, dict) or not plan.get("days"):
+            reason = "真实数据接入失败（规划未产出可用计划），已回退假数据"
+            timeline = self._run_pipeline(self._spots_provider, None, source="fake")
+            self.last_data_source = "live_fallback"
+            self.last_error = reason
+            return timeline
+
+        self._current_plan = plan
+        self.last_error = None
+        self.last_data_source = "live"
+        timeline = plan_to_trip_timeline(
+            plan,
+            city=self.city,
+            start_date=self.start_date,
+            plan_id=self.plan_id,
+        )
+        self._current_timeline = timeline
+        return timeline
+
+    def _run_pipeline(
+        self,
+        spots_provider: Callable[[str], Any],
+        travel_time_provider: Any,
+        source: str,
+    ) -> TripTimeline:
+        """假数据（或回退）管线：候选池 → 规划 → 时间轴；失败降级为空时间轴。"""
         # 1) 候选池
         try:
-            spots = self._spots_provider(self.city)
+            spots = spots_provider(self.city)
         except Exception as exc:  # noqa: BLE001  失败降级为空时间轴
             self.last_error = f"候选池加载失败：{exc}"
             timeline = self._empty_timeline()
@@ -158,7 +269,9 @@ class BPlannerHook:
 
         # 2) 规划
         try:
-            plan = self._planner(self.requirement, spots)
+            plan = self._planner(
+                self.requirement, spots, travel_time_provider=travel_time_provider
+            )
         except Exception as exc:  # noqa: BLE001
             self.last_error = f"规划失败：{exc}"
             timeline = self._empty_timeline()
@@ -172,6 +285,7 @@ class BPlannerHook:
 
         self._current_plan = plan
         self.last_error = None
+        self.last_data_source = source
         timeline = plan_to_trip_timeline(
             plan,
             city=self.city,

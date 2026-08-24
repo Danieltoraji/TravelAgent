@@ -16,7 +16,7 @@ import re
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional
 
-from data_transmission.city_travel import load_city_travel_edges
+from data_transmission.city_travel import find_city_travel, load_city_travel_edges
 
 # 标准日期：2026-08-21 / 2026/8/21 / 2026年8月21日（必须带 4 位年份）
 _DATE_PATTERN = r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?"
@@ -120,9 +120,14 @@ def clarify_travel(
 
 
 def build_trip_segments(
-    plan: Dict[str, Any], requirement: Dict[str, Any]
+    plan: Dict[str, Any],
+    requirement: Dict[str, Any],
+    travel_provider: Optional[Callable[[str, str], Optional[Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """按 origin + travel_schedule 生成城际来去程行程段（时间轴头尾，不占每日时长）。
+
+    ``travel_provider``：``fn(origin, dest) -> Optional[CityTravelEdge]``——真实数据
+    接入时由 ``live_data.make_live_city_travel_provider`` 注入（见 ``find_city_travel``）。
 
     返回形如：:
         [
@@ -150,7 +155,9 @@ def build_trip_segments(
         except (ValueError, AttributeError):
             return None
 
-    outbound = edges.get((origin, destination))
+    outbound = find_city_travel(
+        origin, destination, edges=edges, provider=travel_provider
+    )
     if outbound is not None and schedule.get("departure_date") and schedule.get("departure_time"):
         start = hhmm_to_minutes(schedule["departure_time"])
         if start is not None:
@@ -171,7 +178,10 @@ def build_trip_segments(
                 }
             )
 
-    homeward = edges.get((destination, origin)) or edges.get((origin, destination))
+    homeward = (
+        find_city_travel(destination, origin, edges=edges, provider=travel_provider)
+        or find_city_travel(origin, destination, edges=edges, provider=travel_provider)
+    )
     if homeward is not None and schedule.get("return_date") and schedule.get("return_time"):
         start = hhmm_to_minutes(schedule["return_time"])
         if start is not None:

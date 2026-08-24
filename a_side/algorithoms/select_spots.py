@@ -64,11 +64,25 @@ def select_spots(
     min_threshold=0,
     ask_user_on_conflict=True,
     user_input_fn: Optional[Callable[[str], str]] = None,
+    spots_provider: Optional[Callable[[str], list]] = None,
 ):
+    """挑选景点（must / conflict / scored 三类）。
+
+    ``spots_provider``：``fn(city) -> List[spot dict]``（与 ``load_spot_json`` 同契约，
+    即原始候选数组）；缺省读 ``fake_spots/`` 假数据。真实数据接入时由
+    ``data_transmission.live_data.LiveSpotsSource`` 注入（USE_LIVE_DATA=1）。
+    """
     user_input_fn = user_input_fn or input
     target_city=requirement["content"]["destination"]
     normalized_target_city = normalize_city_name(target_city)
-    spots = load_spot_json(city=target_city)
+    if spots_provider is not None:
+        spots = spots_provider(target_city)
+        if not isinstance(spots, list):
+            raise ValueError(
+                f"spots_provider 必须返回景点数组（list），实际 {type(spots).__name__}"
+            )
+    else:
+        spots = load_spot_json(city=target_city)
     preferred_tags=set(requirement["content"]["preferences"]["preferred_tags"])
     avoid_tags=set(requirement["content"]["preferences"]["avoid_tags"])
     required_tags=set(requirement["content"]["constraints"]["required_tags"])

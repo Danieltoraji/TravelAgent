@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 DEFAULT_CITY_TRAVEL_PATH = (
     Path(__file__).resolve().parent.parent / "fake_spots" / "city_travel.json"
@@ -48,7 +48,17 @@ def find_city_travel(
     origin: str,
     destination: str,
     edges: Optional[Dict[Tuple[str, str], CityTravelEdge]] = None,
+    provider: Optional[Callable[[str, str], Optional[CityTravelEdge]]] = None,
 ) -> Optional[CityTravelEdge]:
-    """查 (origin, destination) 的城际交通；无此边返回 None。"""
+    """查 (origin, destination) 的城际交通；无此边返回 None。
+
+    ``provider``：``fn(origin, dest) -> Optional[CityTravelEdge]``——真实数据接入时由
+    ``data_transmission.live_data.make_live_city_travel_provider`` 注入，给定时优先于
+    本地表（查不到再回落本地表，保持缺边语义一致）。
+    """
+    if provider is not None:
+        edge = provider(origin, destination)
+        if edge is not None:
+            return edge
     edges = edges if edges is not None else load_city_travel_edges()
     return edges.get((origin, destination))
