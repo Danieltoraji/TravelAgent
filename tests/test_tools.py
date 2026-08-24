@@ -1437,5 +1437,282 @@ class TestSchemaFieldAlignment(unittest.TestCase):
         self.assertEqual(item.quantity, 0)
 
 
+class TestMapBatchRoute(unittest.TestCase):
+    """B3：批量 ETA（batch_route）— Mock 与 Live 行结构 + 规范字段 transport_minutes。"""
+
+    def make_mock_amap_client(self) -> AmapClient:
+        return MagicMock(spec=AmapClient)
+
+    def test_mock_batch_route_returns_rows(self) -> None:
+        from tools.map_tool import MapTool
+
+        tool = MapTool()
+        rows = tool._run(
+            action="batch_route",
+            origins=["故宫", "天坛"],
+            destinations=["景山公园", "王府井"],
+        )
+        self.assertEqual(len(rows), 4)
+        row = rows[0]
+        self.assertEqual(set(row), {"origin", "destination", "distance_km",
+                                    "transport_minutes", "mode", "fare"})
+        self.assertEqual(row["origin"], "故宫")
+        self.assertEqual(row["transport_minutes"], 25)  # Mock 固定值
+        self.assertEqual(rows[3]["destination"], "王府井")
+
+    def test_mock_route_has_transport_minutes(self) -> None:
+        from tools.map_tool import MapTool
+
+        result = MapTool()._run(action="route", origin="故宫", destination="天坛")
+        self.assertEqual(result["duration_min"], 25)
+        self.assertEqual(result["transport_minutes"], 25)
+
+    def test_live_batch_route_maps_rows(self) -> None:
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.916, 116.397),  # 故宫
+            (39.882, 116.407),  # 天坛
+            (39.925, 116.396),  # 景山公园
+        ]
+        client.get_distances.return_value = [
+            {"origin": (39.916, 116.397), "destination": (39.925, 116.396),
+             "distance_m": 2100, "duration_s": 900},
+            {"origin": (39.882, 116.407), "destination": (39.925, 116.396),
+             "distance_m": 3600, "duration_s": 1500},
+        ]
+
+        tool = MapToolLive(client)
+        rows = tool._run(
+            action="batch_route",
+            origins=["故宫", "天坛"],
+            destinations=["景山公园"],
+            city="北京",
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["origin"], "故宫")
+        self.assertEqual(rows[1]["origin"], "天坛")
+        self.assertEqual(rows[0]["transport_minutes"], 15)   # 900s → 15min
+        self.assertEqual(rows[0]["distance_km"], 2.1)
+        self.assertEqual(rows[1]["transport_minutes"], 25)   # 1500s → 25min
+        # 地理编码限定城市
+        for call in client.geocode.call_args_list:
+            self.assertEqual(call.kwargs.get("city"), "北京")
+        # 批量测量（驾车近似）
+        client.get_distances.assert_called_once_with(
+            [(39.916, 116.397), (39.882, 116.407)],
+            [(39.925, 116.396)],
+            mode="driving",
+        )
+
+    def test_live_route_has_transport_minutes(self) -> None:
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [(39.916, 116.397), (39.882, 116.407)]
+        client.get_route.return_value = {"distance": 3500, "duration": 1500, "cost": 6}
+
+        result = MapToolLive(client)._run(
+            action="route", origin="故宫", destination="天坛", mode="transit"
+        )
+        self.assertEqual(result["duration_min"], 25)
+        self.assertEqual(result["transport_minutes"], 25)
+
+
+class TestScenicSearch(unittest.TestCase):
+    """B5：scenic action=search 城市候选池 — 输出对齐 A 侧 spot dict 字段。"""
+
+    def make_mock_amap_client(self) -> AmapClient:
+        return MagicMock(spec=AmapClient)
+
+    def test_mock_scenic_search_returns_spot_dicts(self) -> None:
+        from tools.scenic_tool import ScenicTool
+
+        spots = ScenicTool()._run(action="search", place="北京", limit=3)
+        self.assertEqual(len(spots), 3)
+        spot = spots[0]
+        self.assertEqual(set(spot), {
+            "id", "name", "alias", "location", "suggest_duration",
+            "opening_time", "closing_time", "price", "tags", "rating",
+        })
+        self.assertEqual(spot["name"], "故宫")
+        self.assertEqual(spot["opening_time"], "08:30")
+        self.assertEqual(spot["closing_time"], "17:00")
+        self.assertEqual(spot["price"], 60.0)
+        self.assertEqual(spot["suggest_duration"], 120)
+        self.assertEqual(spot["location"], {"lat": 39.916, "lng": 116.397})
+
+    def test_live_scenic_search_field_mapping(self) -> None:
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {
+                "name": "故宫博物院",
+                "lat": 39.916,
+                "lng": 116.397,
+                "address": "北京市东城区景山前街4号",
+                "tel": "010-85007421",
+                "type": "风景名胜;风景名胜相关",
+                "rating": 4.8,
+                "cost": 60.0,
+                "opentime_today": "08:30-17:00",
+                "tag": "故宫,紫禁城",
+                "alias": "紫禁城",
+            },
+            {
+                "name": "天坛公园",
+                "lat": 39.882,
+                "lng": 116.407,
+                "address": "",
+                "tel": "",
+                "type": "风景名胜",
+                "rating": 4.6,
+                "cost": 15.0,
+                "opentime_today": "06:00-22:00",
+                "tag": "",
+                "alias": "",
+            },
+        ]
+
+        tool = ScenicToolLive(client)
+        spots = tool._run(action="search", place="北京", limit=2)
+
+        self.assertEqual(len(spots), 2)
+        first = spots[0]
+        self.assertEqual(first["id"], "scenic_0")
+        self.assertEqual(first["name"], "故宫博物院")
+        self.assertEqual(first["location"], {"lat": 39.916, "lng": 116.397})
+        self.assertEqual(first["opening_time"], "08:30")
+        self.assertEqual(first["closing_time"], "17:00")
+        self.assertEqual(first["price"], 60.0)
+        self.assertEqual(first["suggest_duration"], 120)
+        self.assertEqual(first["tags"][0], "风景名胜")  # type 大类置首
+        self.assertIn("故宫", first["tags"])
+        self.assertEqual(first["alias"], ["紫禁城"])
+        self.assertEqual(first["rating"], 4.8)
+        # 搜索「城市+景点」
+        self.assertEqual(client.search_poi.call_args.args[0], "北京 景点")
+        self.assertEqual(client.search_poi.call_args.kwargs["city"], "北京")
+
+    def test_live_scenic_search_fallback_broadens_query(self) -> None:
+        client = self.make_mock_amap_client()
+        client.search_poi.side_effect = [
+            [],  # 「北京 景点」无结果
+            [{"name": "北京城", "lat": 39.9, "lng": 116.4, "opentime_today": "",
+              "type": "", "tag": "", "cost": 0, "rating": 0}],
+        ]
+
+        spots = ScenicToolLive(client)._run(action="search", place="北京")
+        self.assertEqual(len(spots), 1)
+        self.assertEqual(spots[0]["name"], "北京城")
+        # 回落：第二次按城市名搜索
+        self.assertEqual(client.search_poi.call_args_list[1].args[0], "北京")
+        # 无营业时间 → 默认 09:00-17:00
+        self.assertEqual(spots[0]["opening_time"], "09:00")
+        self.assertEqual(spots[0]["closing_time"], "17:00")
+
+    def test_live_scenic_status_unaffected(self) -> None:
+        client = self.make_mock_amap_client()
+        client.search_poi.return_value = [
+            {"name": "故宫", "opentime_today": "08:30-17:00", "rating": 4.8,
+             "address": "x", "tel": "y", "opentime_week": ""},
+        ]
+        result = ScenicToolLive(client)._run(place="故宫")  # 默认 status
+        self.assertIn("place", result)
+        self.assertIn("queue_min", result)
+        self.assertNotIn("suggest_duration", result)  # status 模式不带 search 字段
+        self.assertEqual(client.search_poi.call_args.kwargs["limit"], 1)
+
+
+class TestAmapClientDistance(unittest.TestCase):
+    """AmapClient 批量距离测量（/v3/distance）提取与多终点分请求。"""
+
+    def test_extract_distance_rows(self) -> None:
+        resp = {
+            "status": "1",
+            "results": [
+                {"origin_id": "0", "destination": "116.397,39.916",
+                 "distance": "2100", "duration": "900"},
+                {"origin_id": "1", "destination": "116.397,39.916",
+                 "distance": "3600", "duration": "1500"},
+                {"origin_id": "2", "destination": "116.397,39.916",
+                 "distance": "", "duration": ""},  # 非法 → 跳过
+            ],
+        }
+        rows = AmapClient._extract_distance_rows(resp)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], {"origin_id": 0, "distance_m": 2100,
+                                   "duration_s": 900})
+        self.assertEqual(rows[1], {"origin_id": 1, "distance_m": 3600,
+                                   "duration_s": 1500})
+
+    def test_get_distances_multiple_destinations(self) -> None:
+        client = AmapClient(api_key="test-key")
+        client._get = MagicMock(side_effect=[
+            # 终点 A（北京故宫）
+            {"status": "1", "results": [
+                {"origin_id": "0", "distance": "2100", "duration": "900"}]},
+            # 终点 B（天坛）
+            {"status": "1", "results": [
+                {"origin_id": "0", "distance": "4200", "duration": "1200"}]},
+        ])
+
+        origins = [(39.916, 116.397)]
+        destinations = [(39.925, 116.396), (39.882, 116.407)]
+        rows = client.get_distances(origins, destinations, mode="driving")
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(client._get.call_count, 2)  # 每个终点一次请求
+        self.assertEqual(rows[0]["origin"], (39.916, 116.397))
+        self.assertEqual(rows[0]["destination"], (39.925, 116.396))
+        self.assertEqual(rows[0]["duration_s"], 900)
+        self.assertEqual(rows[1]["destination"], (39.882, 116.407))
+
+        # 参数格式校验：origins 用 | 分隔 lng,lat；type=1 驾车
+        first_params = client._get.call_args_list[0][0][1]
+        self.assertEqual(first_params["origins"], "116.397,39.916")
+        self.assertEqual(first_params["destination"], "116.396,39.925")
+        self.assertEqual(first_params["type"], "1")
+
+    def test_get_distances_chunks_over_100_origins(self) -> None:
+        client = AmapClient(api_key="test-key")
+
+        def fake_get(path, params):  # 第一分片 100 条，第二分片 20 条（贴近真实 API）
+            page = 100 if params["origins"].count("|") == 99 else 20
+            return {
+                "status": "1",
+                "results": [
+                    {"origin_id": str(i), "distance": str(1000 + i),
+                     "duration": "600"}
+                    for i in range(page)
+                ],
+            }
+
+        client._get = MagicMock(side_effect=fake_get)
+
+        origins = [(39.9 + i * 0.001, 116.3 + i * 0.001) for i in range(120)]
+        rows = client.get_distances(origins, [(39.925, 116.396)])
+        # 120 起点 → 2 个分片请求，各返回 100/20 条 → 共 120 行
+        self.assertEqual(client._get.call_count, 2)
+        self.assertEqual(len(rows), 120)
+        self.assertEqual(rows[0]["origin"], origins[0])
+        self.assertEqual(rows[-1]["origin"], origins[-1])  # 第二分片 origin_id 偏移修正
+
+    def test_get_distances_skips_out_of_range_origin_id(self) -> None:
+        """异常响应（origin_id 越界）跳过而不是抛 IndexError。"""
+        client = AmapClient(api_key="test-key")
+        client._get = MagicMock(return_value={
+            "status": "1",
+            "results": [
+                {"origin_id": "0", "distance": "1000", "duration": "600"},
+                {"origin_id": "5", "distance": "2000", "duration": "700"},  # 越界
+            ],
+        })
+        rows = client.get_distances([(39.9, 116.3)], [(39.925, 116.396)])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["origin"], (39.9, 116.3))
+
+    def test_get_distances_rejects_unsupported_mode(self) -> None:
+        client = AmapClient(api_key="test-key")
+        with self.assertRaises(ValueError, msg="批量测量仅支持 driving / walk"):
+            client.get_distances([(1.0, 1.0)], [(2.0, 2.0)], mode="transit")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -183,6 +183,94 @@ class AmapClient:
 
         raise ValueError(f"不支持的路线模式: {mode}")
 
+    def get_distances(
+        self,
+        origins: List[Tuple[float, float]],
+        destinations: List[Tuple[float, float]],
+        mode: str = "driving",
+    ) -> List[Dict[str, Any]]:
+        """批量距离测量（行程矩阵用）：多起点 × 多终点的距离/时长。
+
+        调用 ``/v3/distance``（``type=1`` 驾车 / ``type=2`` 步行）：
+        一次请求最多 **100 个起点 + 1 个终点**（高德限制），因此对每个终点各发
+        一次请求，共 ``len(destinations)`` 次，拿到 ``N×M`` 对结果——
+        相比逐对 ``get_route`` 大幅减少请求数（矩阵 O(n²) 场景的关键）。
+
+        Args:
+            origins: 起点坐标列表 `[(lat, lng), ...]`
+            destinations: 终点坐标列表 `[(lat, lng), ...]`
+            mode: "driving"（驾车，默认）或 "walk"（步行）——批量用直线距离度量
+                API，公交模式无对应批量端点，需逐对走 ``get_route``
+
+        Returns:
+            ``[{"origin": (lat,lng), "destination": (lat,lng),
+                "distance_m": int, "duration_s": int}, ...]``
+        """
+        origin_list = [tuple(o) for o in origins]
+        dest_list = [tuple(d) for d in destinations]
+        if not origin_list or not dest_list:
+            return []
+        if mode not in {"driving", "walk"}:
+            raise ValueError(
+                f"批量距离测量仅支持 driving / walk，当前 mode={mode!r}；"
+                "公交等其它模式请逐对调用 get_route"
+            )
+        measure_type = "2" if mode == "walk" else "1"
+
+        rows: List[Dict[str, Any]] = []
+        for destination in dest_list:
+            # /v3/distance 一次最多 100 个起点，超出则分批
+            for chunk_start in range(0, len(origin_list), 100):
+                chunk = origin_list[chunk_start : chunk_start + 100]
+                origins_str = "|".join(f"{o[1]},{o[0]}" for o in chunk)  # lng,lat
+                dest_str = f"{destination[1]},{destination[0]}"
+                resp = self._get(
+                    "/v3/distance",
+                    {"origins": origins_str, "destination": dest_str, "type": measure_type},
+                )
+                for item in self._extract_distance_rows(resp):
+                    origin_index = chunk_start + item["origin_id"]
+                    if origin_index >= len(origin_list):
+                        # 异常响应（origin_id 越界）不应拖垮整个矩阵，跳过并告警
+                        logger.warning(
+                            "distance 响应 origin_id 越界，跳过: %s", item,
+                        )
+                        continue
+                    rows.append(
+                        {
+                            "origin": origin_list[origin_index],
+                            "destination": destination,
+                            "distance_m": item["distance_m"],
+                            "duration_s": item["duration_s"],
+                        }
+                    )
+        return rows
+
+    @staticmethod
+    def _extract_distance_rows(resp: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """从 ``/v3/distance`` 响应中提取每一对的距离/时长。
+
+        响应 ``results`` 每项含 ``origin_id``（0 起索引）/ ``distance``（米）/
+        ``duration``（秒）；缺字段或非法数值的项跳过。
+        """
+        rows: List[Dict[str, Any]] = []
+        for item in resp.get("results", []):
+            raw_distance = item.get("distance")
+            raw_duration = item.get("duration")
+            if raw_distance in (None, "") or raw_duration in (None, ""):
+                continue  # 空值项视为非法，跳过（同点合法值 0 保留）
+            try:
+                rows.append(
+                    {
+                        "origin_id": int(item.get("origin_id", 0)),
+                        "distance_m": int(float(raw_distance)),
+                        "duration_s": int(float(raw_duration)),
+                    }
+                )
+            except (TypeError, ValueError):
+                continue
+        return rows
+
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------

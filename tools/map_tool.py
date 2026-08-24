@@ -35,15 +35,31 @@ class MapTool(BaseTool):
         "type": "object",
         "properties": {
             "action": {
-                "enum": ["search_poi", "route"],
-                "description": "search_poi 搜索地点；route 计算路线",
+                "enum": ["search_poi", "route", "batch_route"],
+                "description": "search_poi 搜索地点；route 计算单对路线；"
+                "batch_route 一次计算多对路线（矩阵用，驾车近似）",
             },
             "query": {"type": "string", "description": "搜索关键词"},
             "origin": {"type": "string", "description": "起点"},
             "destination": {"type": "string", "description": "终点"},
+            "origins": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "batch_route 起点列表",
+            },
+            "destinations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "batch_route 终点列表",
+            },
+            "city": {
+                "type": "string",
+                "description": "地理编码限定城市（默认北京，避免同名歧义）",
+            },
             "mode": {
                 "enum": ["transit", "driving", "riding", "walk"],
-                "description": "路线模式：公交/驾车/骑行/步行，默认 transit",
+                "description": "路线模式：公交/驾车/骑行/步行，默认 transit；"
+                "batch_route 仅支持 driving / walk",
             },
         },
         "required": ["action"],
@@ -51,11 +67,21 @@ class MapTool(BaseTool):
 
     def _run(self, action: str = "search_poi", query: str = "",
              origin: str = "", destination: str = "", mode: str = "transit",
+             origins: Optional[List[str]] = None,
+             destinations: Optional[List[str]] = None,
+             city: str = "北京",
              **kwargs: Any) -> Any:
         if action == "search_poi":
             return self._search(query)
         if action == "route":
-            return self._route(origin, destination, mode)
+            return self._route(origin, destination, mode, city=city)
+        if action == "batch_route":
+            # 批量测量仅支持 driving / walk（v3/distance）；默认 transit 解析为驾车近似
+            batch_mode = mode if mode in ("driving", "walk") else "driving"
+            return self._batch_route(
+                list(origins or []), list(destinations or []),
+                mode=batch_mode, city=city,
+            )
         raise ValueError(f"Unknown map action: {action}")
 
     def _search(self, query: str) -> List[Dict[str, Any]]:
@@ -76,16 +102,35 @@ class MapTool(BaseTool):
             })
         return results
 
-    def _route(self, origin: str, destination: str, mode: str = "transit") -> Dict[str, Any]:
+    def _route(self, origin: str, destination: str, mode: str = "transit",
+               city: str = "北京") -> Dict[str, Any]:
         # Mock：固定行程参数；真实接入高德后按 API 返回替换
         return {
             "from": origin,
             "to": destination,
             "distance_km": 3.5,
             "duration_min": 25,
+            "transport_minutes": 25,   # 规范字段（A 侧适配层 parse 用）
             "transit": "地铁1号线 + 步行800m",
             "fare": 4.0,
         }
+
+    def _batch_route(self, origins: List[str], destinations: List[str],
+                     mode: str = "transit", city: str = "北京") -> List[Dict[str, Any]]:
+        """Mock：对每一对 (起点, 终点) 复用单对结果，返回统一行结构。"""
+        rows: List[Dict[str, Any]] = []
+        for origin in origins:
+            for destination in destinations:
+                edge = self._route(origin, destination, mode, city=city)
+                rows.append({
+                    "origin": origin,
+                    "destination": destination,
+                    "distance_km": edge["distance_km"],
+                    "transport_minutes": edge["transport_minutes"],
+                    "mode": edge.get("transit", mode),
+                    "fare": edge.get("fare", 0.0),
+                })
+        return rows
 
 
 class MapToolLive(MapTool):
@@ -131,18 +176,19 @@ class MapToolLive(MapTool):
             for p in pois
         ]
 
-    def _route(self, origin: str, destination: str, mode: str = "transit") -> Dict[str, Any]:
+    def _route(self, origin: str, destination: str, mode: str = "transit",
+               city: str = "北京") -> Dict[str, Any]:
         """调高德路线规划 API，返回距离和耗时。
 
         先地理编码获取起终点坐标，再调路线规划 API。
-        地理编码时限定 city="北京"，避免同名地点歧义。
+        地理编码时限定 ``city``（默认北京，避免同名地点歧义）。
         """
-        # 地理编码：地址 → 坐标（限定北京，避免同名歧义）
-        origin_coord: Tuple[float, float] = self._client.geocode(origin, city="北京")
-        dest_coord: Tuple[float, float] = self._client.geocode(destination, city="北京")
+        # 地理编码：地址 → 坐标（限定城市，避免同名歧义）
+        origin_coord: Tuple[float, float] = self._client.geocode(origin, city=city)
+        dest_coord: Tuple[float, float] = self._client.geocode(destination, city=city)
 
         # 路线规划
-        route_data = self._client.get_route(origin_coord, dest_coord, mode=mode)
+        route_data = self._client.get_route(origin_coord, dest_coord, mode=mode, city=city)
         distance_m = route_data["distance"]
         duration_s = route_data["duration"]
 
@@ -154,11 +200,52 @@ class MapToolLive(MapTool):
         else:
             fare = 0.0
 
+        duration_min = round(duration_s / 60)          # 秒 → 分钟
         return {
             "from": origin,
             "to": destination,
             "distance_km": round(distance_m / 1000, 2),    # 米 → 公里
-            "duration_min": round(duration_s / 60),          # 秒 → 分钟
+            "duration_min": duration_min,
+            "transport_minutes": duration_min,             # 规范字段（A 侧适配层 parse 用）
             "transit": _MODE_TEXT.get(mode, mode),
             "fare": fare,
         }
+
+    def _batch_route(self, origins: List[str], destinations: List[str],
+                     mode: str = "driving", city: str = "北京") -> List[Dict[str, Any]]:
+        """批量路线（矩阵用）：地理编码全部点名后一次取多对距离/时长。
+
+        批量测量走高德 ``/v3/distance``（驾车 / 步行近似，一次请求多起点×1终点，
+        N 个终点共 N 次请求）；公交等其它模式请逐对走 ``route``。
+        返回每行含规范字段 ``transport_minutes``（分钟），与 A 侧适配层契约一致。
+        """
+        origin_names = [str(origin) for origin in origins]
+        dest_names = [str(destination) for destination in destinations]
+        origin_coords = [self._client.geocode(name, city=city) for name in origin_names]
+        dest_coords = [self._client.geocode(name, city=city) for name in dest_names]
+
+        distance_rows = self._client.get_distances(origin_coords, dest_coords, mode=mode)
+        by_pair = {(d["origin"], d["destination"]): d for d in distance_rows}
+
+        rows: List[Dict[str, Any]] = []
+        for origin_name, origin_coord in zip(origin_names, origin_coords):
+            for dest_name, dest_coord in zip(dest_names, dest_coords):
+                row = by_pair.get((origin_coord, dest_coord))
+                if row is None:
+                    logger.warning(
+                        "batch_route 缺 %s → %s 的距离数据（按 0 分钟占位）",
+                        origin_name, dest_name,
+                    )
+                    distance_km, transport_minutes = 0.0, 0
+                else:
+                    distance_km = round(row["distance_m"] / 1000, 2)
+                    transport_minutes = int(round(row["duration_s"] / 60))
+                rows.append({
+                    "origin": origin_name,
+                    "destination": dest_name,
+                    "distance_km": distance_km,
+                    "transport_minutes": transport_minutes,
+                    "mode": mode,
+                    "fare": 0.0,
+                })
+        return rows
