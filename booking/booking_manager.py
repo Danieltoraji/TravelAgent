@@ -72,6 +72,18 @@ class BookingManager:
     def actions(self) -> List[ActionItem]:
         return list(self._actions)
 
+    def enqueue_actions(self, items: List[ActionItem]) -> None:
+        """把外部产出的动作（如重规划后的「更新路线 / 换宿预订」）并入队列。
+
+        按 ``action_id`` 去重（重复入队幂等）；状态一律 PENDING，由 C 端按
+        ``permission`` 分级确认 / 直接执行。修复 0827：replan 动作回填入口。
+        """
+        existing = {a.action_id for a in self._actions}
+        for item in items:
+            if item.action_id not in existing:
+                self._actions.append(item)
+                existing.add(item.action_id)
+
     def get(self, booking_id: str) -> BookingRecord:
         if booking_id not in self._records:
             raise KeyError(f"Unknown booking: {booking_id}")

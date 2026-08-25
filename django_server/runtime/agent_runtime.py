@@ -9,17 +9,69 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from booking.booking_manager import BookingManager
 from config.settings import settings
-from core.schemas import DayPlan, EventType, MonitorEvent, Place, TripTimeline, to_dict
+from core.schemas import (
+    ActionItem,
+    ActionStatus,
+    DayPlan,
+    EventType,
+    MonitorEvent,
+    PermissionLevel,
+    Place,
+    TripTimeline,
+    to_dict,
+)
 from execution.execution_agent import ExecutionAgent
 from runtime.a_interface import build_decision_hook, build_planner_hook
 from tools import ToolProvider, ToolRegistry, build_registry
 
 logger = logging.getLogger("runtime.agent")
+
+
+def _replan_to_actions(replan: Any) -> List[ActionItem]:
+    """把 A 侧重规划结果（``ReplanRequest``）解析为 Action Queue 条目。
+
+    B 侧拿不到 A 侧 ``replan()`` 的结构化 changes dict（已被包装成
+    ``ReplanRequest``），故按可解释的 ``diff_summary`` 条目前缀解析，产出
+    形态对齐 A 侧 ``workflow.actions.build_actions``（修复 0827 起接入）：
+      - 有新时间轴 → 「更新路线」（low / auto，直接执行）；
+      - ``[hotel_changed] 新酒店名（原因）`` → 「预订{新酒店}」
+        （medium / confirm，进队列等用户确认）。
+    其余条目（removed / added / move / rescheduled）随「更新路线」一并处理，
+    门票级预约动作待候选池接入后可细化。
+    """
+    actions: List[ActionItem] = []
+    if replan is None or getattr(replan, "new_timeline", None) is None:
+        return actions
+    actions.append(ActionItem(
+        action_id=f"route-{uuid.uuid4().hex[:8]}",
+        title="更新路线",
+        description=f"检测到行程变化，已生成新路线：{replan.reason or ''}",
+        status=ActionStatus.PENDING,
+        permission=PermissionLevel.AUTO,
+        target="timeline:update",
+        type="ROUTE_UPDATE",
+    ))
+    for line in getattr(replan, "diff_summary", None) or []:
+        s = str(line)
+        if s.startswith("[hotel_changed]"):
+            rest = s[len("[hotel_changed]"):].strip()
+            name = rest.split("（", 1)[0].strip() or "新酒店"
+            actions.append(ActionItem(
+                action_id=f"hotel-{uuid.uuid4().hex[:8]}",
+                title=f"预订{name}",
+                description=rest,
+                status=ActionStatus.PENDING,
+                permission=PermissionLevel.CONFIRM,
+                target=f"hotel:{name}",
+                type="HOTEL_BOOK",
+            ))
+    return actions
 
 
 class AgentRuntime:
@@ -95,8 +147,10 @@ class AgentRuntime:
                 "hotel_full": True,
             },
         )
-        # 先缓冲（/api/events 轮询可见），再交 ExecutionAgent 决策 → 重规划
-        self._on_event(event)
+        # 交 ExecutionAgent 处理：handle_event 内部会先回调 on_event 缓冲一次
+        # （/api/events 轮询可见），再走决策 → 重规划。
+        # 修复 0827：这里不再显式 _on_event——否则同一条 BOOKING 事件会被缓冲两次
+        # （服务器核对实测：/api/events 出现重复 bevt-*）。
         asyncio.run(agent.handle_event(event))
 
     # -- A 侧接入点 -------------------------------------------------------
@@ -132,6 +186,11 @@ class AgentRuntime:
                 "reason": replan.reason,
                 "timeline": to_dict(replan.new_timeline),
             })
+            # 修复 0827：重规划结果回填 Action Queue（更新路线 auto / 换宿预订 confirm），
+            # 让 C 端的 Action Queue 展示「决策 → 动作 → 用户确认」完整链路。
+            items = _replan_to_actions(replan)
+            if items:
+                self.booking_manager.enqueue_actions(items)
 
     def _wrap_tool_call_logging(self) -> None:
         """包装 registry.call，记录所有工具调用供 C 展示。"""
