@@ -36,6 +36,7 @@ build_planner_hook，与 ``build_decision_hook`` 并列）：
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -43,6 +44,8 @@ from typing import Any, Callable, Dict, Optional
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+logger = logging.getLogger("call_llm.b_planner_hook")
 
 from core.schemas import PlannerOutput, TripTimeline  # noqa: E402
 from data_transmission.b_contract import (  # noqa: E402
@@ -195,6 +198,26 @@ class BPlannerHook:
         """A 的结构化需求 → B 的 ``PlannerOutput``（只含最小编制字段）。"""
         return requirement_to_planner_output(self.requirement)
 
+    def _attach_hotels(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+        """把住宿安排写入计划（``plan["accommodation"]``，与 main.py 口径一致）。
+
+        酒店初始规划接入（8.27，服务器先前不选酒店）：``select_hotels_for_plan``
+        按晚数选常驻酒店并做预算 / 通勤校验，产出每晚 bookings + hotel_cost；
+        ``plan_to_trip_timeline`` 消费它生成 hotel 段。无目的地 / 无景点 / 无酒店
+        数据时返回 None，计划保持无住宿段（不阻断规划）。真源模式下酒店暂仍走
+        假池（B4 HotelTool 未落地，live 酒店待其就绪后另行接入）。
+        """
+        try:
+            from transport.hotels import select_hotels_for_plan
+
+            acc = select_hotels_for_plan(self.requirement, plan)
+        except Exception as exc:  # noqa: BLE001  选酒店失败不阻断规划本身
+            logger.warning("select_hotels_for_plan failed: %s", exc)
+            acc = None
+        if acc:
+            plan["accommodation"] = acc
+        return plan
+
     def generate_timeline(self, *, regenerate: bool = False) -> TripTimeline:
         """完整跑 A 管线并返回 B 的 ``TripTimeline``。
 
@@ -265,6 +288,7 @@ class BPlannerHook:
         self._current_plan = plan
         self.last_error = None
         self.last_data_source = "live"
+        self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
             plan,
             city=self.city,
@@ -309,6 +333,7 @@ class BPlannerHook:
         self._current_plan = plan
         self.last_error = None
         self.last_data_source = source
+        self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
             plan,
             city=self.city,

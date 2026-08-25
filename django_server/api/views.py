@@ -202,7 +202,22 @@ def booking_confirm(request: HttpRequest, booking_id: str) -> JsonResponse:
     except ValueError as exc:
         return _error(str(exc), status=400)
     except RuntimeError as exc:
-        return _error(str(exc), status=500)
+        # 预订提交失败（业务失败，如满房）：400 + 结构化信息（对 C 端友好），
+        # 而非 500 空 body——原实现会让前端抛 "API error 500" 且无任何细节。
+        # 修复 0827：附带失败后的 booking 状态（FAILED）与该预约的 Action（BLOCKED）。
+        try:
+            rec = runtime.booking_manager.get(booking_id)
+            actions = [
+                to_dict(a) for a in runtime.booking_manager.actions()
+                if a.target == f"booking:{booking_id}"
+            ]
+            return JsonResponse({
+                "error": str(exc),
+                "booking": to_dict(rec),
+                "actions": actions,
+            }, status=400)
+        except KeyError:
+            return _error(str(exc), status=400)
 
 
 @csrf_exempt

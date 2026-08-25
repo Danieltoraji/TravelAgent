@@ -193,6 +193,11 @@ def plan_to_trip_timeline(
     ``DayPlan(items=[Place(...)])``；``start_date`` 缺省取今天，逐日累加日期，
     也可显式传 ``YYYY-MM-DD`` 或 ``date``。跨天搬移后计划天数可能与需求天数不同，
     以计划实际天数决定 ``end_date``。
+
+    住宿段（酒店初始规划接入 8.27）：``plan.get("accommodation")`` 由
+    ``transport.hotels.select_hotels_for_plan`` 产出（main.py / BPlannerHook
+    写入，replan 换宿后由 replanner 更新），按晚数映射到每天末尾一个
+    ``Place(category="hotel")``（当晚酒店），总费用并入 ``total_cost``。
     """
     plan = plan or {}
     days_in = plan.get("days") or []
@@ -201,10 +206,26 @@ def plan_to_trip_timeline(
         end_date = start + timedelta(days=max(0, len(days_in) - 1))
     end = _as_date(end_date) if end_date is not None else start
 
+    acc = plan.get("accommodation") or {}
+    bookings = acc.get("bookings") or []
+    nights = acc.get("nights") or len(bookings)
+
     days: List[DayPlan] = []
     for day in days_in:
         day_num = max(1, _int_or(day.get("day"), 1))
         items = [_node_to_place(node) for node in (day.get("route_details") or [])]
+        if bookings:
+            night_index = min(day_num - 1, len(bookings) - 1)
+            book = bookings[night_index]
+            items.append(
+                Place(
+                    id=str(book.get("hotel_id") or ""),
+                    name=str(book.get("hotel_name") or "酒店"),
+                    category="hotel",
+                    arrival="20:00",           # 晚间入住（展示用）
+                    price=float(book.get("price") or 0.0),
+                )
+            )
         days.append(
             DayPlan(
                 day=day_num,
@@ -212,13 +233,15 @@ def plan_to_trip_timeline(
                 items=items,
             )
         )
+    ticket_cost = float(plan.get("estimated_ticket_cost") or 0.0)
+    hotel_cost = float(acc.get("hotel_cost") or 0.0)
     return TripTimeline(
         id=plan_id,
         city=city,
         start_date=start,
         end_date=end,
         days=days,
-        total_cost=float(plan.get("estimated_ticket_cost") or 0.0),
+        total_cost=ticket_cost + hotel_cost,
         walking_distance=float(plan.get("total_route_distance_km") or 0.0),
     )
 
@@ -239,6 +262,9 @@ def trip_timeline_to_plan(
     for day in timeline.days:
         route_details: List[Dict[str, Any]] = []
         for item in (day.items or []):
+            if item.category == "hotel":
+                # 酒店段不参与景点排程逆向（住宿由 plan.accommodation 承载）
+                continue
             node_type = CATEGORY_TO_NODE_TYPE.get(item.category, "spot")
             start = _hhmm_to_minutes(item.arrival)
             end = _hhmm_to_minutes(item.end_time) if item.end_time else start
