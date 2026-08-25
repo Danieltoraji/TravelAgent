@@ -87,7 +87,10 @@ def main() -> None:
     assert code == 200 and resp.get("status") == "ok", f"plan failed: {code} {resp}"
     tl = resp["timeline"]
     assert tl["city"] == "北京" and len(tl["days"]) == 2, tl
-    print(f"[1] /api/plan/ -> ok, city={tl['city']} days={len(tl['days'])} cost={tl['total_cost']}")
+    # 8.27：酒店初始规划接入——时间轴每天末尾应有 hotel 段（cost 并入房费）
+    hotel_cats = [p.get("category") for day in tl["days"] for p in day.get("items", [])]
+    assert "hotel" in hotel_cats, f"timeline missing hotel segment: {hotel_cats}"
+    print(f"[1] /api/plan/ -> ok, city={tl['city']} days={len(tl['days'])} cost={tl['total_cost']} hotel=yes")
 
     code, status = get("/api/status/")
     assert status.get("timeline_set") is True, status
@@ -106,8 +109,13 @@ def main() -> None:
     print(f"[3] prepare -> {bid}")
 
     code, resp = post(f"/api/booking/{bid}/confirm/", {})
-    assert code == 500, f"confirm should fail: {code} {resp}"
-    print(f"[3] confirm -> 失败(HTTP {code})")
+    # 8.27：confirm 失败从 500（空 body）改为 400 + 结构化信息（对 C 端友好）
+    assert code == 400, f"confirm should fail with 400: {code} {resp}"
+    assert "满房" in str(resp.get("error", "")), f"error missing 满房: {resp}"
+    assert resp.get("booking", {}).get("status") == "failed", f"booking not failed: {resp}"
+    blocked_in_body = [a for a in resp.get("actions", []) if a.get("status") == "blocked"]
+    assert blocked_in_body, f"no BLOCKED action in body: {resp}"
+    print(f"[3] confirm -> 失败(HTTP {code}, booking=failed, action=blocked)")
 
     code, ev = get("/api/events/")
     booking_events = [e for e in ev["events"] if e.get("event_type") == "booking"]
