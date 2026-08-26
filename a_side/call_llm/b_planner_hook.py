@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
@@ -216,7 +216,12 @@ class BPlannerHook:
         try:
             from transport.hotels import select_hotels_for_plan
 
-            acc = select_hotels_for_plan(self.requirement, plan)
+            # 8.29：真源矩阵模式注入 travel_time_provider → 酒店↔景点通勤走矩阵真源分钟
+            acc = select_hotels_for_plan(
+                self.requirement,
+                plan,
+                travel_time_provider=self._travel_time_provider,
+            )
         except Exception as exc:  # noqa: BLE001  选酒店失败不阻断规划本身
             logger.warning("select_hotels_for_plan failed: %s", exc)
             acc = None
@@ -251,6 +256,7 @@ class BPlannerHook:
             self.last_error = reason
             return timeline
         resolver = None  # 真源餐厅（FoodToolLive → RestaurantResolver；失败降级为无）
+        live_hotels = self._live_hotel_pool()  # 8.29：假池酒店候选（坐标并入矩阵 → 通勤真源）
         try:
             if self._travel_time_provider is not None:
                 self._travel_time_provider.set_name_map(
@@ -277,6 +283,14 @@ class BPlannerHook:
                         )
                         if coord and restaurant.name not in name_to_coord:
                             name_to_coord[restaurant.name] = coord
+                # 8.29 酒店通勤真源化：假池酒店候选坐标并入矩阵（B4 HotelTool
+                # 就绪前酒店本体仍是候选源；通勤先真源化）→ HotelSelector 走矩阵分钟。
+                for hotel in live_hotels:
+                    coord = _coord_str(
+                        {"lat": hotel.location[0], "lng": hotel.location[1]}
+                    )
+                    if coord and hotel.name not in name_to_coord:
+                        name_to_coord[hotel.name] = coord
                 if name_to_coord:
                     matrix = make_live_matrix_fn(self._tool_provider, city=self.city)(
                         name_to_coord
@@ -284,14 +298,21 @@ class BPlannerHook:
                     self._travel_time_provider.set_matrix(
                         matrix, name_to_coord=name_to_coord
                     )
+                    extra_names: Dict[str, str] = {}
                     if resolver is not None:
                         # 餐厅 id → 点名映射：get_edge 经 name_to_coord 查矩阵真源分钟
-                        self._travel_time_provider.set_name_map(
+                        extra_names.update(
                             {
                                 restaurant.id: restaurant.name
                                 for restaurant in resolver.restaurants
                             }
                         )
+                    # 酒店 id → 点名（与 scenic/餐厅增量合并，set_name_map 为 update 语义）
+                    extra_names.update(
+                        {hotel.id: hotel.name for hotel in live_hotels}
+                    )
+                    if extra_names:
+                        self._travel_time_provider.set_name_map(extra_names)
             plan = self._planner(
                 self.requirement,
                 spots,
@@ -345,6 +366,22 @@ class BPlannerHook:
             logger.warning("真源餐厅解析失败，跳过餐厅真源化：%s", exc)
             return None
         return resolver if resolver.restaurants else None
+
+    def _live_hotel_pool(self) -> List[Any]:
+        """假池酒店候选（B4 live HotelTool 就绪前，规划期酒店本体仍是假池）。
+
+        坐标由 ``_generate_live_or_fallback`` 并入真源矩阵 → ``HotelSelector``
+        （``travel_time_provider`` 注入）的酒店↔景点通勤走矩阵真源分钟。
+        空池（如成都，无 hotel.json）返回 []，不阻断。
+        """
+        if getattr(self, "_live_hotel_pool_cache", None) is None:
+            try:
+                from data_transmission.hotel import load_hotels
+
+                self._live_hotel_pool_cache = list(load_hotels(self.city))
+            except (OSError, ValueError):
+                self._live_hotel_pool_cache = []
+        return self._live_hotel_pool_cache
 
     def _run_pipeline(
         self,

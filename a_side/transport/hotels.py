@@ -8,9 +8,14 @@
 - **换宿代价由阈值本身压制**：换宿不产生额外交通段（退房/行李为现实动作，不计入游玩时长）。
 - **预算内才换**：换到更贵的酒店导致总预算超时放弃换宿并提示。
 
-通勤时间按酒店与景点的经纬度直线距离折算（城市均速 28 km/h，最短 15 分钟），
-与 `fake_spots/{city}/spots_graph.json` 的餐厅↔景点边一样属于模拟数据；
-酒店节点不进 spots_graph（选择器自算自洽，展示时同样用本模块口径）。
+通勤时间（8.29 起）双轨：
+- **真源模式**（注入 ``travel_time_provider``，即开启真源矩阵时）：酒店↔景点分钟
+  直接取矩阵真源值（酒店候选坐标已并入 batch_route 矩阵）——与景点间/景点↔餐厅
+  一致，不再用直线距离折算；
+- **假数据模式**（无 provider）：按酒店与景点的经纬度直线距离折算
+  （城市均速 28 km/h，最短 15 分钟），与 `fake_spots/{city}/spots_graph.json`
+  的餐厅↔景点边一样属于模拟数据；酒店节点不进 spots_graph
+  （选择器自算自洽，展示时同样用本模块口径）。
 """
 
 from __future__ import annotations
@@ -121,6 +126,7 @@ class HotelSelector:
         data_dir: Path = DEFAULT_GRAPH_DIR,
         hotel_provider: Optional[Callable[[str], List[Hotel]]] = None,
         spot_locations_provider: Optional[Callable[[str], Dict[str, Tuple[float, float]]]] = None,
+        travel_time_provider: Optional["TravelTimeProvider"] = None,
     ):
         """酒店选择器。
 
@@ -128,6 +134,10 @@ class HotelSelector:
         （假数据）；真实数据接入时由 ``data_transmission.live_data.make_live_hotel_provider`` 注入。
         ``spot_locations_provider``：``fn(city) -> {spot_id: (lat, lng)}``，缺省读
         本地 spots.json；真源候选池时由调用方传入（保持通勤口径一致）。
+        ``travel_time_provider``（8.29 酒店通勤真源化）：真源矩阵模式注入
+        ``LiveTravelTimeProvider``（酒店↔景点分钟取矩阵真源值）；缺省 None →
+        按直线距离折算（假数据口径）。酒店候选坐标须由调用方并入矩阵的
+        ``name_to_coord`` 并补 ``set_name_map({hotel_id: hotel_name})``。
         """
         self.city = city
         if hotel_provider is not None:
@@ -140,6 +150,7 @@ class HotelSelector:
         else:
             self._spot_locations = _load_spot_locations(city, data_dir)
         self._by_id = {hotel.id: hotel for hotel in self.hotels}
+        self._travel_provider = travel_time_provider
 
     # ------------------------------------------------------------------
     # 通勤
@@ -147,8 +158,18 @@ class HotelSelector:
 
     def travel_minutes(self, hotel_id: str, spot_id: str) -> int:
         hotel = self._by_id.get(str(hotel_id))
+        if hotel is None:
+            return LARGE_COMMUTE
+        # 8.29：真源矩阵模式优先（酒店↔景点通勤真源化）——矩阵真实行驶分钟
+        if self._travel_provider is not None:
+            try:
+                edge = self._travel_provider.get_edge(str(hotel_id), str(spot_id))
+            except (ValueError, KeyError, RuntimeError):
+                # 未映射节点 / 矩阵缺行超过降级上限：按大惩罚处理（不误导换宿判定）
+                return LARGE_COMMUTE
+            return int(edge.transport_minutes)
         spot_location = self._spot_locations.get(str(spot_id))
-        if hotel is None or spot_location is None:
+        if spot_location is None:
             return LARGE_COMMUTE
         km = _haversine_km(
             hotel.location[0],
@@ -476,6 +497,7 @@ def select_hotels_for_plan(
     price_deltas: Optional[Dict[str, float]] = None,
     hotel_provider: Optional[Callable[[str], List[Hotel]]] = None,
     spot_locations_provider: Optional[Callable[[str], Dict[str, Tuple[float, float]]]] = None,
+    travel_time_provider: Optional["TravelTimeProvider"] = None,
 ) -> Optional[Dict[str, Any]]:
     """从执行计划生成住宿安排（衔接 main.py 的编排入口）。
 
@@ -516,6 +538,7 @@ def select_hotels_for_plan(
         data_dir=graph_dir,
         hotel_provider=hotel_provider,
         spot_locations_provider=spot_locations_provider,
+        travel_time_provider=travel_time_provider,   # 8.29：真源矩阵 → 酒店通勤真源化
     )
     result = selector.select(
         first_last,
