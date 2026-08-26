@@ -117,6 +117,25 @@ class TestBookingEventDedup(unittest.TestCase):
         rt.booking_manager.enqueue_actions(a)
         self.assertEqual(len(rt.booking_manager.actions()), len(a) + len(b))
 
+    def test_tool_call_log_hides_non_readonly_data(self) -> None:
+        rt = AgentRuntime()
+        rt.registry.call("weather", city="北京")
+        rt.registry.call("booking", action="prepare", place="故宫")
+
+        weather_entry = next(item for item in rt.tool_call_log if item["tool"] == "weather")
+        booking_entry = next(item for item in rt.tool_call_log if item["tool"] == "booking")
+
+        self.assertTrue(weather_entry["has_data"])
+        self.assertIsNotNone(weather_entry["data"])
+        self.assertFalse(booking_entry["has_data"])
+        self.assertIsNone(booking_entry["data"])
+
+    def test_hotel_detail_call_updates_cache(self) -> None:
+        rt = AgentRuntime()
+        result = rt.registry.call("hotel", action="detail", hotelId="H001")
+        self.assertEqual(result.status.value, "ok")
+        self.assertIn("H001", rt.hotel_details)
+
 
 class TestReplanActionsQueue(unittest.IsolatedAsyncioTestCase):
     """修复 ② 集成层：决策 hook 返回 ReplanRequest → 动作真实进入队列。

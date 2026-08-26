@@ -90,6 +90,10 @@ class AgentRuntime:
         self.replan_history: List[Dict[str, Any]] = []
         self.timeline_history: List[Dict[str, Any]] = []
         self.tool_call_log: List[Dict[str, Any]] = []
+        # 酒店数据缓存：由 A/Planner/B 调度调用 hotel_tool 时自动记录，供 C 只读展示
+        self.hotel_search_results: List[Dict[str, Any]] = []
+        self.hotel_details: Dict[str, Any] = {}
+        self.hotel_tags: Optional[Dict[str, Any]] = None
         self.started_at: str = datetime.now().isoformat(timespec="seconds")
         self._decision_hook: Any = None
         self._last_planner_error: Optional[str] = None
@@ -198,6 +202,8 @@ class AgentRuntime:
 
         def logged_call(name: str, **kwargs: Any) -> Any:
             result = original_call(name, **kwargs)
+            tool = self.registry.get(name)
+            logged_data = result.data if tool.readonly else None
             self.tool_call_log.append({
                 "tool": name,
                 "arguments": kwargs,
@@ -206,9 +212,33 @@ class AgentRuntime:
                 "elapsed_ms": result.elapsed_ms,
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "error": result.error,
-                "has_data": result.data is not None,
+                "has_data": logged_data is not None,
+                "data": logged_data,
             })
+            _capture_hotel_data(name, kwargs, result)
             return result
+
+        def _capture_hotel_data(name: str, kwargs: Dict[str, Any], result: Any) -> None:
+            """hotel_tool 被 A/Planner/B 调用后，缓存结果供 C 只读展示。"""
+            if name != "hotel" or result.status.value != "ok" or result.data is None:
+                return
+            action = kwargs.get("action", "search")
+            data = result.data
+            if action == "search":
+                self.hotel_search_results.append({
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "arguments": kwargs,
+                    "data": data,
+                })
+                # 只保留最近 50 条，避免内存无限增长
+                if len(self.hotel_search_results) > 50:
+                    self.hotel_search_results = self.hotel_search_results[-50:]
+            elif action == "detail":
+                hotel_id = data.get("hotelId") if isinstance(data, dict) else None
+                if hotel_id is not None:
+                    self.hotel_details[str(hotel_id)] = data
+            elif action == "tags":
+                self.hotel_tags = data
 
         # 实例属性覆盖方法，确保 registry / ToolProvider / BookingManager 都走这里。
         self.registry.call = logged_call  # type: ignore[method-assign]
@@ -250,6 +280,9 @@ class AgentRuntime:
         self.replan_history = []
         self.timeline_history = []
         self.tool_call_log = []
+        self.hotel_search_results = []
+        self.hotel_details = {}
+        self.hotel_tags = None
         self.booking_manager = BookingManager(
             self.registry, on_booking_failed=self._on_booking_failed
         )
