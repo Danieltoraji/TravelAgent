@@ -8,6 +8,7 @@ Live 版（HotelToolLive）：通过 RollingGo MCP 查询真实酒店数据。
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 from tools.base_tool import BaseTool
@@ -16,26 +17,36 @@ _MOCK_HOTELS = [
     {
         "id": "H001",
         "name": "北京王府井酒店",
+        "name_en": "Beijing Wangfujing Hotel",
+        "brand": "示例品牌",
         "location": {"lat": 39.914, "lng": 116.410},
         "star": 5,
         "rating": 4.8,
         "price_per_night": 880,
         "address": "北京市东城区王府井大街",
         "tags": ["市中心", "近地铁"],
+        "booking_url": "https://example.com/booking/H001",
+        "image_url": "https://example.com/img/H001.jpg",
         "open": True,
     },
     {
         "id": "H002",
         "name": "北京前门大酒店",
+        "name_en": "Beijing Qianmen Hotel",
+        "brand": "示例品牌",
         "location": {"lat": 39.899, "lng": 116.397},
         "star": 4,
         "rating": 4.5,
         "price_per_night": 520,
         "address": "北京市东城区前门大街",
         "tags": ["近景点", "交通便利"],
+        "booking_url": "https://example.com/booking/H002",
+        "image_url": "https://example.com/img/H002.jpg",
         "open": True,
     },
 ]
+
+_DEFAULT_TAGS_TTL = 3600  # tags 缓存 1 小时
 
 
 class HotelTool(BaseTool):
@@ -70,6 +81,19 @@ class HotelTool(BaseTool):
             "childAgeDetails": {"type": "array", "items": {"type": "integer"}, "description": "儿童年龄数组"},
             "starRatings": {"type": "array", "items": {"type": "number"}, "description": "星级范围，如 [4.5, 5.0]"},
             "maxPricePerNight": {"type": "number", "description": "每晚价格上限"},
+            "distanceInMeter": {"type": "integer", "description": "按 POI 位置的直线距离过滤（米）"},
+            "preferredBrands": {"type": "array", "items": {"type": "string"}, "description": "偏好品牌列表"},
+            "requiredTags": {"type": "array", "items": {"type": "string"}, "description": "必须命中的酒店标签（硬约束）"},
+            "cancelPolicy": {
+                "type": "string",
+                "enum": ["CANCELABLE", "NON_CANCELABLE"],
+                "description": "取消政策筛选（detail 时使用）",
+            },
+            "mealType": {
+                "type": "string",
+                "enum": ["WITH_BREAKFAST", "SINGLE_BREAKFAST", "DOUBLE_BREAKFAST", "NO_MEAL"],
+                "description": "餐食类别筛选（detail 时使用）",
+            },
             "hotelId": {"type": "integer", "description": "酒店 ID（detail 时使用）"},
             "name": {"type": "string", "description": "酒店名称（detail 时使用）"},
             "size": {"type": "integer", "description": "返回数量，默认 5，最大 20"},
@@ -79,7 +103,9 @@ class HotelTool(BaseTool):
 
     def _run(self, action: str = "search", **kwargs: Any) -> Any:
         if action == "tags":
-            return {"tags": ["市中心", "近地铁", "近景点", "含早餐", "免费取消"]}
+            return {
+                "tags": ["市中心", "近地铁", "近景点", "含早餐", "免费取消", "机场酒店", "商务型"],
+            }
         if action == "detail":
             hotel_id = kwargs.get("hotelId")
             name = kwargs.get("name", "")
@@ -88,19 +114,37 @@ class HotelTool(BaseTool):
                     name and name in hotel["name"]
                 ):
                     return {
-                        "hotel": hotel,
-                        "rooms": [
+                        "hotelId": hotel["id"],
+                        "name": hotel["name"],
+                        "starRating": hotel["star"],
+                        "checkIn": kwargs.get("checkInDate", ""),
+                        "checkOut": kwargs.get("checkOutDate", ""),
+                        "bookingUrl": hotel["booking_url"],
+                        "roomRatePlans": [
                             {
-                                "room_id": "R001",
-                                "room_name": "标准间",
-                                "price": hotel["price_per_night"],
-                                "meal_type": "NO_MEAL",
-                                "cancel_policy": "CANCELABLE",
-                                "available": True,
+                                "roomName": "标准间",
+                                "ratePlanId": "R001",
+                                "ratePlanName": "标准间",
+                                "averagePrice": hotel["price_per_night"],
+                                "currency": "CNY",
+                                "mealAmount": 0,
+                                "mealTypeStr": "不含早餐",
+                                "isOnRequest": False,
+                                "cancelPolicy": "免费取消",
+                                "cancelable": True,
+                                "roomInfo": {
+                                    "hasWifi": True,
+                                    "hasWindow": True,
+                                    "maxOccupancy": 2,
+                                    "size": "25-30",
+                                    "floor": "1-5",
+                                    "smoking": "不可吸烟",
+                                    "images": "",
+                                },
                             }
                         ],
                     }
-            return {"hotel": None, "rooms": []}
+            return {"hotelId": hotel_id, "name": name, "roomRatePlans": []}
         # search
         return {"hotels": _MOCK_HOTELS, "count": len(_MOCK_HOTELS)}
 
@@ -110,16 +154,30 @@ class HotelToolLive(HotelTool):
 
     source = "live"
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, tags_ttl: int = _DEFAULT_TAGS_TTL) -> None:
         super().__init__()
         self._client = client
+        self._tags_cache: Optional[Dict[str, Any]] = None
+        self._tags_cache_at: float = 0.0
+        self._tags_ttl = tags_ttl
 
     def _run(self, action: str = "search", **kwargs: Any) -> Any:
         if action == "tags":
-            return self._client.call_tool("getHotelSearchTags", {})
+            return self._get_tags()
         if action == "detail":
             return self._call_detail(kwargs)
         return self._call_search(kwargs)
+
+    # -- tags 缓存 ---------------------------------------------------------
+
+    def _get_tags(self) -> Dict[str, Any]:
+        now = time.time()
+        if self._tags_cache is not None and now - self._tags_cache_at < self._tags_ttl:
+            return self._tags_cache
+        result = self._client.call_tool("getHotelSearchTags", {})
+        self._tags_cache = result if isinstance(result, dict) else {"data": result}
+        self._tags_cache_at = now
+        return self._tags_cache
 
     # -- RollingGo 参数构造 ------------------------------------------------
 
@@ -150,12 +208,18 @@ class HotelToolLive(HotelTool):
         filter_options: Dict[str, Any] = {}
         if kwargs.get("starRatings"):
             filter_options["starRatings"] = list(kwargs["starRatings"])
+        if kwargs.get("distanceInMeter") is not None:
+            filter_options["distanceInMeter"] = int(kwargs["distanceInMeter"])
         if filter_options:
             arguments["filterOptions"] = filter_options
 
         hotel_tags: Dict[str, Any] = {}
         if kwargs.get("maxPricePerNight") is not None:
             hotel_tags["maxPricePerNight"] = float(kwargs["maxPricePerNight"])
+        if kwargs.get("preferredBrands"):
+            hotel_tags["preferredBrands"] = list(kwargs["preferredBrands"])
+        if kwargs.get("requiredTags"):
+            hotel_tags["requiredTags"] = list(kwargs["requiredTags"])
         if hotel_tags:
             arguments["hotelTags"] = hotel_tags
 
@@ -171,6 +235,9 @@ class HotelToolLive(HotelTool):
             arguments["hotelId"] = int(kwargs["hotelId"])
         if kwargs.get("name"):
             arguments["name"] = str(kwargs["name"])
+
+        if not kwargs.get("hotelId") and not kwargs.get("name"):
+            raise ValueError("hotel detail requires 'hotelId' or 'name'")
 
         if kwargs.get("checkInDate") or kwargs.get("checkOutDate"):
             date_param: Dict[str, Any] = {}
@@ -192,7 +259,16 @@ class HotelToolLive(HotelTool):
         if occupancy:
             arguments["occupancyParam"] = occupancy
 
-        return self._client.call_tool("getHotelDetail", arguments)
+        filter_options: Dict[str, Any] = {}
+        if kwargs.get("cancelPolicy"):
+            filter_options["cancelPolicy"] = str(kwargs["cancelPolicy"])
+        if kwargs.get("mealType"):
+            filter_options["mealType"] = str(kwargs["mealType"])
+        if filter_options:
+            arguments["filter"] = filter_options
+
+        result = self._client.call_tool("getHotelDetail", arguments)
+        return self._normalize_detail_result(result)
 
     # -- 结果标准化 --------------------------------------------------------
 
@@ -256,4 +332,50 @@ class HotelToolLive(HotelTool):
             "booking_url": item.get("bookingUrl") or "",
             "image_url": item.get("imageUrl") or "",
             "open": item.get("open", True),
+        }
+
+    @staticmethod
+    def _normalize_detail_result(result: Any) -> Dict[str, Any]:
+        """把 RollingGo getHotelDetail 原始返回整理成 C 更友好的结构。"""
+        if not isinstance(result, dict):
+            return {"raw": result}
+
+        room_rate_plans = result.get("roomRatePlans") or []
+        normalized_rooms = []
+        for plan in room_rate_plans:
+            if not isinstance(plan, dict):
+                normalized_rooms.append({"raw": plan})
+                continue
+            room_info = plan.get("roomInfo") or {}
+            normalized_rooms.append({
+                "room_name": plan.get("roomName") or "",
+                "rate_plan_id": plan.get("ratePlanId") or "",
+                "rate_plan_name": plan.get("ratePlanName") or "",
+                "average_price": plan.get("averagePrice"),
+                "currency": plan.get("currency") or "",
+                "meal_amount": plan.get("mealAmount") or 0,
+                "meal_type": plan.get("mealTypeStr") or "",
+                "on_request": plan.get("isOnRequest", False),
+                "cancel_policy": plan.get("cancelPolicy") or "",
+                "cancelable": plan.get("cancelable", False),
+                "room_info": {
+                    "has_wifi": room_info.get("hasWifi", False),
+                    "has_window": room_info.get("hasWindow", False),
+                    "max_occupancy": room_info.get("maxOccupancy"),
+                    "size": room_info.get("size") or "",
+                    "floor": room_info.get("floor") or "",
+                    "smoking": room_info.get("smoking") or "",
+                    "images": room_info.get("images") or "",
+                },
+            })
+
+        return {
+            "hotelId": result.get("hotelId"),
+            "name": result.get("name") or "",
+            "starRating": result.get("starRating"),
+            "checkIn": result.get("checkIn") or "",
+            "checkOut": result.get("checkOut") or "",
+            "bookingUrl": result.get("bookingUrl") or "",
+            "rooms": normalized_rooms,
+            "raw": result,
         }
