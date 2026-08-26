@@ -87,6 +87,9 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         rollinggo_client = RollingGoClient(
             url=settings.rollinggo_mcp_url,
             api_key=settings.rollinggo_api_key,
+            timeout=settings.rollinggo_mcp_timeout,
+            max_retries=settings.rollinggo_mcp_max_retries,
+            retry_backoff_base=settings.rollinggo_mcp_retry_backoff_base,
         )
         registry.register(HotelToolLive(rollinggo_client))
     else:

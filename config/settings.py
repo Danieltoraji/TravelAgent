@@ -42,6 +42,12 @@ class Settings:
         "ROLLINGGO_MCP_URL", "https://mcp.rollinggo.cn/mcp"))
     rollinggo_api_key: str = field(default_factory=lambda: os.environ.get(
         "ROLLINGGO_API_KEY", ""))
+    rollinggo_mcp_timeout: float = field(default_factory=lambda: float(
+        os.environ.get("ROLLINGGO_MCP_TIMEOUT", "30")))
+    rollinggo_mcp_max_retries: int = field(default_factory=lambda: int(
+        os.environ.get("ROLLINGGO_MCP_MAX_RETRIES", "2")))
+    rollinggo_mcp_retry_backoff_base: float = field(default_factory=lambda: float(
+        os.environ.get("ROLLINGGO_MCP_RETRY_BACKOFF_BASE", "1.0")))
 
     calendar_tz: str = "Asia/Shanghai"
 
@@ -94,6 +100,12 @@ class Settings:
         self.rollinggo_mcp_url = os.environ.get(
             "ROLLINGGO_MCP_URL", "https://mcp.rollinggo.cn/mcp")
         self.rollinggo_api_key = os.environ.get("ROLLINGGO_API_KEY", "")
+        self.rollinggo_mcp_timeout = float(
+            os.environ.get("ROLLINGGO_MCP_TIMEOUT", "30"))
+        self.rollinggo_mcp_max_retries = int(
+            os.environ.get("ROLLINGGO_MCP_MAX_RETRIES", "2"))
+        self.rollinggo_mcp_retry_backoff_base = float(
+            os.environ.get("ROLLINGGO_MCP_RETRY_BACKOFF_BASE", "1.0"))
         try:
             from config.local_settings import apply_local_settings
             apply_local_settings(self)
