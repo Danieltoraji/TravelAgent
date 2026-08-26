@@ -18,9 +18,11 @@ from tools.base_tool import BaseTool, ToolRegistry
 from tools.tool_provider import ToolProvider
 from tools.booking_tool import BookingTool
 from tools.food_tool import FoodTool, FoodToolLive
+from tools.hotel_tool import HotelTool, HotelToolLive
 from tools.map_tool import MapTool, MapToolLive
 from tools.mock_data import PLACES, MockWorld, WeatherData
 from tools.qweather_client import QWeatherClient
+from tools.rollinggo_client import RollingGoClient
 from tools.scenic_tool import ScenicTool, ScenicToolLive
 from tools.traffic_tool import TrafficTool, TrafficToolLive
 from tools.weather_tool import (
@@ -80,6 +82,16 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
 
     registry.register(BookingTool())
 
+    # 酒店 Tool：按配置自动切换 Mock / Live（RollingGo MCP）
+    if settings.use_real_hotel_api:
+        rollinggo_client = RollingGoClient(
+            url=settings.rollinggo_mcp_url,
+            api_key=settings.rollinggo_api_key,
+        )
+        registry.register(HotelToolLive(rollinggo_client))
+    else:
+        registry.register(HotelTool())
+
     # 网页抓取/搜索 Tool：按配置自动切换 Mock / Live（无需 API Key）
     if settings.use_real_web:
         web_client = WebClient()
@@ -103,10 +115,13 @@ __all__ = [
     "BaseTool",
     "FoodTool",
     "FoodToolLive",
+    "HotelTool",
+    "HotelToolLive",
     "MapTool",
     "MapToolLive",
     "MockWorld",
     "QWeatherClient",
+    "RollingGoClient",
     "ScenicTool",
     "ScenicToolLive",
     "ToolProvider",

@@ -110,6 +110,36 @@ def invoke_tool(request: HttpRequest, name: str) -> JsonResponse:
         return _error(str(exc), status=404)
 
 
+# ── 酒店数据展示端点（C 只读，不触发工具调用）────────────────────────────
+# 数据来源：A/Planner/B 调度调用 hotel_tool 时，由 AgentRuntime 自动缓存。
+
+@require_http_methods(["GET"])
+def hotels(request: HttpRequest) -> JsonResponse:
+    """返回历史 hotel_tool 搜索快照（只读展示）。"""
+    return JsonResponse({
+        "hotel_search_results": runtime.hotel_search_results,
+        "count": len(runtime.hotel_search_results),
+        "latest": runtime.hotel_search_results[-1] if runtime.hotel_search_results else None,
+    })
+
+
+@require_http_methods(["GET"])
+def hotel_detail(request: HttpRequest, hotel_id: int) -> JsonResponse:
+    """返回某个酒店已被查询过的房型/价格明细（只读展示）。"""
+    data = runtime.hotel_details.get(str(hotel_id))
+    if data is None:
+        return _error(f"Hotel detail not found: {hotel_id}", status=404)
+    return JsonResponse(data)
+
+
+@require_http_methods(["GET"])
+def hotel_tags(request: HttpRequest) -> JsonResponse:
+    """返回最近一次 hotel_tool tags 调用结果（只读展示）。"""
+    if runtime.hotel_tags is None:
+        return _error("Hotel tags not available", status=404)
+    return JsonResponse(runtime.hotel_tags)
+
+
 # ── 时间轴 ──────────────────────────────────────────────────────────────
 
 @csrf_exempt

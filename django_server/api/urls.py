@@ -13,6 +13,10 @@ urlpatterns = [
     path("tools/<str:name>/", views.get_tool_spec, name="get_tool_spec"),
     path("tools/<str:name>/invoke/", views.invoke_tool, name="invoke_tool"),
 
+    path("hotels/", views.hotels, name="hotels"),
+    path("hotels/<int:hotel_id>/", views.hotel_detail, name="hotel_detail"),
+    path("hotel-tags/", views.hotel_tags, name="hotel_tags"),
+
     path("timeline/history/", views.timeline_history, name="timeline_history"),
     path("timeline/", views.timeline, name="timeline"),
 

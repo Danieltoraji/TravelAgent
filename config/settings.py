@@ -38,6 +38,10 @@ class Settings:
     qweather_api_key: str = field(default_factory=lambda: os.environ.get("QWEATHER_API_KEY", ""))
     qweather_api_host: str = field(default_factory=lambda: os.environ.get(
         "QWEATHER_API_HOST", ""))  # 不带 https://，如 abc1234xyz.def.qweatherapi.com
+    rollinggo_mcp_url: str = field(default_factory=lambda: os.environ.get(
+        "ROLLINGGO_MCP_URL", "https://mcp.rollinggo.cn/mcp"))
+    rollinggo_api_key: str = field(default_factory=lambda: os.environ.get(
+        "ROLLINGGO_API_KEY", ""))
 
     calendar_tz: str = "Asia/Shanghai"
 
@@ -67,6 +71,11 @@ class Settings:
         return not self.demo_mode and bool(self.amap_api_key)
 
     @property
+    def use_real_hotel_api(self) -> bool:
+        """当前是否应使用真实酒店 MCP（Demo 关闭且有 Key 时）。"""
+        return not self.demo_mode and bool(self.rollinggo_api_key)
+
+    @property
     def use_real_web(self) -> bool:
         """当前是否应使用真实网页抓取（Demo 关闭即启用）。
 
@@ -82,6 +91,9 @@ class Settings:
         self.amap_api_key = os.environ.get("AMAP_API_KEY", "")
         self.qweather_api_key = os.environ.get("QWEATHER_API_KEY", "")
         self.qweather_api_host = os.environ.get("QWEATHER_API_HOST", "")
+        self.rollinggo_mcp_url = os.environ.get(
+            "ROLLINGGO_MCP_URL", "https://mcp.rollinggo.cn/mcp")
+        self.rollinggo_api_key = os.environ.get("ROLLINGGO_API_KEY", "")
         try:
             from config.local_settings import apply_local_settings
             apply_local_settings(self)
