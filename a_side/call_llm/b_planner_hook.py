@@ -346,9 +346,9 @@ class BPlannerHook:
                     travel_time_provider=self._travel_time_provider,
                     restaurants=None,
                 )
-                # 阶段 2：锚点确定后，只对计划内景点 × 真源餐厅补增量矩阵再重排
+                # 阶段 2：锚点确定后，只对候选景点 × 真源餐厅补增量矩阵再重排
                 plan = self._live_plan_with_restaurants(
-                    plan1, spots, name_to_coord, base_matrix
+                    plan1, spots, name_to_coord, base_matrix, live_hotels
                 )
             else:
                 plan = self._planner(self.requirement, spots)
@@ -384,17 +384,18 @@ class BPlannerHook:
         spots: Any,
         name_to_coord: Dict[str, str],
         base_matrix: Dict[Tuple[str, str], Tuple[float, int]],
+        live_hotels: Sequence[Any],
     ) -> Dict[str, Any]:
-        """8.30 阶段 2：对「计划内景点 × 真源餐厅」补增量矩阵后带餐厅重排。
+        """8.30 阶段 2：对「候选景点 × 真源餐厅」补增量矩阵后带餐厅重排。
 
-        - 锚点（用餐窗口临近的景点）来自阶段 1 无餐厅计划；
-        - 只用 ``plan1`` 实际排入的景点（含锚点）作起点、真源餐厅作终点，
-          取正交子矩阵——原全集合 n²（候选+餐厅20+酒店6）的主大头被拆掉；
-        - 餐厅 / 增量矩阵任何失败 → 直接用阶段 1 计划（无餐厅段），不整链回退；
-        - 第二次重排引入的、不在 ``plan1`` 的新景点 ↔ 餐厅缺行，由
-          ``LiveTravelTimeProvider`` 单边降级兜底（≤ max_degraded_edges）。
+        - 锚点（用餐窗口临近的景点）来自阶段 1 无餐厅计划，仅用于判断是否需要
+          真源餐厅（有已安排用餐才拉 food 工具）；
+        - 增量矩阵起点 = **全部候选景点**（plan2 带餐厅重排可能换候选池内的
+          景点，全量覆盖避免「新景点 ↔ 餐厅」缺行——线上曾因此降级超限回退假源，
+          8.30 复验教训）；终点 = 真源餐厅；正交子矩阵仍远小于原全集合 n²；
+        - 餐厅 / 增量矩阵 / 重排任何失败 → 直接用阶段 1 计划（无餐厅段），
+          不整链回退假源（scenic / 酒店真源不受影响）。
         """
-        plan_names = _collect_plan_spot_names(plan1)
         if not _collect_meal_anchors(plan1):
             return plan1  # 无已安排的用餐 → 不需要真源餐厅
         resolver = self._build_live_restaurants()
@@ -409,7 +410,13 @@ class BPlannerHook:
             )
             if coord:
                 rest_coords[restaurant.name] = coord
-        origin_names = [name for name in plan_names if name in name_to_coord]
+        hotel_names = {hotel.name for hotel in live_hotels}
+        # 全部候选景点作起点（排除酒店与餐厅；酒店↔餐厅无需边，酒店↔景点在矩阵1）
+        origin_names = [
+            name
+            for name in name_to_coord
+            if name not in hotel_names and name not in rest_coords
+        ]
         if not origin_names or not rest_coords:
             return plan1
         try:
@@ -432,12 +439,16 @@ class BPlannerHook:
         self._travel_time_provider.set_name_map(
             {restaurant.id: restaurant.name for restaurant in resolver.restaurants}
         )
-        return self._planner(
-            self.requirement,
-            spots,
-            travel_time_provider=self._travel_time_provider,
-            restaurants=resolver,
-        )
+        try:
+            return self._planner(
+                self.requirement,
+                spots,
+                travel_time_provider=self._travel_time_provider,
+                restaurants=resolver,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("带餐厅重排失败，降级为无餐厅计划（阶段 1）：%s", exc)
+            return plan1
 
     def _build_live_restaurants(self) -> Optional[Any]:
         """B 端 FoodToolLive（真源餐厅）→ ``RestaurantResolver``；任何失败 → None。
