@@ -101,9 +101,20 @@ class FoodToolLive(FoodTool):
             distance_m = poi.get("distance", 0)
             distance_km = float(distance_m) / 1000.0 if distance_m else 0.0
 
+            # 8.28：坐标——_normalize_poi 输出拆为 lat/lng 两字段（无 location 键）；
+            # 兼容个别带 location（"lng,lat"）的来源。无坐标则留空（A 侧丢弃该餐厅）
+            location = (
+                poi.get("location")
+                or (
+                    f"{poi.get('lng')},{poi.get('lat')}"
+                    if poi.get("lat") or poi.get("lng")
+                    else ""
+                )
+            )
+
             results.append({
                 "name": poi.get("name", ""),
-                "location": poi.get("location", ""),   # 8.28：高德"lng,lat"坐标（真源通勤用）
+                "location": location,   # "lng,lat" 坐标（真源通勤用）
                 "rating": poi.get("rating", 0),
                 "price_per_person": poi.get("cost", 0),
                 "open": True,               # 无公开 API

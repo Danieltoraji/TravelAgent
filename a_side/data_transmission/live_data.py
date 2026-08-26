@@ -580,11 +580,17 @@ def _split_tags(text: Any) -> Tuple[str, ...]:
 
 
 def _normalize_live_restaurant(raw: Any) -> Optional[Restaurant]:
-    """B 端 FoodToolLive 返回的餐厅 dict → A 的 ``Restaurant``；无坐标丢弃。"""
+    """B 端 FoodToolLive 返回的餐厅 dict → A 的 ``Restaurant``；无坐标丢弃。
+
+    坐标兼容三种形状（B 侧 ``_normalize_poi`` 真实输出为**顶层 lat/lng 两字段**，
+    无 location 键；个别来源带 ``location`` 的 ``"lng,lat"`` 串或 dict）。
+    """
     if not isinstance(raw, dict):
         return None
     name = _as_str(raw.get("name"))
     coord = _coord_from_text(raw.get("location"))
+    if coord is None:
+        coord = _coord_from_text({"lat": raw.get("lat"), "lng": raw.get("lng")})
     if not name or coord is None:
         return None
     rid = _as_str(raw.get("id") or raw.get("poiid")) or f"live_food_{id(raw)}"
