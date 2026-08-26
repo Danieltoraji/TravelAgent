@@ -170,17 +170,23 @@ class BPlannerHook:
         requirement: Dict[str, Any],
         spots: Any,
         travel_time_provider: Any = None,
+        restaurants: Any = None,
     ) -> Dict[str, Any]:
         if self._planner_fn is not None:
             # 自定义 planner_fn 保持原契约 (requirement, spots)；真源接线由注入方负责
             return self._planner_fn(requirement, spots)
         from algorithoms.planner import plan_multi_day
 
+        # 8.28：restaurants 可为真源 RestaurantResolver（meal 段锚定真实餐厅）；
+        # 为 None 时 plan_multi_day 内部照旧走 _resolve_restaurants（假池）。
         if travel_time_provider is not None:
             return plan_multi_day(
-                requirement, spots, travel_time_provider=travel_time_provider
+                requirement,
+                spots,
+                travel_time_provider=travel_time_provider,
+                restaurants=restaurants,
             )
-        return plan_multi_day(requirement, spots)
+        return plan_multi_day(requirement, spots, restaurants=restaurants)
 
     def _empty_timeline(self) -> TripTimeline:
         start = _as_date(self.start_date)
@@ -244,6 +250,7 @@ class BPlannerHook:
             self.last_data_source = "live_fallback"
             self.last_error = reason
             return timeline
+        resolver = None  # 真源餐厅（FoodToolLive → RestaurantResolver；失败降级为无）
         try:
             if self._travel_time_provider is not None:
                 self._travel_time_provider.set_name_map(
@@ -260,6 +267,16 @@ class BPlannerHook:
                     for spot in source_spots
                     if spot.get("name") and (coord := _coord_str(spot.get("location")))
                 }
+                # 8.28 餐厅真源接入规划期：B 端 FoodToolLive → RestaurantResolver，
+                # 真源餐厅坐标并入矩阵 → 餐厅↔景点通勤同样由 batch_route 提供。
+                resolver = self._build_live_restaurants()
+                if resolver is not None:
+                    for restaurant in resolver.restaurants:
+                        coord = _coord_str(
+                            {"lat": restaurant.location[0], "lng": restaurant.location[1]}
+                        )
+                        if coord and restaurant.name not in name_to_coord:
+                            name_to_coord[restaurant.name] = coord
                 if name_to_coord:
                     matrix = make_live_matrix_fn(self._tool_provider, city=self.city)(
                         name_to_coord
@@ -267,10 +284,19 @@ class BPlannerHook:
                     self._travel_time_provider.set_matrix(
                         matrix, name_to_coord=name_to_coord
                     )
+                    if resolver is not None:
+                        # 餐厅 id → 点名映射：get_edge 经 name_to_coord 查矩阵真源分钟
+                        self._travel_time_provider.set_name_map(
+                            {
+                                restaurant.id: restaurant.name
+                                for restaurant in resolver.restaurants
+                            }
+                        )
             plan = self._planner(
                 self.requirement,
                 spots,
                 travel_time_provider=self._travel_time_provider,
+                restaurants=resolver,  # 8.28：真源餐厅传给排程（meal 段锚定真实餐厅）
             )
         except Exception as exc:  # noqa: BLE001
             reason = f"真实数据接入失败，已回退假数据：{exc}"
@@ -297,6 +323,28 @@ class BPlannerHook:
         )
         self._current_timeline = timeline
         return timeline
+
+    def _build_live_restaurants(self) -> Optional[Any]:
+        """B 端 FoodToolLive（真源餐厅）→ ``RestaurantResolver``；任何失败 → None。
+
+        餐厅真源失败（工具缺失 / 搜索无结果 / 无坐标）只降级为「无真源餐厅」，
+        不触发整链回退假源（scenic 真源照常）；矩阵内不并入餐厅坐标。
+        """
+        if self._tool_provider is None:
+            return None
+        try:
+            from data_transmission.live_data import make_live_restaurants_provider
+            from transport.restaurants import RestaurantResolver
+
+            resolver = RestaurantResolver(
+                self.city,
+                travel_time_provider=self._travel_time_provider,
+                restaurant_provider=make_live_restaurants_provider(self._tool_provider),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("真源餐厅解析失败，跳过餐厅真源化：%s", exc)
+            return None
+        return resolver if resolver.restaurants else None
 
     def _run_pipeline(
         self,

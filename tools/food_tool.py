@@ -25,10 +25,12 @@ class FoodTool(BaseTool):
         "properties": {
             "query": {"type": "string", "description": "关键词，如菜系"},
             "near": {"type": "string", "description": "附近地点"},
+            "city": {"type": "string", "description": "搜索城市（无 near 时按城市搜索）"},
+            "limit": {"type": "integer", "description": "返回数量上限"},
         },
     }
 
-    def _run(self, query: str = "", near: str = "") -> List[Dict[str, Any]]:
+    def _run(self, query: str = "", near: str = "", city: str = "", limit: int = 5) -> List[Dict[str, Any]]:
         # Mock：固定餐厅列表；真实接入点评/美团后替换
         return [
             {"name": "全聚德(前门店)", "rating": 4.6, "price_per_person": 180,
@@ -71,7 +73,7 @@ class FoodToolLive(FoodTool):
         super().__init__()
         self._client = client
 
-    def _run(self, query: str = "", near: str = "") -> List[Dict[str, Any]]:
+    def _run(self, query: str = "", near: str = "", city: str = "", limit: int = 5) -> List[Dict[str, Any]]:
         if near:
             # 有位置参数：先地理编码，再周边搜索餐饮
             coord = self._client.geocode(near)
@@ -79,12 +81,12 @@ class FoodToolLive(FoodTool):
                 raise ValueError(f"无法定位: {near}")
             pois = self._client.search_poi_around(
                 coord, types="050000", radius=1000,
-                keywords=query or "", limit=5,
+                keywords=query or "", limit=limit,
             )
         else:
-            # 无位置参数：城市内搜索
+            # 无位置参数：城市内搜索（8.28：city 参数化，原硬编码"北京"）
             pois = self._client.search_poi(
-                query or "餐厅", city="北京", limit=5,
+                query or "餐厅", city=city or "北京", limit=limit,
             )
 
         if not pois:
@@ -101,6 +103,7 @@ class FoodToolLive(FoodTool):
 
             results.append({
                 "name": poi.get("name", ""),
+                "location": poi.get("location", ""),   # 8.28：高德"lng,lat"坐标（真源通勤用）
                 "rating": poi.get("rating", 0),
                 "price_per_person": poi.get("cost", 0),
                 "open": True,               # 无公开 API

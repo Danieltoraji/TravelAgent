@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from data_transmission.city_travel import CityTravelEdge
 from data_transmission.hotel import Hotel
+from data_transmission.restaurant import Restaurant
 
 
 def use_live_data() -> bool:
@@ -538,6 +539,96 @@ def make_live_hotel_provider(
         return hotels
 
     return hotel_provider
+
+
+# ---------------------------------------------------------------------------
+# 餐厅：live FoodToolLive → A 的 Restaurant（对齐 load_restaurants 口径）
+# ---------------------------------------------------------------------------
+
+
+def _coord_from_text(location: Any) -> Optional[Tuple[float, float]]:
+    """B 侧返回的 location（高德 ``"lng,lat"`` 字符串或 ``{"lat":..,"lng":..}``）→ ``(lat, lng)``。
+
+    无坐标 / 全 0 → None（餐厅无坐标无法计算通勤，由调用方丢弃）。
+    """
+    if isinstance(location, dict):
+        lat, lng = _as_float(location.get("lat")), _as_float(location.get("lng"))
+        if lat or lng:
+            return (lat, lng)
+        return None
+    text = _as_str(location)
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if len(parts) != 2:
+        return None
+    try:
+        lng, lat = float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+    if not lng and not lat:
+        return None
+    return (lat, lng)
+
+
+def _split_tags(text: Any) -> Tuple[str, ...]:
+    """把 B 侧逗号/分号连接的标签串拆成元组（空 → ()）。"""
+    tags = []
+    for part in re.split(r"[,;，；]", _as_str(text)):
+        part = part.strip()
+        if part:
+            tags.append(part)
+    return tuple(tags)
+
+
+def _normalize_live_restaurant(raw: Any) -> Optional[Restaurant]:
+    """B 端 FoodToolLive 返回的餐厅 dict → A 的 ``Restaurant``；无坐标丢弃。"""
+    if not isinstance(raw, dict):
+        return None
+    name = _as_str(raw.get("name"))
+    coord = _coord_from_text(raw.get("location"))
+    if not name or coord is None:
+        return None
+    rid = _as_str(raw.get("id") or raw.get("poiid")) or f"live_food_{id(raw)}"
+    return Restaurant(
+        id=rid,
+        name=name,
+        location=coord,
+        cuisine_tags=_split_tags(raw.get("cuisine") or raw.get("cuisine_tags")),
+        signature_tags=_split_tags(raw.get("specialty") or raw.get("signature_tags")),
+        average_cost=_as_float(raw.get("price_per_person") or raw.get("average_cost")),
+        nearby_spot_ids=tuple(_str_list(raw.get("nearby_spot_ids"))),
+    )
+
+
+def make_live_restaurants_provider(
+    tool_provider: Any,
+) -> Callable[[str], List[Restaurant]]:
+    """返回 ``restaurant_provider(city) -> List[Restaurant]``（对齐 load_restaurants 口径）。
+
+    消费 B 端 ``FoodToolLive``（高德 POI 搜索真源餐厅，8.28 规划期接入）；
+    工具调用失败 / 返回不可解析 → ``LiveDataError``（调用方决定是否回退假池）；
+    餐厅无坐标会被 ``_normalize_live_restaurant`` 丢弃（无法参与通勤）。
+    """
+
+    def restaurant_provider(city: str) -> List[Restaurant]:
+        try:
+            result = tool_provider.call("food", city=city, limit=20)
+        except Exception as exc:  # noqa: BLE001
+            raise LiveDataError(f"food 工具调用失败（city={city}）：{exc}") from exc
+        payload = _tool_payload(result)
+        items = (
+            payload
+            if isinstance(payload, list)
+            else (payload.get("restaurants") if isinstance(payload, dict) else None)
+        )
+        if not isinstance(items, list):
+            raise LiveDataError(f"food 工具未返回列表：{type(payload).__name__}")
+        return [
+            restaurant
+            for restaurant in (_normalize_live_restaurant(item) for item in items)
+            if restaurant
+        ]
+
+    return restaurant_provider
 
 
 # ---------------------------------------------------------------------------

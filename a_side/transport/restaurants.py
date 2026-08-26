@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 try:
     from data_transmission.city_graph import DEFAULT_GRAPH_DIR
@@ -29,9 +29,21 @@ class RestaurantResolver:
         food_preferences: Sequence[str] = (),
         travel_time_provider: Optional[TravelTimeProvider] = None,
         data_dir: Path = DEFAULT_GRAPH_DIR,
+        restaurant_provider: Optional[Callable[[str], List[Restaurant]]] = None,
     ):
+        """餐厅选择器。
+
+        ``travel_time_provider``：缺省 ``JsonTravelTimeProvider``（spots_graph 假边）；
+        真源模式下传入 ``LiveTravelTimeProvider``（batch_route 矩阵）→ 餐厅↔景点通勤
+        由矩阵提供（8.28：真源餐厅坐标须并入矩阵的 ``name_to_coord``）。
+        ``restaurant_provider``：``fn(city) -> List[Restaurant]``，缺省 ``load_restaurants``
+        （假池）；真实数据接入时由 ``data_transmission.live_data.make_live_restaurants_provider`` 注入。
+        """
         self.city = city
-        self.restaurants = load_restaurants(city, data_dir)
+        if restaurant_provider is not None:
+            self.restaurants = list(restaurant_provider(city))
+        else:
+            self.restaurants = load_restaurants(city, data_dir)
         self.food_preferences = [
             str(item).strip() for item in food_preferences if str(item).strip()
         ]
