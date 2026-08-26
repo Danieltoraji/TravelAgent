@@ -202,6 +202,8 @@ class AgentRuntime:
 
         def logged_call(name: str, **kwargs: Any) -> Any:
             result = original_call(name, **kwargs)
+            tool = self.registry.get(name)
+            logged_data = result.data if tool.readonly else None
             self.tool_call_log.append({
                 "tool": name,
                 "arguments": kwargs,
@@ -210,10 +212,10 @@ class AgentRuntime:
                 "elapsed_ms": result.elapsed_ms,
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "error": result.error,
-                "has_data": result.data is not None,
-                "data": result.data,   # 完整返回数据（单用户 Demo 内存态，尽可能暴露给 C）
+                "has_data": logged_data is not None,
+                "data": logged_data,
             })
-            self._capture_hotel_data(name, kwargs, result)
+            _capture_hotel_data(name, kwargs, result)
             return result
 
         def _capture_hotel_data(name: str, kwargs: Dict[str, Any], result: Any) -> None:

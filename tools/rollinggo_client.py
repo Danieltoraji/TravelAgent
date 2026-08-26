@@ -141,9 +141,11 @@ class RollingGoClient:
             while True:
                 request = await self._queue.get()
                 kind = request[0]
-                if kind == "close":
-                    break
                 fut = request[-1]
+                if kind == "close":
+                    if not fut.done():
+                        fut.set_result(None)
+                    break
                 try:
                     if kind == "list_tools":
                         tools = await session.list_tools()
@@ -183,7 +185,9 @@ class RollingGoClient:
 
     async def _request_async(self, kind: str, *args: Any) -> Any:
         """提交一个请求到 worker 队列，并等待结果。"""
-        if self._closed or self._queue is None or self._worker_task is None:
+        if self._queue is None or self._worker_task is None:
+            raise RollingGoConnectionError("RollingGo worker is not available")
+        if kind != "close" and self._closed:
             raise RollingGoConnectionError("RollingGo worker is not available")
         if self._worker_task.done():
             # worker 已退出：需要重建
@@ -209,7 +213,7 @@ class RollingGoClient:
                     "RollingGo call failed (attempt %d/%d): %s",
                     attempt + 1,
                     self.max_retries + 1,
-                    classified,
+                    type(classified).__name__,
                 )
                 if attempt < self.max_retries:
                     self._restart_worker()
@@ -240,6 +244,8 @@ class RollingGoClient:
             self._worker_task.cancel()
             try:
                 await self._worker_task
+            except asyncio.CancelledError:
+                pass
             except Exception:  # noqa: BLE001
                 pass
         self._queue = asyncio.Queue()

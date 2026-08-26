@@ -94,7 +94,7 @@ class HotelTool(BaseTool):
                 "enum": ["WITH_BREAKFAST", "SINGLE_BREAKFAST", "DOUBLE_BREAKFAST", "NO_MEAL"],
                 "description": "餐食类别筛选（detail 时使用）",
             },
-            "hotelId": {"type": "integer", "description": "酒店 ID（detail 时使用）"},
+            "hotelId": {"type": ["string", "integer"], "description": "酒店 ID（detail 时使用）"},
             "name": {"type": "string", "description": "酒店名称（detail 时使用）"},
             "size": {"type": "integer", "description": "返回数量，默认 5，最大 20"},
         },
@@ -232,7 +232,11 @@ class HotelToolLive(HotelTool):
     def _call_detail(self, kwargs: Dict[str, Any]) -> Any:
         arguments: Dict[str, Any] = {}
         if kwargs.get("hotelId") is not None:
-            arguments["hotelId"] = int(kwargs["hotelId"])
+            hotel_id = kwargs["hotelId"]
+            if isinstance(hotel_id, str):
+                arguments["hotelId"] = int(hotel_id) if hotel_id.isdigit() else hotel_id
+            else:
+                arguments["hotelId"] = int(hotel_id)
         if kwargs.get("name"):
             arguments["name"] = str(kwargs["name"])
 

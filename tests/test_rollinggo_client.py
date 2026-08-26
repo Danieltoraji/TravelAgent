@@ -1,6 +1,7 @@
 """RollingGoClient 健壮性测试：结果解析、错误分类、重试。"""
 
 import unittest
+import asyncio
 from types import SimpleNamespace
 
 from tools.rollinggo_client import (
@@ -140,6 +141,19 @@ class TestRetry(unittest.TestCase):
         finally:
             client.close()
 
+
+class TestRequestAsyncGuards(unittest.IsolatedAsyncioTestCase):
+    async def test_close_request_allowed_when_marked_closed(self) -> None:
+        client = RollingGoClient.__new__(RollingGoClient)
+        client._closed = True
+        client._queue = asyncio.Queue()
+        done_task = asyncio.get_running_loop().create_future()
+        done_task.set_result(None)
+        client._worker_task = done_task
+
+        with self.assertRaises(RollingGoConnectionError) as ctx:
+            await client._request_async("close")
+        self.assertIn("dead", str(ctx.exception).lower())
 
 if __name__ == "__main__":
     unittest.main()

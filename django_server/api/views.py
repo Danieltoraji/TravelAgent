@@ -124,9 +124,9 @@ def hotels(request: HttpRequest) -> JsonResponse:
 
 
 @require_http_methods(["GET"])
-def hotel_detail(request: HttpRequest, hotel_id: int) -> JsonResponse:
+def hotel_detail(request: HttpRequest, hotel_id: str) -> JsonResponse:
     """返回某个酒店已被查询过的房型/价格明细（只读展示）。"""
-    data = runtime.hotel_details.get(str(hotel_id))
+    data = runtime.hotel_details.get(hotel_id)
     if data is None:
         return _error(f"Hotel detail not found: {hotel_id}", status=404)
     return JsonResponse(data)

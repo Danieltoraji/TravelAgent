@@ -169,6 +169,13 @@ class TestHotelToolLive(unittest.TestCase):
         self.assertEqual(args["occupancyParam"]["adultCount"], 2)
         self.assertEqual(args["occupancyParam"]["roomCount"], 1)
 
+    def test_detail_keeps_non_numeric_hotel_id_as_string(self) -> None:
+        client = _FakeRollingGoClient({"rooms": []})
+        tool = HotelToolLive(client)
+        tool._run(action="detail", hotelId="H001")
+        args = client.calls[0][1]
+        self.assertEqual(args["hotelId"], "H001")
+
     def test_detail_forwards_filter(self) -> None:
         client = _FakeRollingGoClient({"roomRatePlans": []})
         tool = HotelToolLive(client)
