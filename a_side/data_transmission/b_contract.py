@@ -176,6 +176,11 @@ def _node_to_place(node: Dict[str, Any]) -> Place:
         queue_min=_safe_minutes(details.get("queue_min")),
         ticket_required=bool(details.get("ticket_required")),
         price=float(details.get("price") or 0.0),
+        # B2 扩展（0828）：meal 段 details 带 RestaurantResolver 选出的餐厅
+        # （restaurant_id/restaurant_name/cuisine/average_cost），透传给 C 端展示
+        restaurant_name=str(details.get("restaurant_name") or ""),
+        cuisine=[str(c) for c in (details.get("cuisine") or [])],
+        average_cost=float(details.get("average_cost") or 0.0),
     )
 
 

@@ -160,6 +160,13 @@ class Place:
     queue_min: int = 0
     ticket_required: bool = False
     price: float = 0.0
+    # B2 Place 契约扩展（0828）：meal 段餐厅详情。plan 层 RestaurantResolver
+    # 已产出这三项（见 a_side/algorithoms/timeline.py add_meal），此前在
+    # plan_to_trip_timeline 转换时被丢弃。非 meal 段保持默认空值，
+    # 旧消费方（asdict 自动透出、逆向转换忽略新字段）完全向后兼容。
+    restaurant_name: str = ""       # 餐厅名（meal 段 name 仍是「午餐/晚餐」餐段类型）
+    cuisine: List[str] = field(default_factory=list)  # 菜系标签
+    average_cost: float = 0.0       # 人均消费（元）
 
 
 @dataclass
