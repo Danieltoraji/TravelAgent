@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from data_transmission.city_travel import CityTravelEdge
 from data_transmission.hotel import Hotel
@@ -402,24 +402,38 @@ def make_live_eta_fn(
 def make_live_matrix_fn(
     tool_provider: Any,
     city: Optional[str] = None,
-) -> Callable[[Dict[str, str]], Dict[Tuple[str, str], Tuple[float, int]]]:
-    """返回 ``matrix_fn(name_to_coord) -> {(coord, coord): (km, minutes)}``。
+) -> Callable[..., Dict[Tuple[str, str], Tuple[float, int]]]:
+    """返回 ``matrix_fn(name_to_coord, origins=None, destinations=None)``。
 
-    一次 ``map action="batch_route"``（/v3/distance，驾车近似）取整矩阵：
-    - 输入 ``{景点名: "lng,lat"}``，B 侧坐标直连跳过地理编码 → 消灭 QPS 突刺
+    返回 ``{(coord, coord): (km, minutes)}``（键为 ``"lng,lat"`` 坐标对）。
+    一次 ``map action="batch_route"``（/v3/distance，驾车近似）取矩阵：
+    - 输入 ``{名称: "lng,lat"}``，B 侧坐标直连跳过地理编码 → 消灭 QPS 突刺
       （10021）与怪名 POI 编码失败（30001）——C 端真源联调暴露的两个结构性失败；
+    - ``origins`` / ``destinations``：可选**名称列表**（各自取 ``name_to_coord``
+      的坐标）；缺省 = 全部键 → 同集合整矩阵（与 8.25 起行为一致）。8.30 矩阵
+      瘦身：第二阶段只取「计划内景点 → 真源餐厅」正交子矩阵（远小于全集合
+      n²），餐厅失败/锚点缺失时该段整体跳过；
     - 整矩阵失败（调用异常 / 无 rows / 空矩阵）→ ``LiveDataError`` 交上层回退假源；
     - 个别行缺数据时由 ``LiveTravelTimeProvider`` 单边降级，不打断主链路。
     """
 
     def matrix_fn(
-        name_to_coord: Dict[str, str]
+        name_to_coord: Dict[str, str],
+        origins: Optional[Sequence[str]] = None,
+        destinations: Optional[Sequence[str]] = None,
     ) -> Dict[Tuple[str, str], Tuple[float, int]]:
-        coords = [name_to_coord[name] for name in name_to_coord]
+        origin_names: Sequence[str] = (
+            list(origins) if origins is not None else list(name_to_coord)
+        )
+        dest_names: Sequence[str] = (
+            list(destinations) if destinations is not None else list(name_to_coord)
+        )
+        origin_coords = [name_to_coord[name] for name in origin_names]
+        dest_coords = [name_to_coord[name] for name in dest_names]
         kwargs: Dict[str, Any] = {
             "action": "batch_route",
-            "origins": coords,
-            "destinations": coords,
+            "origins": origin_coords,
+            "destinations": dest_coords,
             "mode": "driving",
         }
         if city:
