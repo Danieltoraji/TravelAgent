@@ -16,12 +16,14 @@ from algorithoms._common import (
     _budget_context,
     _duration,
     _food_preferences,
+    _guide_price,
     _include_meal_time_in_daily_limit,
     _parse_time,
     _price,
     _route_rank,
     _spot_key,
     _ticket_cost,
+    _visit_cost,
 )
 from algorithoms.repair import (
     _fine_tune_route,
@@ -408,8 +410,10 @@ def _plan_multi_day_with_prealloc(
         planned_days.append({"day": day_index, **daily_result})
 
     estimated_ticket_cost = sum(day["estimated_ticket_cost"] for day in planned_days)
+    estimated_guide_cost = sum(day["estimated_guide_cost"] for day in planned_days)
+    estimated_visit_cost = estimated_ticket_cost + estimated_guide_cost
     budget_remaining = (
-        budget_limit - estimated_ticket_cost if budget_limit is not None else None
+        budget_limit - estimated_visit_cost if budget_limit is not None else None
     )
     budget_exceeded = budget_remaining is not None and budget_remaining < 0
     overtime_days = [
@@ -453,10 +457,11 @@ def _plan_multi_day_with_prealloc(
         "visitor_number": visitor_number,
         "budget": budget_limit,
         "estimated_ticket_cost": estimated_ticket_cost,
+        "estimated_guide_cost": estimated_guide_cost,
         "budget_remaining": budget_remaining,
         "budget_overflow": max(-budget_remaining, 0) if budget_remaining is not None else 0,
         "budget_exceeded": budget_exceeded,
-        "budget_scope": "景点门票",
+        "budget_scope": "景点门票+讲解",
         "is_overtime": bool(overtime_days),
         "overtime_days": overtime_days,
         "hard_constraint_violations": hard_constraint_violations,
@@ -512,6 +517,9 @@ def plan_one_day(
     must_by_key = {_spot_key(spot): spot for spot in resolved_must_spots}
     must_duration = sum(_duration(spot) for spot in must_by_key.values())
     must_ticket_cost = _ticket_cost(list(must_by_key.values()), visitor_number)
+    # 8.30 预算口径：门票 + 讲解（选景点即确定的费用）纳入排程预算约束；
+    # 酒店/餐饮不进排程硬约束（选后计，见 _plan_cost_summary / select_hotels_for_plan）。
+    must_visit_cost = _visit_cost(list(must_by_key.values()), visitor_number)
     warnings = []
     if conflict_spots:
         warnings.append("部分必去景点命中了 dismissed_tags，未加入路线")
@@ -529,24 +537,28 @@ def plan_one_day(
         }
     if (
         budget_limit is not None
-        and must_ticket_cost > budget_limit
+        and must_visit_cost > budget_limit
         and repair_hard_constraints
     ):
         return {
             "feasible": False,
-            "reason": "必去景点门票费用超过当前可用预算",
+            "reason": "必去景点门票+讲解费用超过当前可用预算",
             "budget": budget_limit,
             "visitor_number": visitor_number,
             "estimated_ticket_cost": must_ticket_cost,
-            "budget_remaining": budget_limit - must_ticket_cost,
-            "budget_overflow": must_ticket_cost - budget_limit,
+            "estimated_guide_cost": (
+                sum(_guide_price(spot) for spot in must_by_key.values())
+                * visitor_number
+            ),
+            "budget_remaining": budget_limit - must_visit_cost,
+            "budget_overflow": must_visit_cost - budget_limit,
             "budget_exceeded": True,
-            "budget_scope": "景点门票",
+            "budget_scope": "景点门票+讲解",
             "daily_travel_time": daily_limit,
             "include_meal_time_in_daily_limit": include_meal_time,
             "route": [],
             "conflict_spots": [spot.get("name") for spot in conflict_spots],
-            "warnings": [*warnings, "预算暂未包含餐饮、住宿和交通费用"],
+            "warnings": [*warnings, "预算暂未包含城际交通费用"],
         }
 
     optional_by_key = {
@@ -707,11 +719,15 @@ def plan_one_day(
     time_overflow_minutes = max(total_counted_minutes - daily_limit, 0)
     is_overtime = time_overflow_minutes > 0
     estimated_ticket_cost = _ticket_cost(selected, visitor_number)
+    estimated_guide_cost = (
+        sum(_guide_price(spot) for spot in selected) * visitor_number
+    )
+    estimated_visit_cost = estimated_ticket_cost + estimated_guide_cost
     budget_exceeded = (
-        budget_limit is not None and estimated_ticket_cost > budget_limit
+        budget_limit is not None and estimated_visit_cost > budget_limit
     )
     budget_remaining = (
-        budget_limit - estimated_ticket_cost if budget_limit is not None else None
+        budget_limit - estimated_visit_cost if budget_limit is not None else None
     )
     hard_constraint_violations = []
     if is_overtime:
@@ -720,7 +736,7 @@ def plan_one_day(
         )
     if budget_exceeded:
         hard_constraint_violations.append(
-            {"constraint": "budget", "overflow": estimated_ticket_cost - budget_limit}
+            {"constraint": "budget", "overflow": estimated_visit_cost - budget_limit}
         )
     return {
         "feasible": not is_overtime and not budget_exceeded,
@@ -746,10 +762,11 @@ def plan_one_day(
         "visitor_number": visitor_number,
         "budget": budget_limit,
         "estimated_ticket_cost": estimated_ticket_cost,
+        "estimated_guide_cost": estimated_guide_cost,
         "budget_remaining": budget_remaining,
         "budget_overflow": max(-budget_remaining, 0) if budget_remaining is not None else 0,
         "budget_exceeded": budget_exceeded,
-        "budget_scope": "景点门票",
+        "budget_scope": "景点门票+讲解",
         "hard_constraint_violations": hard_constraint_violations,
         "total_match_score": sum(
             float(spot.get("match_score", 0)) for spot in selected
@@ -764,7 +781,7 @@ def plan_one_day(
         "conflict_spots": [spot.get("name") for spot in conflict_spots],
         "warnings": [
             *warnings,
-            "预算暂未包含餐饮、住宿和交通费用",
+            "预算口径为目的地内费用（门票+讲解+酒店+餐饮），不含城际/市内交通",
             "交通时间来自 spots_graph.json 的模拟数据，并非实时地图数据",
         ],
     }

@@ -1,3 +1,10 @@
+# 契约锚点副本（A 仓库）：内容与 B 仓库 core/schemas.py 保持一致。
+# 同步来源：TravelAgent-main@72b4f0d（2026-08-21，B 的 master 分支）。
+# 维护约定（README §6.4）：任何字段改动前先与 B 对齐并递增版本号，
+# 禁止单方面修改本文件；联调以本文件 = B 仓库文件为准。
+# 8.30 预算口径：本文件已并入 B 侧 B2 扩展（Place.restaurant_name/cuisine/
+# average_cost），并新增预算字段（Place.guide_price、TripTimeline.cost_breakdown
+# /total_cost 口径）；改后必须同步回 B 仓库 core/schemas.py（A→B 不 vendor core/）。
 """全项目共享的 JSON 接口契约 (Interface Contracts)。
 
 这些数据结构是 A(智能决策)/B(工具与执行)/C(产品与展示) 之间的对齐锚点，
@@ -159,7 +166,8 @@ class Place:
     open_time: str = "09:00-17:00"
     queue_min: int = 0
     ticket_required: bool = False
-    price: float = 0.0
+    price: float = 0.0              # 门票单价（scenic）/ 每晚房费（hotel）
+    guide_price: float = 0.0        # 讲解费单价（每人，scenic；无讲解为 0）
     # B2 Place 契约扩展（0828）：meal 段餐厅详情。plan 层 RestaurantResolver
     # 已产出这三项（见 a_side/algorithoms/timeline.py add_meal），此前在
     # plan_to_trip_timeline 转换时被丢弃。非 meal 段保持默认空值，
@@ -188,7 +196,10 @@ class TripTimeline:
     start_date: date = field(default_factory=lambda: date.today())
     end_date: date = field(default_factory=lambda: date.today())
     days: List[DayPlan] = field(default_factory=list)
-    total_cost: float = 0.0        # 总费用
+    total_cost: float = 0.0        # 总费用（目的地内口径：门票 + 讲解 + 酒店 + 餐饮）
+    # 费用明细（口径与 total_cost 一致，供 C 端拆分展示）：
+    #   ticket 门票 / guide 讲解 / hotel 酒店（房费）/ meal 餐饮（人均 × 人数）
+    cost_breakdown: Dict[str, float] = field(default_factory=dict)
     walking_distance: float = 0.0  # 总步行距离（km）
 
 

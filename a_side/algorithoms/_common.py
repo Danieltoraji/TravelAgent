@@ -64,8 +64,86 @@ def _price(spot: Spot) -> float:
     return float(value)
 
 
+def _guide_price(spot: Spot) -> float:
+    """Return one visitor's guide/explanation fee; missing fees are free."""
+    value = spot.get("guide_price", 0)
+    if value is None:
+        return 0.0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"景点 {spot.get('name', '<unknown>')} 缺少有效的 guide_price")
+    if value < 0:
+        raise ValueError(f"景点 {spot.get('name', '<unknown>')} 的 guide_price 不能小于 0")
+    return float(value)
+
+
 def _ticket_cost(spots: Sequence[Spot], visitor_number: int) -> float:
     return sum(_price(spot) * visitor_number for spot in spots)
+
+
+def _visit_cost(spots: Sequence[Spot], visitor_number: int) -> float:
+    """门票 + 讲解（人均 × 人数）。排程预算校验口径（8.30 起）。
+
+    讲解费（guide_price）在选景点时即可确定，随门票一并受预算约束；
+    酒店（选完后计）与餐饮（用餐锚定后计）不进排程硬约束，见
+    ``_plan_cost_summary`` / ``select_hotels_for_plan``。
+    """
+    return sum(
+        (_price(spot) + _guide_price(spot)) * visitor_number for spot in spots
+    )
+
+
+def _plan_cost_summary(plan: Dict[str, Any]) -> Dict[str, float]:
+    """目的地内四项费用汇总（单一来源，b_contract / main.py / demo 共用）。
+
+    ``plan`` 为排程输出（``plan_multi_day`` / ``plan_one_day`` / replan 结果）：
+    - ticket：门票总价。优先取 ``plan.estimated_ticket_cost``（planner/replanner
+      权威输出；向后兼容无 price details 的骨架计划），否则从 route_details 累加；
+    - guide：讲解总价 = Σ(spot detail guide_price) × visitor_number；
+    - meal：餐饮总价 = Σ(已安排 meal 段 average_cost) × visitor_number
+      （人均单价；未安排/占位餐 average_cost=0 自然不计）；
+    - hotel：住宿房费 = ``accommodation.hotel_cost``（按房间计，不乘人数）；
+    - total：四项求和 — 目的地内预算完整口径，不含城际/市内交通。
+    """
+    summary: Dict[str, float] = {
+        "ticket": 0.0,
+        "guide": 0.0,
+        "meal": 0.0,
+        "hotel": 0.0,
+        "total": 0.0,
+    }
+    if not isinstance(plan, dict):
+        return summary
+    visitor_number = int(plan.get("visitor_number") or 1)
+    if visitor_number <= 0:
+        visitor_number = 1
+
+    def _day_details() -> List[Dict[str, Any]]:
+        days = plan.get("days")
+        if days:
+            return [
+                node
+                for day in days
+                for node in (day.get("route_details") or [])
+            ]
+        return list(plan.get("route_details") or [])
+
+    for node in _day_details():
+        details = node.get("details") or {}
+        if node.get("type") == "spot":
+            summary["guide"] += float(details.get("guide_price") or 0.0) * visitor_number
+        elif node.get("type") == "meal":
+            summary["meal"] += float(details.get("average_cost") or 0.0) * visitor_number
+
+    ticket = plan.get("estimated_ticket_cost")
+    if ticket is None or isinstance(ticket, bool):
+        ticket = 0.0
+    summary["ticket"] = float(ticket)
+    acc = plan.get("accommodation") or {}
+    summary["hotel"] = float(acc.get("hotel_cost") or 0.0)
+    summary["total"] = round(
+        summary["ticket"] + summary["guide"] + summary["meal"] + summary["hotel"], 2
+    )
+    return summary
 
 
 def _budget_context(requirement: Dict[str, Any]) -> Tuple[Optional[float], int]:

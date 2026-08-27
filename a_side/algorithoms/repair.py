@@ -17,7 +17,7 @@ from algorithoms._common import (
     _price,
     _route_rank,
     _spot_key,
-    _ticket_cost,
+    _visit_cost,
 )
 from algorithoms.route_ordering import _order_spots
 from algorithoms.timeline import _build_schedule_events, _scheduled_elapsed_minutes
@@ -221,10 +221,14 @@ def _fit_route_to_budget(
     budget_limit: Optional[float],
     visitor_number: int,
 ) -> Tuple[List[Spot], List[Spot], float]:
-    """Remove low-value optional attractions until ticket cost fits the budget."""
+    """Remove low-value optional attractions until visit cost fits the budget.
+
+    8.30 口径：预算约束按「门票 + 讲解」（_visit_cost）；删除排序仍按门票
+    性价比（讲解为附加项，不改变「先删门票贵/分低的景点」的次序）。
+    """
     kept = list(ordered)
     removed: List[Spot] = []
-    while budget_limit is not None and _ticket_cost(kept, visitor_number) > budget_limit:
+    while budget_limit is not None and _visit_cost(kept, visitor_number) > budget_limit:
         removable = [spot for spot in kept if _spot_key(spot) not in must_keys]
         if not removable:
             break
@@ -242,7 +246,7 @@ def _fit_route_to_budget(
         )
         kept = [spot for spot in kept if _spot_key(spot) != _spot_key(to_remove)]
         removed.append(to_remove)
-    return kept, removed, _ticket_cost(kept, visitor_number)
+    return kept, removed, _visit_cost(kept, visitor_number)
 
 
 def _refill_route_with_feasible_spots(
@@ -323,7 +327,7 @@ def _refill_route_with_feasible_spots(
                     continue  # 轻量版：插入后不得有景点超闭馆
                 if (
                     budget_limit is not None
-                    and _ticket_cost(candidate_route, visitor_number) > budget_limit
+                    and _visit_cost(candidate_route, visitor_number) > budget_limit
                 ):
                     continue
                 added_minutes = candidate_elapsed - current_elapsed
@@ -426,7 +430,7 @@ def _fine_tune_route(
             return None  # 轻量版：不接受超闭馆组合
         if (
             budget_limit is not None
-            and _ticket_cost(candidate, visitor_number) > budget_limit
+            and _visit_cost(candidate, visitor_number) > budget_limit
         ):
             return None
         rank = _route_rank(
@@ -449,7 +453,7 @@ def _fine_tune_route(
             > daily_limit
         ):
             return False
-        if budget_limit is not None and _ticket_cost(route, visitor_number) > budget_limit:
+        if budget_limit is not None and _visit_cost(route, visitor_number) > budget_limit:
             return False
         return True
 
@@ -469,7 +473,7 @@ def _fine_tune_route(
         include_meal_time, restaurants,
     )
     if current_elapsed > daily_limit or (
-        budget_limit is not None and _ticket_cost(current, visitor_number) > budget_limit
+        budget_limit is not None and _visit_cost(current, visitor_number) > budget_limit
     ):
         # Fine-tuning only refines feasible routes; fitting is a separate pass.
         return current, current_elapsed

@@ -181,6 +181,8 @@ def _node_to_place(node: Dict[str, Any]) -> Place:
         restaurant_name=str(details.get("restaurant_name") or ""),
         cuisine=[str(c) for c in (details.get("cuisine") or [])],
         average_cost=float(details.get("average_cost") or 0.0),
+        # 8.30 预算口径：讲解费明细（人均 × 人数 的汇总在 TripTimeline.cost_breakdown）
+        guide_price=float(details.get("guide_price") or 0.0),
     )
 
 
@@ -202,7 +204,12 @@ def plan_to_trip_timeline(
     住宿段（酒店初始规划接入 8.27）：``plan.get("accommodation")`` 由
     ``transport.hotels.select_hotels_for_plan`` 产出（main.py / BPlannerHook
     写入，replan 换宿后由 replanner 更新），按晚数映射到每天末尾一个
-    ``Place(category="hotel")``（当晚酒店），总费用并入 ``total_cost``。
+    ``Place(category="hotel")``（当晚酒店）。
+
+    8.30 预算口径：``total_cost`` = 门票 + 讲解 + 酒店 + 餐饮（目的地内四项，
+    不含城际/市内交通；餐饮 = 已安排 meal 段人均价 × 人数），由
+    ``algorithoms._common._plan_cost_summary`` 单一来源计算；明细写入
+    ``TripTimeline.cost_breakdown``（ticket/guide/hotel/meal/total），供 C 端拆分展示。
     """
     plan = plan or {}
     days_in = plan.get("days") or []
@@ -238,15 +245,24 @@ def plan_to_trip_timeline(
                 items=items,
             )
         )
-    ticket_cost = float(plan.get("estimated_ticket_cost") or 0.0)
-    hotel_cost = float(acc.get("hotel_cost") or 0.0)
+    # 8.30 预算口径：四项完整汇总（门票/讲解/餐饮/酒店），单一来源 _plan_cost_summary
+    from algorithoms._common import _plan_cost_summary
+
+    summary = _plan_cost_summary(plan)
     return TripTimeline(
         id=plan_id,
         city=city,
         start_date=start,
         end_date=end,
         days=days,
-        total_cost=ticket_cost + hotel_cost,
+        total_cost=summary["total"],
+        cost_breakdown={
+            "ticket": summary["ticket"],
+            "guide": summary["guide"],
+            "meal": summary["meal"],
+            "hotel": summary["hotel"],
+            "total": summary["total"],
+        },
         walking_distance=float(plan.get("total_route_distance_km") or 0.0),
     )
 

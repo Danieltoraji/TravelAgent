@@ -232,8 +232,11 @@ def _build_schedule_events(
                     "closing_time": spot.get("closing_time"),
                     # 坐标/价格透传：B 契约 Place 需 lat/lng（C 端真源判定依据，见
                     # plan/real_api.md §3）；plan_to_trip_timeline 从这里取。
+                    # 8.30 预算口径：讲解费（guide_price）一并透出，供费用汇总
+                    # （_plan_cost_summary）与 C 端明细展示。
                     "location": spot.get("location"),
                     "price": spot.get("price"),
+                    "guide_price": spot.get("guide_price"),
                 },
             }
         )

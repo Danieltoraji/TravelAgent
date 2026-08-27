@@ -49,10 +49,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from algorithoms._common import (
     Spot,
     _budget_context,
+    _guide_price,
     _include_meal_time_in_daily_limit,
     _parse_time,
     _spot_key,
     _ticket_cost,
+    _visit_cost,
 )
 from algorithoms.repair import (
     _fine_tune_route,
@@ -556,6 +558,9 @@ def _build_day_output(
         "total_waiting_minutes": total_waiting,
         "total_meal_minutes": total_meal,
         "estimated_ticket_cost": _ticket_cost(ordered, visitor_number),
+        "estimated_guide_cost": (
+            sum(_guide_price(spot) for spot in ordered) * visitor_number
+        ),
         "is_overtime": total_counted > daily_limit,
         "time_overflow_minutes": max(total_counted - daily_limit, 0),
         "refilled_spots": [spot.get("name") for spot in refilled],
@@ -831,8 +836,12 @@ def _repair_affected_days(
     estimated_ticket_cost = sum(
         day.get("estimated_ticket_cost", 0) for day in new_days
     )
+    estimated_guide_cost = sum(
+        day.get("estimated_guide_cost", 0) for day in new_days
+    )
+    estimated_visit_cost = estimated_ticket_cost + estimated_guide_cost
     budget_remaining = (
-        budget_limit - estimated_ticket_cost if budget_limit is not None else None
+        budget_limit - estimated_visit_cost if budget_limit is not None else None
     )
     return {
         "feasible": all(not day.get("is_overtime", False) for day in new_days),
@@ -843,8 +852,10 @@ def _repair_affected_days(
         "visitor_number": visitor_number,
         "budget": budget_limit,
         "estimated_ticket_cost": estimated_ticket_cost,
+        "estimated_guide_cost": estimated_guide_cost,
         "budget_remaining": budget_remaining,
         "budget_exceeded": budget_remaining is not None and budget_remaining < 0,
+        "budget_scope": "景点门票+讲解",
         "replanned": bool(affected_indexes),
         "affected_days": sorted(index + 1 for index in affected_indexes),
         "fallback_needed": False,

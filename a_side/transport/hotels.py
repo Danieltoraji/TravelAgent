@@ -533,9 +533,15 @@ def select_hotels_for_plan(
             budget_limit = float(budget_limit)
     except (KeyError, TypeError, ValueError):
         budget_limit = None
+    # 8.30 预算口径：住宿可用额 = 总预算 −（门票 + 讲解）。讲解费随排程输出
+    # （plan.estimated_guide_cost，spot detail guide_price 汇总 × 人数；
+    # 骨架计划缺省按 0——无景点则住宿无从谈起，此处仅作口径统一）。
     ticket_cost = float(plan.get("estimated_ticket_cost") or 0.0)
+    guide_cost = float(plan.get("estimated_guide_cost") or 0.0)
     budget_remaining = (
-        budget_limit - ticket_cost if budget_limit is not None else None
+        budget_limit - (ticket_cost + guide_cost)
+        if budget_limit is not None
+        else None
     )
 
     selector = HotelSelector(
