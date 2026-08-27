@@ -65,6 +65,7 @@ class BDecisionHook:
         model_name: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        tool_provider: Optional[Any] = None,
     ) -> None:
         """构造决策钩子。
 
@@ -83,6 +84,9 @@ class BDecisionHook:
             threshold: 触发阈值，缺省优先取 ``DecisionRequest.context["impact_threshold"]``，
                 再退到 DECISION_THRESHOLD（40）
             model_name/api_key/base_url: 传给决策 LLM 调用的参数（测试/联调用）
+            tool_provider（8.30 酒店真源）: 执行期工具门面；非 None 时重规划注入
+                真源酒店 provider（RollingGo MCP → 满房换宿用真源候选），失败由
+                ``HotelSelector`` 内部回退假池
         """
         self.requirement = requirement if isinstance(requirement, dict) else {}
         content = self.requirement.get("content") or {}
@@ -97,6 +101,7 @@ class BDecisionHook:
         self._model_name = model_name
         self._api_key = api_key
         self._base_url = base_url
+        self.tool_provider = tool_provider
         if start_date is None:
             start_date = content.get("start_date")
         self.start_date = start_date
@@ -146,12 +151,37 @@ class BDecisionHook:
         current_plan: Dict[str, Any],
         spots: Any,
         events: Sequence[Dict[str, Any]],
+        hotel_provider: Optional[Callable[[str], Any]] = None,
     ) -> Dict[str, Any]:
         if self._replan_fn is not None:
-            return self._replan_fn(requirement, current_plan, spots, events)
+            # 8.30 酒店真源：外部注入的 replan_fn 若不接受 hotel_provider 则回退旧签名
+            try:
+                return self._replan_fn(
+                    requirement, current_plan, spots, events,
+                    hotel_provider=hotel_provider,
+                )
+            except TypeError:
+                return self._replan_fn(requirement, current_plan, spots, events)
         from algorithoms.replanner import replan
 
-        return replan(requirement, current_plan, spots, events)
+        return replan(
+            requirement, current_plan, spots, events,
+            hotel_provider=hotel_provider,
+        )
+
+    def _live_hotel_provider_or_none(self) -> Optional[Any]:
+        """真源酒店 provider（供重规划换宿注入）；未注入工具 → None。
+
+        仅构造函数，执行失败由 ``HotelSelector`` 内部回退假池。
+        """
+        if self.tool_provider is not None:
+            try:
+                from data_transmission.live_data import make_live_hotel_provider
+
+                return make_live_hotel_provider(self.tool_provider)
+            except Exception:  # noqa: BLE001
+                return None
+        return None
 
     # -- B 契约入口 --------------------------------------------------------
 
@@ -210,7 +240,13 @@ class BDecisionHook:
                 affected_spots=[],
             )
 
-        result = self._replan(self.requirement, current_plan, spots, a_events)
+        result = self._replan(
+            self.requirement,
+            current_plan,
+            spots,
+            a_events,
+            hotel_provider=self._live_hotel_provider_or_none(),
+        )
         if isinstance(result, dict) and result.get("new_plan"):
             self._current_plan = result["new_plan"]
         return replan_result_to_replan_request(

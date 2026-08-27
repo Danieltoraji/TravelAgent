@@ -141,7 +141,13 @@ class HotelSelector:
         """
         self.city = city
         if hotel_provider is not None:
-            self.hotels = list(hotel_provider(city))
+            # 8.30 酒店真源：真源 provider 抛异常 / 返回空 → 回退假池（不阻断选店）
+            try:
+                self.hotels = list(hotel_provider(city))
+            except Exception:  # noqa: BLE001
+                self.hotels = []
+            if not self.hotels:
+                self.hotels = load_hotels(city, data_dir)
         else:
             self.hotels = load_hotels(city, data_dir)
         self.preferences = dict(hotel_preferences or {})

@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -1049,11 +1049,17 @@ def _replan_hotels(
     current_plan: Dict[str, Any],
     repaired: Dict[str, Any],
     graph_dir: Path = DEFAULT_GRAPH_DIR,
+    travel_time_provider: Optional[TravelTimeProvider] = None,
+    hotel_provider: Optional[Callable[[str], Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """酒店事件 → 对（新）计划重选住宿并生成 hotel_changed。
 
     返回 (补充的 changes, 新 accommodation 或 None)。无酒店事件时不重选；
     酒店没变但价格变了（hotel.price_change）也按 hotel_changed 报告。
+
+    8.30 酒店真源：``hotel_provider``（RollingGo 真源候选）与
+    ``travel_time_provider``（矩阵真源分钟）透传给 ``select_hotels_for_plan``；
+    真源失败由 ``HotelSelector`` 内部回退假池。
     """
     from transport.hotels import select_hotels_for_plan
 
@@ -1069,6 +1075,8 @@ def _replan_hotels(
         graph_dir=graph_dir,
         exclude_ids=exclude_ids,
         price_deltas=price_deltas,
+        hotel_provider=hotel_provider,
+        travel_time_provider=travel_time_provider,
     )
     notes = translation["notes"] or ["住宿安排调整"]
     reason = "；".join(notes)
@@ -1132,6 +1140,7 @@ def replan(
     restaurants=None,
     beam_width: int = 200,
     fine_tune_max_pool: Optional[int] = 10,
+    hotel_provider: Optional[Callable[[str], Any]] = None,
 ) -> Dict[str, Any]:
     """RePlanner 主入口：翻译事件 → 增量修复 → 失败兜底全量重跑 → 生成 diff。
 
@@ -1181,7 +1190,12 @@ def replan(
 
     changes = _build_changes(current_plan, repaired, translation)
     hotel_changes, new_accommodation = _replan_hotels(
-        translation, current_plan, repaired, graph_dir
+        translation,
+        current_plan,
+        repaired,
+        graph_dir,
+        travel_time_provider=travel_time_provider,
+        hotel_provider=hotel_provider,
     )
     changes.extend(hotel_changes)
     if new_accommodation is not None:

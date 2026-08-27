@@ -66,6 +66,7 @@ def build_decision_hook(tool_provider: Any = None) -> Any:
         city=str(content.get("destination") or ""),
         plan_id=DEFAULT_PLAN_ID,
         candidate_spots_provider=_candidate_spots_provider(requirement),
+        tool_provider=tool_provider,   # 8.30 酒店真源：重规划换宿用 RollingGo 真源候选
     )
 
 
