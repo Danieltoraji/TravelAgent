@@ -58,7 +58,8 @@ jobs:
         # 之后无需手动 SSH 配置 key。Secrets 配置见仓库 Settings→Secrets and variables→Actions：
         #   必填：DEEPSEEK_API_KEY
         #   可选：DEMO_MODE / LLM_PROVIDER / DEEPSEEK_MODEL / QWEATHER_API_KEY /
-        #         QWEATHER_API_HOST / AMAP_API_KEY / USE_LIVE_DATA（缺省值见 ENV_CONTENT）
+        #         QWEATHER_API_HOST / AMAP_API_KEY / ROLLINGGO_API_KEY / USE_LIVE_DATA
+        #         （缺省值见 ENV_CONTENT）
         # 注意：本步会覆盖服务器上的旧 .env（维护时以 Secrets 为准）。
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
@@ -75,6 +76,9 @@ jobs:
             QWEATHER_API_KEY=${{ secrets.QWEATHER_API_KEY }}
             QWEATHER_API_HOST=${{ secrets.QWEATHER_API_HOST }}
             AMAP_API_KEY=${{ secrets.AMAP_API_KEY }}
+            # RollingGo 酒店 MCP（hotel_tool live 模式；8.30 酒店真源）
+            ROLLINGGO_MCP_URL=${{ secrets.ROLLINGGO_MCP_URL || 'https://mcp.rollinggo.cn/mcp' }}
+            ROLLINGGO_API_KEY=${{ secrets.ROLLINGGO_API_KEY }}
         run: |
           printf '%s\n' "$ENV_CONTENT" | sshpass -e ssh -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=60 -o ServerAliveCountMax=5 \
