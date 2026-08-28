@@ -21,7 +21,7 @@
 系统具备七项能力：
 
 1. **自主规划（Planning）** —— 从一句需求生成完整行程
-2. **工具调用（Tool Calling）** —— 统一抽象 6 个领域工具
+2. **工具调用（Tool Calling）** —— 统一抽象 8 个领域工具（含酒店、火车票）
 3. **长期运行（Long-running Task）** —— 持续监控而非一次性生成攻略
 4. **动态重规划（Replanning）** —— 达到影响阈值才调整方案
 5. **Memory** —— 长期保存用户偏好
@@ -312,7 +312,7 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 
 ### 7.1 本阶段已完成（骨架 + 测试 + Demo）
 1. `core/schemas.py` —— 全项目共享 JSON 接口契约
-2. `tools/` —— 统一工具抽象层 + 6 个领域 Tool（Mock，含剧情模拟）
+2. `tools/` —— 统一工具抽象层 + 8 个领域 Tool（Mock，含剧情模拟）
 3. `monitor/monitor_scheduler.py` —— asyncio 定时监控调度器
 4. `execution/execution_agent.py` —— 持续监控执行体（影响阈值判定 + 决策请求组装）
 5. `booking/booking_manager.py` —— 预约状态机（prepare→confirm→mark_confirmed 完整闭环）+ scenic/food 自动填充 + ActionQueue 契约 + 付款人工提醒
@@ -324,6 +324,7 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 11. 天气 Live 版 4 个（实况/预警/空气质量/预报）+ 地图 Live + 交通 Live + 景点 Live + 餐饮 Live 已全部接入真实 API
 12. `tool_introduction.md` — 完整工具层接口文档（含 API 端点映射、字段对照、v3→v5 升级说明）
 13. `app/service.py` — FastAPI 服务层（17 个端点，供 C 的 Web 前端调用）+ ExecutionAgent ↔ BookingManager 自动预约集成
+14. `tools/train/` — 火车票查询组（12306 官方接口直连，无需 Key）：train_ticket 余票 / train_transfer 换乘 / train_route 经停 / train_price 票价，详见 `docs/tool_introduction.md` 第 6.5、10 节
 
 ### 7.2 待办（按优先级）
 
