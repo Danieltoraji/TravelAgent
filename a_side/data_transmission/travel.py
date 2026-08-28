@@ -207,19 +207,22 @@ def _resolve_intercity_route(
     destination: str,
     provider: Optional[Callable[[str, str], Optional[Any]]],
     options: Dict[Tuple[str, str], Dict[str, Any]],
+    priority: Optional[str] = None,
 ) -> Optional[IntercityRoute]:
     """城际路线解析（单段直达 或 多段联运），返回 ``IntercityRoute`` 或 None：
 
-    1. 直达（provider 真源优先；本地 options 偏好链）且 ≤ 12h → 单段 route；
-    2. 直达超 12h 或不存在 → 区域模板（本地估算表，``source=estimate``）；
+    1. 直达（provider 真源优先；本地 options 按 ``priority`` 偏好选方式）且 ≤ 12h
+       → 单段 route；
+    2. 直达超 12h 或不存在 → 区域模板（本地估算表，``source=estimate``，
+       模板各段同样按 ``priority`` 选方式）；
     3. 模板无解 → 回落 provider/本地直达 如实给出（如表外 driving 兜底 19h）。
     """
     direct = find_city_travel_preferred(
-        origin, destination, options=options, provider=provider
+        origin, destination, options=options, provider=provider, priority=priority
     )
     if direct is not None and direct.transport_minutes <= DEFAULT_MAX_TOTAL_MINUTES:
         return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
-    route = find_intercity_route(origin, destination, options=options)
+    route = find_intercity_route(origin, destination, options=options, priority=priority)
     if route is not None:
         return route
     if direct is not None:
@@ -262,6 +265,10 @@ def build_trip_segments(
     if not origin or not destination:
         return []
 
+    # 城际交通偏好（批次：偏好驱动选方式）：speed/cost/comfort/None。
+    # 影响直达方式选择（find_city_travel_preferred）与联运各段方式
+    # （_pick_segment）：speed=总耗时最短、cost=人均费用最低、comfort/缺省=高铁优先链。
+    priority = (content.get("preferences") or {}).get("travel_priority")
     options = load_city_travel_options()
     segments: List[Dict[str, Any]] = []
 
@@ -301,7 +308,7 @@ def build_trip_segments(
         }
 
     outbound = _resolve_intercity_route(
-        origin, destination, travel_provider, options
+        origin, destination, travel_provider, options, priority
     )
     if outbound is not None and schedule.get("departure_date") and schedule.get("departure_time"):
         start = hhmm_to_minutes(schedule["departure_time"])
@@ -315,8 +322,8 @@ def build_trip_segments(
             ))
 
     homeward = (
-        _resolve_intercity_route(destination, origin, travel_provider, options)
-        or _resolve_intercity_route(origin, destination, travel_provider, options)
+        _resolve_intercity_route(destination, origin, travel_provider, options, priority)
+        or _resolve_intercity_route(origin, destination, travel_provider, options, priority)
     )
     if homeward is not None and schedule.get("return_date") and schedule.get("return_time"):
         start = hhmm_to_minutes(schedule["return_time"])

@@ -119,6 +119,14 @@ requirement_schema = {
                     "title": "饮食偏好（菜系/忌口）",
                     "description": "可选；用户提到的菜系、菜品或忌口，没有则为空数组",
                 },
+                "travel_priority": {
+                    "type": ["string", "null"],
+                    "enum": ["speed", "cost", "comfort"],
+                    "title": "城际交通偏好",
+                    "description": "可选；用户对来去城际交通的偏好：speed=越快越好（如「赶时间/最快/少在路上」）、"
+                    "cost=越省钱越好（如「便宜/省钱/预算紧张」）、comfort=舒适优先（如「舒适/轻松/不要太折腾」）；"
+                    "没有交通方式偏好则为 null 或省略",
+                },
             },
             "required": ["preferred_tags", "avoid_tags"],
         },

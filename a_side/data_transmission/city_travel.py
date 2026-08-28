@@ -178,17 +178,39 @@ def find_city_travel_preferred(
     modes: Tuple[str, ...] = MODE_PREFERENCE,
     options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
     provider: Optional[Callable[[str, str], Optional[CityTravelEdge]]] = None,
+    priority: Optional[str] = None,
 ) -> Optional[CityTravelEdge]:
     """按偏好链逐个方式查，返回第一个命中（先定城际方式）。
 
     - ``provider`` 非空：直接单调用（live map 工具内部自带
       train→表外→driving 真源的降级，无需 A 侧重试链）；
-    - 否则本地 options：高铁 → 飞机 → 自驾 逐个方式查。
+    - 否则本地 options，按 ``priority`` 决策（均为「单方向一条边」）：
+      - ``None`` / ``"comfort"``：按 ``modes`` 偏好链逐个命中
+        （默认 高铁→飞机→自驾；舒适语义即此默认次序）；
+      - ``"speed"``：所有可用方式里取**总耗时最短**
+        （air 净时长 + 值机缓冲 60min 一并比较，公平起见）；
+      - ``"cost"``：有价格条目（``cost_per_person > 0``）里取**人均费用最低**；
+        全部无价 → 回落偏好链逐个命中。
     """
     if provider is not None:
         return provider(origin, destination)
     options = options if options is not None else load_city_travel_options()
     by_mode = options.get((origin, destination)) or {}
+    if priority == "speed":
+        accessible = list(by_mode.values())
+        if not accessible:
+            return None
+        return min(
+            accessible,
+            key=lambda e: e.transport_minutes
+            + (AIR_BUFFER_MIN if e.mode == "air" else 0),
+        )
+    if priority == "cost":
+        priced = [
+            e for e in by_mode.values() if e.cost_per_person and e.cost_per_person > 0
+        ]
+        if priced:
+            return min(priced, key=lambda e: e.cost_per_person)
     for mode in modes:
         if mode in by_mode:
             return by_mode[mode]
@@ -251,12 +273,14 @@ def _pick_segment(
     b: str,
     options: Dict[Tuple[str, str], Dict[str, CityTravelEdge]],
     prefer: str = "rail",
+    priority: Optional[str] = None,
 ) -> Optional[CityTravelEdge]:
     """a→b 偏好段：在 ``prefer`` 允许的交通方式内取**时长最短**（踩中最优）。
 
     - ``prefer="air"``（区域间干线）：候选 air + train 取短；
     - ``prefer="rail"``（区域内接驳）：候选 train + air 取短；
-    两者都无 → driving 兜底；仍无 → None。
+    - ``priority="cost"``：候选里取**人均费用最低**（0 价/无价条目视为不可比，回落时长最短）；
+    - 两者都无 → driving 兜底；仍无 → None。
     """
     if a == b:
         return None
@@ -266,6 +290,10 @@ def _pick_segment(
     if not candidates:
         driving = by_mode.get("driving")
         return driving if driving is not None else None
+    if priority == "cost":
+        priced = [e for e in candidates if e.cost_per_person and e.cost_per_person > 0]
+        if priced:
+            return min(priced, key=lambda e: e.cost_per_person)
     return min(candidates, key=lambda e: e.transport_minutes)
 
 
@@ -281,6 +309,7 @@ def find_intercity_route_template(
     destination: str,
     max_total_minutes: int = DEFAULT_MAX_TOTAL_MINUTES,
     options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
+    priority: Optional[str] = None,
 ) -> Optional[IntercityRoute]:
     """区域模板候选枚举（不查直达，供直达失败/超时后调用）：
 
@@ -319,21 +348,21 @@ def find_intercity_route_template(
             )
 
     for h1 in hubs1:
-        seg1 = None if origin == h1 else _pick_segment(origin, h1, options, "rail")
+        seg1 = None if origin == h1 else _pick_segment(origin, h1, options, "rail", priority)
         if origin != h1 and seg1 is None:
             continue  # 到不了本区枢纽 → 该 h1 无候选
         head = (seg1,) if seg1 is not None else ()
         # 特例：本区枢纽 → 目标区成员直飞（如 去程 天津→张掖：北京→张掖 大兴→甘州）
         if destination != h1:
-            seg_direct = _pick_segment(h1, destination, options, "air")
+            seg_direct = _pick_segment(h1, destination, options, "air", priority)
             if seg_direct is not None:
                 add(head + (seg_direct,))
         # 经目标区枢纽：h1 → h2 → destination
         for h2 in hubs2:
             if h2 == h1 or h2 == destination:
                 continue
-            mid = _pick_segment(h1, h2, options, "air")
-            tail = _pick_segment(h2, destination, options, "rail")
+            mid = _pick_segment(h1, h2, options, "air", priority)
+            tail = _pick_segment(h2, destination, options, "rail", priority)
             if mid is None or tail is None:
                 continue
             add(head + (mid, tail))
@@ -341,8 +370,8 @@ def find_intercity_route_template(
     # 优于 张掖→兰州→北京 385m——h1 循环只枚举「本区枢纽出发」，此处补 origin 直连）
     if origin not in hubs1 and destination not in hubs2:
         for h2 in hubs2:
-            seg0 = _pick_segment(origin, h2, options, "air")
-            tail0 = _pick_segment(h2, destination, options, "rail")
+            seg0 = _pick_segment(origin, h2, options, "air", priority)
+            tail0 = _pick_segment(h2, destination, options, "rail", priority)
             if seg0 is None or tail0 is None:
                 continue
             add((seg0, tail0))
@@ -357,18 +386,28 @@ def find_intercity_route(
     destination: str,
     max_total_minutes: int = DEFAULT_MAX_TOTAL_MINUTES,
     options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
+    priority: Optional[str] = None,
 ) -> Optional[IntercityRoute]:
     """多式联运总入口：本地直达（≤12h）优先 → 区域模板 → None。
+
+    ``priority``（speed/cost/comfort/None）：直达与模板各段的方式选择偏好，
+    见 ``find_city_travel_preferred`` / ``_pick_segment``。
 
     注意：provider（live）场景直达由调用方先行权衡（表外 driving 兜底超 12h 时
     才回落本函数），本函数只消费本地表。
     """
     options = options if options is not None else load_city_travel_options()
-    direct = find_city_travel_preferred(origin, destination, options=options)
+    direct = find_city_travel_preferred(
+        origin, destination, options=options, priority=priority
+    )
     if direct is not None and direct.transport_minutes <= max_total_minutes:
         return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
     template = find_intercity_route_template(
-        origin, destination, max_total_minutes=max_total_minutes, options=options
+        origin,
+        destination,
+        max_total_minutes=max_total_minutes,
+        options=options,
+        priority=priority,
     )
     if template is not None:
         return template
