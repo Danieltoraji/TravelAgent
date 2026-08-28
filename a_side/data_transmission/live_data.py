@@ -659,13 +659,16 @@ def make_live_restaurants_provider(
 def make_live_city_travel_provider(
     tool_provider: Any,
     mode: str = "train",
-) -> Callable[[str, str], Optional[CityTravelEdge]]:
-    """返回 ``provider(origin, dest) -> Optional[CityTravelEdge]``（真源城际查询）。
+) -> Callable[..., Optional[CityTravelEdge]]:
+    """返回 ``provider(origin, dest, *, mode=None) -> Optional[CityTravelEdge]``（真源城际查询）。
 
-    ``mode`` 城际方式参数化（train/air/driving，默认 train；批次 2 A2 修复——
-    不再硬编码死的 ``"train"``）。B 侧 map 工具对 train/air 查估算表
-    （``source=estimate``，含车站/机场对），表外自动回退 driving 真源——provider
-    单调用即完成「方式优先 → 兜底」降级，无需 A 侧重试链。
+    构造 ``mode`` 为**缺省方式**；调用时可传 ``mode=`` 覆盖（偏好驱动选方式时，
+    ``find_city_travel_preferred`` 先在本地估算表按 ``travel_priority`` 选定方式，
+    再以该方式调 provider——避免 provider 短路导致偏好失效）。``mode`` 城际方式
+    参数化（train/air/driving，默认 train；批次 2 A2 修复——不再硬编码死的
+    ``"train"``）。B 侧 map 工具对 train/air 查估算表（``source=estimate``，
+    含车站/机场对），表外自动回退 driving 真源——provider 单调用即完成
+    「方式优先 → 兜底」降级，无需 A 侧重试链。
 
     解析新返回字段：``duration_min/transport_minutes`` → 分钟、
     ``cost_per_person / from_station / to_station / source`` → Edge 对应字段。
@@ -673,15 +676,19 @@ def make_live_city_travel_provider(
     无此线路（工具缺数据 / status=error / 分钟不可解析）返回 None，
     与假表 ``find_city_travel`` 缺边语义一致。
     """
+    default_mode = mode
 
-    def city_travel_provider(origin: str, destination: str) -> Optional[CityTravelEdge]:
+    def city_travel_provider(
+        origin: str, destination: str, *, mode: Optional[str] = None
+    ) -> Optional[CityTravelEdge]:
+        use_mode = mode or default_mode
         try:
             result = tool_provider.call(
                 "map",
                 action="route",
                 origin=origin,
                 destination=destination,
-                mode=mode,
+                mode=use_mode,
             )
         except Exception as exc:  # noqa: BLE001
             raise LiveDataError(
@@ -691,7 +698,7 @@ def make_live_city_travel_provider(
         minutes = _minutes_from_payload(payload)
         if minutes is None:
             return None
-        edge_mode = _as_str(payload.get("mode") or payload.get("transit_mode") or mode)
+        edge_mode = _as_str(payload.get("mode") or payload.get("transit_mode") or use_mode)
         return CityTravelEdge(
             origin=origin,
             destination=destination,

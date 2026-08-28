@@ -180,27 +180,45 @@ def find_city_travel_preferred(
     destination: str,
     modes: Tuple[str, ...] = MODE_PREFERENCE,
     options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
-    provider: Optional[Callable[[str, str], Optional[CityTravelEdge]]] = None,
+    provider: Optional[Callable[..., Optional[CityTravelEdge]]] = None,
     priority: Optional[str] = None,
 ) -> Optional[CityTravelEdge]:
     """按偏好选择城际单边方式（先定城际方式）。
 
-    - ``provider`` 非空：直接单调用（live map 工具内部自带
-      train→表外→driving 真源的降级，无需 A 侧重试链）；
-    - 否则本地 options，按 ``priority``（C 端四维 + 省钱）决策：
-      - ``"rail"`` 高铁优先：按 ``MODE_PRIORITY_RAIL``（train→air→driving）链式命中；
-      - ``"air"`` 飞机优先：按 ``MODE_PRIORITY_AIR``（air→train→driving）链式命中；
-      - ``"speed"`` 速度最快：所有可用方式里取**总耗时最短**
-        （air 净时长 + 值机缓冲 60min 一并比较，公平起见）；
-      - ``"earliest"`` 最早到达：估算表无班次，当前与 speed 同值（总耗时最短），
-        真源班次化后（阶段三）按到达时刻选最早的班次组合；
-      - ``"cost"`` 越省钱越好：有价格条目（``cost_per_person > 0``）里取人均费用最低，
-        全部无价 → 回落 ``modes`` 偏好链；
-      - ``None`` / 其它（含已移除的 comfort 兜底）：按 ``modes`` 偏好链逐个命中。
+    - ``provider`` 非空：先在本地估算表按 ``priority`` 选定方式（``_pick_local_edge``），
+      再**以该方式调 provider**（``provider(origin, dest, mode=...)``，B 侧拿该模式
+      估算/真源；表外自动降级 driving 真源）。本地表该城市对全无解 → 直接单调用
+      provider 缺省 mode 兜底。注意：provider 不短路偏好——线上 cost/air/speed
+      等均按偏好选定方式后再查；
+    - 否则纯本地 options，按 ``priority``（C 端四维 + 省钱）决策，见 ``_pick_local_edge``。
     """
-    if provider is not None:
-        return provider(origin, destination)
     options = options if options is not None else load_city_travel_options()
+    if provider is not None:
+        local = _pick_local_edge(origin, destination, modes, options, priority)
+        if local is not None and local.mode:
+            return provider(origin, destination, mode=local.mode)
+        return provider(origin, destination)
+    return _pick_local_edge(origin, destination, modes, options, priority)
+
+
+def _pick_local_edge(
+    origin: str,
+    destination: str,
+    modes: Tuple[str, ...],
+    options: Dict[Tuple[str, str], Dict[str, CityTravelEdge]],
+    priority: Optional[str],
+) -> Optional[CityTravelEdge]:
+    """本地估算表按 ``priority`` 决策单边方式（返回 Edge，不调 provider）：
+    - ``"rail"`` 高铁优先：按 ``MODE_PRIORITY_RAIL``（train→air→driving）链式命中；
+    - ``"air"`` 飞机优先：按 ``MODE_PRIORITY_AIR``（air→train→driving）链式命中；
+    - ``"speed"`` 速度最快：所有可用方式里取**总耗时最短**
+      （air 净时长 + 值机缓冲 60min 一并比较，公平起见）；
+    - ``"earliest"`` 最早到达：估算表无班次，当前与 speed 同值（总耗时最短），
+      真源班次化后（阶段三）按到达时刻选最早的班次组合；
+    - ``"cost"`` 越省钱越好：有价格条目（``cost_per_person > 0``）里取人均费用最低，
+      全部无价 → 回落 ``modes`` 偏好链；
+    - ``None`` / 其它（含已移除的 comfort 兜底）：按 ``modes`` 偏好链逐个命中。
+    """
     by_mode = options.get((origin, destination)) or {}
     if priority in ("rail", "air"):
         chain = MODE_PRIORITY_RAIL if priority == "rail" else MODE_PRIORITY_AIR
