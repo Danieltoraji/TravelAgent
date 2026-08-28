@@ -145,6 +145,9 @@ def _build_schedule_events(
                     "restaurant_name": restaurant.name,
                     "cuisine": list(restaurant.cuisine_tags),
                     "average_cost": restaurant.average_cost,
+                    # A4 修复（8.30）：餐厅真实坐标透传（Restaurant.location 为
+                    # (lat, lng) tuple），C 端地图可标注餐厅（此前 meal 段坐标恒 0）。
+                    "location": restaurant.location,
                 }
             )
         events.append(

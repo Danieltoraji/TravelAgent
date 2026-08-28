@@ -395,6 +395,8 @@ class HotelSelector:
                     "day": day_index,
                     "hotel_id": switch_hotel.id,
                     "hotel_name": switch_hotel.name,
+                    "lat": float(switch_hotel.location[0]),
+                    "lng": float(switch_hotel.location[1]),
                     "commute_minutes": self.travel_minutes(
                         switch_hotel.id, first_spot
                     ),
@@ -424,6 +426,10 @@ class HotelSelector:
                     "night": night,
                     "hotel_id": hotel.id,
                     "hotel_name": hotel.name,
+                    # A4 修复（8.30）：酒店真实坐标透传（Hotel.location 为
+                    # (lat, lng) tuple），C 端地图可标注酒店（此前 hotel 段坐标恒 0）。
+                    "lat": float(hotel.location[0]),
+                    "lng": float(hotel.location[1]),
                     "price": self.effective_price(hotel, price_deltas),
                     "change": change,
                     "reason": reason,
@@ -439,6 +445,8 @@ class HotelSelector:
             "constant_hotel": {
                 "hotel_id": constant.id,
                 "hotel_name": constant.name,
+                "lat": float(constant.location[0]),
+                "lng": float(constant.location[1]),
                 "price": self.effective_price(constant, price_deltas),
             },
             "bookings": bookings,

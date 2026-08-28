@@ -236,6 +236,11 @@ def plan_to_trip_timeline(
                     category="hotel",
                     arrival="20:00",           # 晚间入住（展示用）
                     price=float(book.get("price") or 0.0),
+                    # A4 修复（8.30）：酒店真实坐标（bookings 带 lat/lng，
+                    # 由 select_hotels_for_plan 产出）——C 端地图可标注酒店，
+                    # 不再整片坐标 0。
+                    lat=float(book.get("lat") or 0.0),
+                    lng=float(book.get("lng") or 0.0),
                 )
             )
         days.append(
