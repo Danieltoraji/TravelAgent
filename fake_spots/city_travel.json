@@ -1,4 +1,33 @@
 {
+  "stations": {
+    "北京": [
+      {"name": "北京南站", "type": "rail", "lat": 39.8652, "lng": 116.3786},
+      {"name": "北京西站", "type": "rail", "lat": 39.8951, "lng": 116.3220},
+      {"name": "北京大兴国际机场", "type": "air", "lat": 39.5098, "lng": 116.4105},
+      {"name": "北京首都国际机场", "type": "air", "lat": 40.0799, "lng": 116.6031}
+    ],
+    "上海": [
+      {"name": "上海虹桥站", "type": "rail", "lat": 31.1956, "lng": 121.3211},
+      {"name": "上海站", "type": "rail", "lat": 31.2500, "lng": 121.4556},
+      {"name": "上海虹桥国际机场", "type": "air", "lat": 31.1979, "lng": 121.3363},
+      {"name": "上海浦东国际机场", "type": "air", "lat": 31.1443, "lng": 121.8083}
+    ],
+    "成都": [
+      {"name": "成都东站", "type": "rail", "lat": 30.6300, "lng": 104.1400},
+      {"name": "成都天府国际机场", "type": "air", "lat": 30.3125, "lng": 104.4419},
+      {"name": "成都双流国际机场", "type": "air", "lat": 30.5783, "lng": 103.9470}
+    ],
+    "天津": [
+      {"name": "天津站", "type": "rail", "lat": 39.1343, "lng": 117.2078}
+    ],
+    "苏州": [
+      {"name": "苏州站", "type": "rail", "lat": 31.3310, "lng": 120.6090},
+      {"name": "苏州北站", "type": "rail", "lat": 31.4170, "lng": 120.6460}
+    ],
+    "杭州": [
+      {"name": "杭州东站", "type": "rail", "lat": 30.2910, "lng": 120.2110}
+    ]
+  },
   "edges": [
     {
       "origin": "北京",
@@ -6,8 +35,8 @@
       "transport_minutes": 280,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 280, "cost_per_person": 553.0, "distance_km": 1318.0, "transit_text": "G字头高铁约4h40m"},
-        {"mode": "air", "transport_minutes": 150, "cost_per_person": 980.0, "distance_km": 1084.0, "transit_text": "直飞约2h20m"},
+        {"mode": "train", "transport_minutes": 280, "cost_per_person": 553.0, "distance_km": 1318.0, "from_station": "北京南站", "to_station": "上海虹桥站", "transit_text": "G字头高铁约4h40m（北京南→上海虹桥）"},
+        {"mode": "air", "transport_minutes": 150, "cost_per_person": 980.0, "distance_km": 1084.0, "from_station": "北京大兴国际机场", "to_station": "上海虹桥国际机场", "transit_text": "直飞约2h20m（大兴→虹桥）"},
         {"mode": "driving", "transport_minutes": 720, "cost_per_person": 450.0, "distance_km": 1250.0, "transit_text": "自驾约12h"}
       ]
     },
@@ -17,8 +46,8 @@
       "transport_minutes": 280,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 280, "cost_per_person": 553.0, "distance_km": 1318.0, "transit_text": "G字头高铁约4h40m"},
-        {"mode": "air", "transport_minutes": 150, "cost_per_person": 980.0, "distance_km": 1084.0, "transit_text": "直飞约2h20m"},
+        {"mode": "train", "transport_minutes": 280, "cost_per_person": 553.0, "distance_km": 1318.0, "from_station": "上海虹桥站", "to_station": "北京南站", "transit_text": "G字头高铁约4h40m（虹桥→北京南）"},
+        {"mode": "air", "transport_minutes": 150, "cost_per_person": 980.0, "distance_km": 1084.0, "from_station": "上海虹桥国际机场", "to_station": "北京大兴国际机场", "transit_text": "直飞约2h20m（虹桥→大兴）"},
         {"mode": "driving", "transport_minutes": 720, "cost_per_person": 450.0, "distance_km": 1250.0, "transit_text": "自驾约12h"}
       ]
     },
@@ -28,8 +57,8 @@
       "transport_minutes": 480,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 480, "cost_per_person": 778.0, "distance_km": 1874.0, "transit_text": "G字头高铁约8h"},
-        {"mode": "air", "transport_minutes": 190, "cost_per_person": 1200.0, "distance_km": 1557.0, "transit_text": "直飞约3h10m"},
+        {"mode": "train", "transport_minutes": 480, "cost_per_person": 778.0, "distance_km": 1874.0, "from_station": "北京西站", "to_station": "成都东站", "transit_text": "G字头高铁约8h（北京西→成都东）"},
+        {"mode": "air", "transport_minutes": 190, "cost_per_person": 1200.0, "distance_km": 1557.0, "from_station": "北京大兴国际机场", "to_station": "成都天府国际机场", "transit_text": "直飞约3h10m（大兴→天府）"},
         {"mode": "driving", "transport_minutes": 1200, "cost_per_person": 800.0, "distance_km": 1800.0, "transit_text": "自驾约20h"}
       ]
     },
@@ -39,8 +68,8 @@
       "transport_minutes": 480,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 480, "cost_per_person": 778.0, "distance_km": 1874.0, "transit_text": "G字头高铁约8h"},
-        {"mode": "air", "transport_minutes": 190, "cost_per_person": 1200.0, "distance_km": 1557.0, "transit_text": "直飞约3h10m"},
+        {"mode": "train", "transport_minutes": 480, "cost_per_person": 778.0, "distance_km": 1874.0, "from_station": "成都东站", "to_station": "北京西站", "transit_text": "G字头高铁约8h（成都东→北京西）"},
+        {"mode": "air", "transport_minutes": 190, "cost_per_person": 1200.0, "distance_km": 1557.0, "from_station": "成都天府国际机场", "to_station": "北京大兴国际机场", "transit_text": "直飞约3h10m（天府→大兴）"},
         {"mode": "driving", "transport_minutes": 1200, "cost_per_person": 800.0, "distance_km": 1800.0, "transit_text": "自驾约20h"}
       ]
     },
@@ -50,8 +79,8 @@
       "transport_minutes": 700,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 700, "cost_per_person": 999.0, "distance_km": 1980.0, "transit_text": "高铁约11h40m"},
-        {"mode": "air", "transport_minutes": 200, "cost_per_person": 1300.0, "distance_km": 1660.0, "transit_text": "直飞约3h20m"},
+        {"mode": "train", "transport_minutes": 700, "cost_per_person": 999.0, "distance_km": 1980.0, "from_station": "上海虹桥站", "to_station": "成都东站", "transit_text": "高铁约11h40m（虹桥→成都东）"},
+        {"mode": "air", "transport_minutes": 200, "cost_per_person": 1300.0, "distance_km": 1660.0, "from_station": "上海虹桥国际机场", "to_station": "成都天府国际机场", "transit_text": "直飞约3h20m（虹桥→天府）"},
         {"mode": "driving", "transport_minutes": 1260, "cost_per_person": 850.0, "distance_km": 2000.0, "transit_text": "自驾约21h"}
       ]
     },
@@ -61,8 +90,8 @@
       "transport_minutes": 700,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 700, "cost_per_person": 999.0, "distance_km": 1980.0, "transit_text": "高铁约11h40m"},
-        {"mode": "air", "transport_minutes": 200, "cost_per_person": 1300.0, "distance_km": 1660.0, "transit_text": "直飞约3h20m"},
+        {"mode": "train", "transport_minutes": 700, "cost_per_person": 999.0, "distance_km": 1980.0, "from_station": "成都东站", "to_station": "上海虹桥站", "transit_text": "高铁约11h40m（成都东→虹桥）"},
+        {"mode": "air", "transport_minutes": 200, "cost_per_person": 1300.0, "distance_km": 1660.0, "from_station": "成都天府国际机场", "to_station": "上海虹桥国际机场", "transit_text": "直飞约3h20m（天府→虹桥）"},
         {"mode": "driving", "transport_minutes": 1260, "cost_per_person": 850.0, "distance_km": 2000.0, "transit_text": "自驾约21h"}
       ]
     },
@@ -72,7 +101,7 @@
       "transport_minutes": 40,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 35, "cost_per_person": 55.0, "distance_km": 120.0, "transit_text": "城际高铁约35m"},
+        {"mode": "train", "transport_minutes": 35, "cost_per_person": 55.0, "distance_km": 120.0, "from_station": "天津站", "to_station": "北京南站", "transit_text": "城际高铁约35m（天津站→北京南）"},
         {"mode": "driving", "transport_minutes": 120, "cost_per_person": 40.0, "distance_km": 120.0, "transit_text": "自驾约2h"}
       ]
     },
@@ -82,7 +111,7 @@
       "transport_minutes": 40,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 35, "cost_per_person": 55.0, "distance_km": 120.0, "transit_text": "城际高铁约35m"},
+        {"mode": "train", "transport_minutes": 35, "cost_per_person": 55.0, "distance_km": 120.0, "from_station": "北京南站", "to_station": "天津站", "transit_text": "城际高铁约35m（北京南→天津站）"},
         {"mode": "driving", "transport_minutes": 120, "cost_per_person": 40.0, "distance_km": 120.0, "transit_text": "自驾约2h"}
       ]
     },
@@ -92,7 +121,7 @@
       "transport_minutes": 25,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 25, "cost_per_person": 40.0, "distance_km": 100.0, "transit_text": "高铁约25m"},
+        {"mode": "train", "transport_minutes": 25, "cost_per_person": 40.0, "distance_km": 100.0, "from_station": "上海站", "to_station": "苏州站", "transit_text": "高铁约25m（上海→苏州站）"},
         {"mode": "driving", "transport_minutes": 100, "cost_per_person": 30.0, "distance_km": 100.0, "transit_text": "自驾约1h40m"}
       ]
     },
@@ -102,7 +131,7 @@
       "transport_minutes": 25,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 25, "cost_per_person": 40.0, "distance_km": 100.0, "transit_text": "高铁约25m"},
+        {"mode": "train", "transport_minutes": 25, "cost_per_person": 40.0, "distance_km": 100.0, "from_station": "苏州站", "to_station": "上海站", "transit_text": "高铁约25m（苏州站→上海）"},
         {"mode": "driving", "transport_minutes": 100, "cost_per_person": 30.0, "distance_km": 100.0, "transit_text": "自驾约1h40m"}
       ]
     },
@@ -112,7 +141,7 @@
       "transport_minutes": 50,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 50, "cost_per_person": 73.0, "distance_km": 165.0, "transit_text": "高铁约50m"},
+        {"mode": "train", "transport_minutes": 50, "cost_per_person": 73.0, "distance_km": 165.0, "from_station": "上海虹桥站", "to_station": "杭州东站", "transit_text": "高铁约50m（虹桥→杭州东）"},
         {"mode": "driving", "transport_minutes": 120, "cost_per_person": 40.0, "distance_km": 180.0, "transit_text": "自驾约2h"}
       ]
     },
@@ -122,7 +151,7 @@
       "transport_minutes": 50,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 50, "cost_per_person": 73.0, "distance_km": 165.0, "transit_text": "高铁约50m"},
+        {"mode": "train", "transport_minutes": 50, "cost_per_person": 73.0, "distance_km": 165.0, "from_station": "杭州东站", "to_station": "上海虹桥站", "transit_text": "高铁约50m（杭州东→虹桥）"},
         {"mode": "driving", "transport_minutes": 120, "cost_per_person": 40.0, "distance_km": 180.0, "transit_text": "自驾约2h"}
       ]
     }

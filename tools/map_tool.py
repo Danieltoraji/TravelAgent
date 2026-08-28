@@ -200,6 +200,8 @@ class MapTool(BaseTool):
                 "mode": mode,
                 "from": origin,
                 "to": destination,
+                "from_station": opt.get("from_station", ""),
+                "to_station": opt.get("to_station", ""),
                 "distance_km": float(opt.get("distance_km") or 0.0),
                 "duration_min": minutes,
                 "transport_minutes": minutes,   # 规范字段（A 侧适配层 parse 用）

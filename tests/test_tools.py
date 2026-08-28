@@ -1835,6 +1835,10 @@ class TestMapIntercity(unittest.TestCase):
         self.assertEqual(result["transport_minutes"], 280)   # 兼容规范字段
         self.assertEqual(result["cost_per_person"], 553.0)
         self.assertEqual(result["to"], "上海")
+        # 车站粒度（8.28 估算表升级）：train 具体到车站对
+        self.assertEqual(result["from_station"], "北京南站")
+        self.assertEqual(result["to_station"], "上海虹桥站")
+        self.assertIn("北京南→上海虹桥", result["transit_text"])
 
     def test_mock_route_air_returns_estimate(self) -> None:
         result = MapTool()._run(
@@ -1844,6 +1848,25 @@ class TestMapIntercity(unittest.TestCase):
         self.assertEqual(result["source"], "estimate")
         self.assertEqual(result["duration_min"], 200)
         self.assertEqual(result["cost_per_person"], 1300.0)
+        # 车站粒度：air 具体到机场对
+        self.assertEqual(result["from_station"], "上海虹桥国际机场")
+        self.assertEqual(result["to_station"], "成都天府国际机场")
+
+    def test_mock_route_driving_has_no_station(self) -> None:
+        """driving 保持城市级：Mock 走固定值（无站点字段）；估算表 driving 条目供阶段二 provider 选模式。"""
+        from tools.map_tool import _lookup_intercity_estimate
+
+        result = MapTool()._run(
+            action="route", origin="北京", destination="上海", mode="driving"
+        )
+        self.assertEqual(result["source"], "mock")
+        self.assertNotIn("from_station", result)
+        # 表内 driving 估算条目可查（阶段二 live provider 选 driving 模式时消费）
+        opt = _lookup_intercity_estimate("北京", "上海", "driving")
+        self.assertIsNotNone(opt)
+        self.assertEqual(opt["transport_minutes"], 720)
+        self.assertEqual(opt["cost_per_person"], 450.0)
+        self.assertNotIn("from_station", opt)
 
     def test_mock_route_train_missing_edge_falls_back_driving(self) -> None:
         """表外城市对（未收录）→ 回退 driving 固定值，不报错。"""
