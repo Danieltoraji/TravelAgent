@@ -22,9 +22,11 @@
   - [6.2 traffic — 交通状态（Mock/Live 双版本）](#62-traffic--交通状态)
   - [6.3 food — 餐饮推荐（Mock/Live 双版本）](#63-food--餐饮推荐)
   - [6.4 booking — 预约服务](#64-booking--预约服务)
+  - [6.5 火车票查询组（Mock/Live 双版本）](#65-火车票查询组mocklive-双版本)
 - [7. Mock/Live 切换机制](#7-mocklive-切换机制)
 - [8. 和风天气 API 端点汇总](#8-和风天气-api-端点汇总)
 - [9. 高德地图 API 端点汇总](#9-高德地图-api-端点汇总)
+- [10. 12306 API 端点汇总](#10-12306-api-端点汇总)
 
 ---
 
@@ -66,7 +68,13 @@ tools/
 ├── traffic_tool.py        # 交通工具 × 2 版本 = 2 个类
 ├── food_tool.py           # 餐饮工具 × 2 版本 = 2 个类
 ├── booking_tool.py        # 预约工具
-└── mock_data.py           # MockWorld + 模拟数据
+├── mock_data.py           # MockWorld + 模拟数据
+└── train/                 # 火车票查询组（12306 直连，无需 API Key）
+    ├── __init__.py        # 工具组导出
+    ├── client.py          # TrainClient 共享客户端 + 响应解析 + 日期校验
+    ├── stations.py        # 内置车站表（站名/拼音/电报码互转）
+    ├── tools.py           # 4 个工具 × 2 版本 = 8 个类
+    └── data/station_name.js  # 12306 官方车站数据（3300+ 站，随包内置）
 ```
 
 ---
@@ -817,6 +825,98 @@ BookingManager.confirm()
   └─ registry.call("booking", action="submit", ...)    ← 模拟提交，生成 confirm_code
 ```
 
+### 6.5 火车票查询组（Mock/Live 双版本）
+
+12306 官方接口直连的四个只读查询工具，集中在 `tools/train/` 子包中（参考
+`Reference Code/mcp-server-12306` 的实现方式移植到标准库 urllib）。
+
+| 属性 | 值 |
+|------|-----|
+| **工具名** | `train_ticket` / `train_transfer` / `train_route` / `train_price` |
+| **说明** | 余票时刻坐席 / 中转换乘方案 / 经停站 / 票价 |
+| **Mock 类** | `TrainTicketTool` / `TrainTransferTool` / `TrainRouteTool` / `TrainPriceTool` |
+| **Live 类** | 对应 `*Live` 版本，共享同一个 `TrainClient` 实例 |
+| **文件** | `tools/train/tools.py`（工具）、`tools/train/client.py`（客户端）、`tools/train/stations.py`（车站表） |
+| **开关** | `settings.use_real_train_api`（无需 API Key，非 Demo 即 Live） |
+
+#### TrainClient 共享客户端
+
+- **认证方式**：无 Key。首次请求先 `GET /otn/leftTicket/init` 获取会话
+  Cookie（JSESSIONID/route），后续请求原样回传；实例内复用，重试时自动重新 init
+- **车站参数**：入参支持中文站名（"北京南"、"北京南站"）、全拼（beijingnan）、
+  三字码（VNP），由 `stations.resolve_station()` 转换为 12306 电报码
+- **日期**：`YYYY-MM-DD`，限定今天 ~ 今天+14 天（12306 预售期），违规抛业务错误
+- **反爬处理**：非 200 或最终 URL 命中错误页特征（error.html / /ntce/）→ 业务错误；
+  网络错误 → `ConnectionError` 交由 BaseTool 指数退避重试
+
+#### train_ticket — 余票查询
+
+输入参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `from_station` | string | ✅ | 出发车站（中文名/全拼/电报码） |
+| `to_station` | string | ✅ | 到达车站 |
+| `date` | string | ✅ | 出发日期 YYYY-MM-DD（14 天内） |
+| `purpose_codes` | string | ❌ | `ADULT` 成人（默认）/ `0X` 学生 |
+| `limit` | int | ❌ | 返回车次数量上限，默认 20 |
+
+返回数据 → `list[dict]`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | str | 车次号，如 G39 |
+| `train_no` | str | 12306 官方编号（如 `24000000G10L`），train_route 查询需要 |
+| `status` | str | `预订` / `停运` 等标记 |
+| `from_station` / `to_station` | str | 出发/到达站中文名 |
+| `from_station_code` / `to_station_code` | str | 出发/到达站电报码 |
+| `depart_time` / `arrive_time` | str | 出发/到达时刻 HH:mm |
+| `duration` | str | 历时 HH:mm |
+| `seats` | dict | 各坐席余票（键见下表），值可为数字 / `有` / `无` / `候补`；无此坐席的车次不含该键 |
+
+`seats` 键名对照：`business` 商务座、`first_class` 一等座、`second_class` 二等座、
+`premium_soft_sleeper` 高级软卧、`soft_sleeper` 软卧、`soft_seat` 软座、`dongwo` 动卧、
+`hard_sleeper` 硬卧、`hard_seat` 硬座、`no_seat` 无座。
+
+#### train_transfer — 中转换乘
+
+输入：`from_station` / `to_station` / `date` 必填；`middle_station`（指定中转站）、
+`purpose_codes`（`00` 普通 / `0X` 学生）、`max_results`（默认 10）可选。
+客户端自动翻页抓全后截断。
+
+返回 `list[dict]`：`middle_station` 中转站、`wait_time` 换乘等待、`total_duration` 总历时、
+`segments` 两段行程（各含 `code`/`from_station`/`to_station`/`depart_time`/`arrive_time`/
+`duration`/`seats`，seats 键名同上，另含 `first_class_sleeper` 一等卧、`premium_seat` 特等座）。
+
+#### train_route — 经停站
+
+输入：`train`（车次号 G39 或官方编号）、`from_station`、`to_station`、`date` 均必填。
+车次号入参会先经余票接口转换为官方编号。
+
+返回 `list[dict]`：`station_no` 站序、`station_name` 站名、`arrive_time` 到达时刻、
+`depart_time` 出发时刻、`stopover_time` 停站时长（首末站对应时刻为 `----`）。
+
+#### train_price — 票价
+
+输入：`from_station` / `to_station` / `date` 必填；`train`（车次号过滤，可选，缺省返回全部）、
+`purpose_codes` 可选。
+
+返回 `list[dict]`：`code` / `train_no` / `from_station` / `to_station` / `depart_time` /
+`arrive_time` / `duration` + `prices` dict（键同 seats，值为元；12306 原始单位 0.1 元已换算）。
+
+#### Live 版调用链路
+
+```
+TrainTicketToolLive._run(from_station="北京南", to_station="上海虹桥", date="2026-09-01")
+  │
+  ├─ resolve_station("北京南") → "VNP"                # 站名 → 电报码（内置站表）
+  │
+  └─ client.query_tickets("VNP", "AOH", date)
+       GET /otn/leftTicket/init                       # 首次：取会话 Cookie
+       GET /otn/leftTicket/queryI?leftTicketDTO.train_date=...&leftTicketDTO.from_station=VNP&...
+       → data.result[]（"|" 分隔字符串）→ parse_ticket_row() 按列索引解析
+```
+
 ---
 
 ## 7. Mock/Live 切换机制
@@ -875,6 +975,19 @@ else:
     registry.register(WeatherWarningTool(world))
     registry.register(AirQualityTool(world))
     registry.register(WeatherForecastTool(world))
+
+# 火车票查询组：按配置独立切换 Mock / Live（12306 公开接口，无需 API Key）
+if settings.use_real_train_api:
+    train_client = TrainClient()
+    registry.register(TrainTicketToolLive(train_client))         # 4 个 Live 共享一个客户端
+    registry.register(TrainTransferToolLive(train_client))
+    registry.register(TrainRouteToolLive(train_client))
+    registry.register(TrainPriceToolLive(train_client))
+else:
+    registry.register(TrainTicketTool())
+    registry.register(TrainTransferTool())
+    registry.register(TrainRouteTool())
+    registry.register(TrainPriceTool())
 ```
 
 > **注意**：天气和地图的 Mock/Live 切换互相独立。可以只配天气 Key（地图走 Mock），也可以只配地图 Key（天气走 Mock），或两者都配。
@@ -1121,3 +1234,55 @@ https://restapi.amap.com/v5/place/text?keywords=故宫&key=your_key&show_fields=
 | `10004` | 请求过于频繁 |
 | `10009` | 请求资源不存在 |
 | `10010` | 无访问权限 |
+
+---
+
+## 10. 12306 API 端点汇总
+
+### 认证方式
+
+无 API Key。会话机制：先 `GET /otn/leftTicket/init` 拿到 Set-Cookie
+（JSESSIONID/route 等），后续请求回传 `Cookie` 头。12306 无 token / stlCookie 机制。
+
+### 端点一览表
+
+| 用途 | 方法 | 端点 | 关键参数 |
+|------|------|------|----------|
+| 会话初始化 | GET | `https://kyfw.12306.cn/otn/leftTicket/init` | —（取 Set-Cookie） |
+| 余票查询 | GET | `/otn/leftTicket/queryI` | `leftTicketDTO.train_date`、`leftTicketDTO.from_station`、`leftTicketDTO.to_station`、`purpose_codes` |
+| 中转换乘 | GET | `/lcquery/queryG` | `train_date`、`from_station_telecode`、`to_station_telecode`、`middle_station`、`result_index`（每页 10 条翻页）、`can_query=Y`、`isShowWZ`、`purpose_codes`、`channel=E` |
+| 经停站 | GET | `/otn/czxx/queryByTrainNo` | `train_no`（官方编号）、`from_station_telecode`、`to_station_telecode`、`depart_date` |
+| 票价 | GET | `/otn/leftTicketPrice/queryAllPublicPrice` | 同余票参数；响应 `data[].queryLeftNewDTO` |
+| 车站表 | GET | `/otn/resources/js/framework/station_name.js` | —（已内置 `tools/train/data/station_name.js`，可运行 `scripts/update_stations.py` 思路更新） |
+
+> **query 后缀字母会轮换**：余票/换乘接口 URL 的末字母由 12306 不定期更换
+> （余票曾 `queryU`→`queryG`→`queryI`，换乘曾 `queryI`→`queryG`）。
+> 客户端跟随重定向；若持续反爬拦截，按真实跳转地址更新 `tools/train/client.py` 的 `_QUERY_PATHS`。
+
+### 请求头（全部查询必须携带）
+
+`User-Agent`（Chrome）、`Referer: https://kyfw.12306.cn/otn/leftTicket/init`、
+`Host: kyfw.12306.cn`、`Accept: application/json, text/javascript, */*; q=0.01`、
+`Accept-Language: zh-CN,zh;q=0.9`、`X-Requested-With: XMLHttpRequest`、
+`Origin: https://kyfw.12306.cn`、`Connection: keep-alive`
+
+### 余票响应解析（`data.result[]` 为 "|" 分隔字符串）
+
+| 列索引 | 含义 | 列索引 | 含义 |
+|--------|------|--------|------|
+| `[1]` | `预订`/`停运` 标记 | `[28]` | 硬卧余票 |
+| `[2]` | 官方编号（在"预订"标记后一列） | `[29]` | 硬座余票 |
+| `[3]` | 车次号 | `[30]` | 二等座余票 |
+| `[6]` / `[7]` | 出发/到达站电报码 | `[31]` | 一等座余票 |
+| `[8]` / `[9]` | 出发/到达时刻 | `[32]` | 商务座余票 |
+| `[10]` | 历时 | `[33]` | 动卧余票 |
+| `[21]` | 高级软卧余票 | `[23]` / `[24]` / `[26]` | 软卧 / 软座 / 无座余票 |
+
+余票值：数字 / `有` / `无` / `候补`；`--` 表示该车次无此坐席。
+
+### 约束与注意
+
+- **预售期**：仅支持查询今天 ~ 今天+14 天，参数校验在 `validate_depart_date()`
+- **反爬**：命中后 302 到错误页（URL 含 `error.html` / `/ntce/`），客户端识别为业务错误
+- **证书**：12306 证书链在部分 Python 环境校验失败，客户端关闭了证书校验（参考实现同款）
+- **价格单位**：`queryAllPublicPrice` 原始价格单位 0.1 元，工具输出已换算为元

@@ -10,6 +10,7 @@ import os
 import sys
 import unittest
 from datetime import date, datetime
+from unittest.mock import patch
 
 _B_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 与 test_a_interface.py 相同：django_server（runtime 包）+ a_side + B 根
@@ -131,7 +132,17 @@ class TestBookingEventDedup(unittest.TestCase):
         self.assertIsNone(booking_entry["data"])
 
     def test_hotel_detail_call_updates_cache(self) -> None:
-        rt = AgentRuntime()
+        # 强制 Mock 版 hotel 工具：AgentRuntime 用全局 build_registry()，
+        # 本机若配置了 RollingGo key（use_real_hotel_api=True）会注册 Live 版，
+        # 拿假 ID 调真实 MCP 必然报错——测试行为不应依赖本机配置
+        from tools import ToolRegistry
+        from tools.hotel_tool import HotelTool
+
+        mock_registry = ToolRegistry()
+        mock_registry.register(HotelTool())
+        with patch("runtime.agent_runtime.build_registry",
+                   return_value=mock_registry):
+            rt = AgentRuntime()
         result = rt.registry.call("hotel", action="detail", hotelId="H001")
         self.assertEqual(result.status.value, "ok")
         self.assertIn("H001", rt.hotel_details)

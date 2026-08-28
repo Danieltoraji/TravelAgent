@@ -89,6 +89,15 @@ class Settings:
         """
         return not self.demo_mode
 
+    @property
+    def use_real_train_api(self) -> bool:
+        """当前是否应使用真实 12306 查询（Demo 关闭即启用）。
+
+        12306 查询无需 API Key，与 use_real_web 同语义；
+        独立成开关便于在 12306 反爬误伤时单独回退 Mock 而不影响网页工具。
+        """
+        return not self.demo_mode
+
     def reload(self) -> None:
         """热更新：重新从环境变量读取 API Key + 重新加载 local_settings.py。
 

@@ -25,6 +25,17 @@ from tools.qweather_client import QWeatherClient
 from tools.rollinggo_client import RollingGoClient
 from tools.scenic_tool import ScenicTool, ScenicToolLive
 from tools.traffic_tool import TrafficTool, TrafficToolLive
+from tools.train import (
+    TrainClient,
+    TrainPriceTool,
+    TrainPriceToolLive,
+    TrainRouteTool,
+    TrainRouteToolLive,
+    TrainTicketTool,
+    TrainTicketToolLive,
+    TrainTransferTool,
+    TrainTransferToolLive,
+)
 from tools.weather_tool import (
     AirQualityTool,
     AirQualityToolLive,
@@ -41,10 +52,10 @@ from tools.web_search_tool import WebSearchTool, WebSearchToolLive
 
 
 def build_registry(world: MockWorld | None = None) -> ToolRegistry:
-    """构建一个注册了全部 6 个领域 Tool 的注册表。
+    """构建注册了全部领域 Tool 的注册表。
 
     若传入共享的 MockWorld，天气/景点 Tool 将共享同一模拟世界（Demo 剧情用）。
-    当 settings.use_real_api=True 时，天气 Tool 自动切换为和风天气 Live 版。
+    各领域 Tool 按 settings 的 use_real_* 开关自动切换 Mock / Live 版。
     """
     from config.settings import settings
 
@@ -95,6 +106,19 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
     else:
         registry.register(HotelTool())
 
+    # 火车票查询 Tool 组：按配置自动切换 Mock / Live（12306 公开接口，无需 API Key）
+    if settings.use_real_train_api:
+        train_client = TrainClient()
+        registry.register(TrainTicketToolLive(train_client))
+        registry.register(TrainTransferToolLive(train_client))
+        registry.register(TrainRouteToolLive(train_client))
+        registry.register(TrainPriceToolLive(train_client))
+    else:
+        registry.register(TrainTicketTool())
+        registry.register(TrainTransferTool())
+        registry.register(TrainRouteTool())
+        registry.register(TrainPriceTool())
+
     # 网页抓取/搜索 Tool：按配置自动切换 Mock / Live（无需 API Key）
     if settings.use_real_web:
         web_client = WebClient()
@@ -131,6 +155,15 @@ __all__ = [
     "ToolRegistry",
     "TrafficTool",
     "TrafficToolLive",
+    "TrainClient",
+    "TrainPriceTool",
+    "TrainPriceToolLive",
+    "TrainRouteTool",
+    "TrainRouteToolLive",
+    "TrainTicketTool",
+    "TrainTicketToolLive",
+    "TrainTransferTool",
+    "TrainTransferToolLive",
     "WeatherData",
     "WeatherForecastTool",
     "WeatherForecastToolLive",
