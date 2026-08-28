@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -196,7 +196,21 @@ def find_city_travel_preferred(
     if provider is not None:
         local = _pick_local_edge(origin, destination, modes, options, priority)
         if local is not None and local.mode:
-            return provider(origin, destination, mode=local.mode)
+            edge = provider(origin, destination, mode=local.mode)
+            if edge is None:
+                return local  # 真源查询失败 → 本地估算照常（不假装、不空段）
+            if edge.transport_minutes and edge.transport_minutes > 0:
+                # 真源有有效时长：价格缺失时用本地估算价兜底（预算五项口径要价格）
+                if (
+                    (not edge.cost_per_person or edge.cost_per_person <= 0)
+                    and local.cost_per_person
+                    and local.cost_per_person > 0
+                ):
+                    return replace(edge, cost_per_person=local.cost_per_person)
+                return edge
+            # 真源时长缺失/为 0（如 driving 真源对短途城际返回空）
+            # → 回落本地估算条目（时长+价格都补齐）
+            return local
         return provider(origin, destination)
     return _pick_local_edge(origin, destination, modes, options, priority)
 
