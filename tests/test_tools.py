@@ -1894,6 +1894,28 @@ class TestMapIntercity(unittest.TestCase):
         client.get_route.assert_called_once()
         self.assertEqual(client.get_route.call_args.kwargs["mode"], "driving")
 
+    def test_live_route_fallback_geocodes_by_own_city(self) -> None:
+        """防 30001：城际回退两端坐标按各自城市名限定 geocode，
+        不沿用统一默认 city=北京 解析他城城市名（线上复探实测 30001）。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (43.8256, 87.6168),   # 乌鲁木齐
+            (39.9042, 116.4074),  # 北京
+        ]
+        client.get_route.return_value = {"distance": 3_300_000, "duration": 108_000}
+        tool = MapToolLive(client)
+        # 逆程（乌鲁木齐→北京）也应各自限定，而不是统一 city=北京
+        result = tool._run(
+            action="route", origin="乌鲁木齐", destination="北京", mode="train"
+        )
+        self.assertEqual(result["mode"], "driving")
+        self.assertEqual(result["source"], "live")
+        self.assertEqual(client.geocode.call_count, 2)
+        self.assertEqual(client.geocode.call_args_list[0].args[0], "乌鲁木齐")
+        self.assertEqual(client.geocode.call_args_list[0].kwargs["city"], "乌鲁木齐")
+        self.assertEqual(client.geocode.call_args_list[1].args[0], "北京")
+        self.assertEqual(client.geocode.call_args_list[1].kwargs["city"], "北京")
+
     def test_live_route_unknown_mode_rejected(self) -> None:
         """mode 校验：enum 之外的模式（如 taxi）仍被 amap_client 拒绝（不静默吞错）。"""
         client = self.make_mock_amap_client()

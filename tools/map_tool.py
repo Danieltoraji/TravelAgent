@@ -299,18 +299,35 @@ class MapToolLive(MapTool):
 
     def _route_driving(self, origin: str, destination: str,
                        city: str = "北京") -> Dict[str, Any]:
-        """城际估算表缺失时回退 → 高德驾车真源（跨城 driving 高德可用）。"""
-        return self._route_live(origin, destination, "driving", city=city)
+        """城际估算表缺失时回退 → 高德驾车真源（跨城 driving 高德可用）。
+
+        起终点是城市名：两端坐标按各自城市名限定地理编码——否则会用统一
+        默认 ``city=北京`` 解析他城城市名（如「乌鲁木齐」）致 geocode 30001。
+        """
+        return self._route_live(
+            origin, destination, "driving", city=city,
+            origin_city=origin, dest_city=destination,
+        )
 
     def _route_live(self, origin: str, destination: str, mode: str,
-                    city: str = "北京") -> Dict[str, Any]:
-        """高德市内/驾车路线真源实现（geocode + get_route + 字段映射）。"""
+                    city: str = "北京",
+                    origin_city: Optional[str] = None,
+                    dest_city: Optional[str] = None) -> Dict[str, Any]:
+        """高德市内/驾车路线真源实现（geocode + get_route + 字段映射）。
+
+        ``origin_city`` / ``dest_city``：城际回退用（两端各自城市名限定编码，
+        防 30001）；None 时退化为统一 ``city``（市内默认行为）。
+        """
+        if origin_city is None:
+            origin_city = city
+        if dest_city is None:
+            dest_city = city
         # 地理编码：地址 → 坐标（限定城市，避免同名歧义）；"lng,lat" 坐标直连跳过编码
         origin_coord: Tuple[float, float] = _resolve_coord(
-            origin, city, self._client.geocode
+            origin, origin_city, self._client.geocode
         )
         dest_coord: Tuple[float, float] = _resolve_coord(
-            destination, city, self._client.geocode
+            destination, dest_city, self._client.geocode
         )
 
         # 路线规划
