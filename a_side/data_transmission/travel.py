@@ -127,10 +127,10 @@ def clarify_travel(
     return requirement
 
 
-def _build_route_legs(
-    origin: str, destination: str, route: Any
-) -> List[Dict[str, Any]]:
-    """段级 legs（批次 2 两段式 + 2.5 联运扩展）：
+def _build_route_legs(route: Any) -> List[Dict[str, Any]]:
+    """段级 legs（批次 2 两段式 + 2.5 联运扩展）：**首尾城市端点取自链本身**
+    （``edges[0].origin`` / ``edges[-1].destination``），保证去程/返程方向一致
+    （返程段 head 应为「张掖→甘州机场」而非去程方向的「天津→甘州机场」）。
 
     - 单段（train/air 站点对）→ ``[local, intercity, local]``；
     - 多段联运 → 每段一条 intercity leg，**段间插入同城转场 local 占位**
@@ -141,6 +141,8 @@ def _build_route_legs(
     edges = route.edges
     first = edges[0]
     last = edges[-1]
+    head_city = first.origin          # 段起点城市（返程段 = 张掖）
+    tail_city = last.destination     # 段终点城市（返程段 = 天津）
 
     def intercity_leg(e: Any) -> Dict[str, Any]:
         return {
@@ -166,7 +168,7 @@ def _build_route_legs(
         return [intercity_leg(first)]
 
     legs: List[Dict[str, Any]] = [
-        local_leg(origin, first.from_station, "市内衔接（阶段三 map 真源填充）")
+        local_leg(head_city, first.from_station, "市内衔接（阶段三 map 真源填充）")
     ]
     prev_to = first.to_station or first.destination
     for i, e in enumerate(edges):
@@ -178,7 +180,8 @@ def _build_route_legs(
         legs.append(intercity_leg(e))
         prev_to = e.to_station or e.destination
     legs.append(local_leg(
-        prev_to or destination, destination, "市内衔接（阶段三 map 真源填充）"
+        last.to_station or prev_to or tail_city, tail_city,
+        "市内衔接（阶段三 map 真源填充）",
     ))
     return legs
 
@@ -293,7 +296,7 @@ def build_trip_segments(
                 "stops": (
                     [e.destination for e in edges[:-1]] if chain else []
                 ),
-                "legs": _build_route_legs(origin, destination, route),
+                "legs": _build_route_legs(route),
             },
         }
 
