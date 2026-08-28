@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from core.schemas import ToolStatus
 from tools import default_registry
 from tools.amap_client import AmapClient
-from tools.map_tool import MapToolLive
+from tools.map_tool import MapTool, MapToolLive
 from tools.mock_data import MockWorld
 from tools.qweather_client import QWeatherClient
 from tools.scenic_tool import ScenicToolLive
@@ -1804,6 +1804,104 @@ class TestAmapClientDistance(unittest.TestCase):
             )
         self.assertEqual(len(rows), 1, "终点A 失败应跳过，只保留终点B 的行")
         self.assertEqual(rows[0]["destination"], (39.882, 116.407))
+
+
+class TestMapIntercity(unittest.TestCase):
+    """批次 1a：map 工具城际模式（train/air）估算兜底。
+
+    - mode enum 含 train/air；表外城市对回退 driving（Mock 固定值 / Live 高德真源）；
+    - Live 版必须在调 get_route 前拦截（高德无 train/air 端点，透传会 ValueError）。
+    """
+
+    def make_mock_amap_client(self):
+        return MagicMock(spec=AmapClient)
+
+    def test_schema_enum_includes_train_air(self) -> None:
+        mode_enum = MapTool.input_schema["properties"]["mode"]["enum"]
+        self.assertIn("train", mode_enum)
+        self.assertIn("air", mode_enum)
+        # Live 版 schema 与基类同步（train/air 可被上层 LLM 看到）
+        self.assertEqual(
+            MapToolLive.input_schema["properties"]["mode"]["enum"], mode_enum
+        )
+
+    def test_mock_route_train_returns_estimate(self) -> None:
+        result = MapTool()._run(
+            action="route", origin="北京", destination="上海", mode="train"
+        )
+        self.assertEqual(result["mode"], "train")
+        self.assertEqual(result["source"], "estimate")
+        self.assertEqual(result["duration_min"], 280)
+        self.assertEqual(result["transport_minutes"], 280)   # 兼容规范字段
+        self.assertEqual(result["cost_per_person"], 553.0)
+        self.assertEqual(result["to"], "上海")
+
+    def test_mock_route_air_returns_estimate(self) -> None:
+        result = MapTool()._run(
+            action="route", origin="上海", destination="成都", mode="air"
+        )
+        self.assertEqual(result["mode"], "air")
+        self.assertEqual(result["source"], "estimate")
+        self.assertEqual(result["duration_min"], 200)
+        self.assertEqual(result["cost_per_person"], 1300.0)
+
+    def test_mock_route_train_missing_edge_falls_back_driving(self) -> None:
+        """表外城市对（未收录）→ 回退 driving 固定值，不报错。"""
+        result = MapTool()._run(
+            action="route", origin="北京", destination="广州", mode="train"
+        )
+        self.assertEqual(result["mode"], "driving")
+        self.assertNotEqual(result.get("source"), "estimate")
+        self.assertIn("distance_km", result)
+
+    def test_mock_route_transit_unchanged(self) -> None:
+        """回归：默认市内 transit 仍走 Mock 固定值结构（重构不破坏现状）。"""
+        result = MapTool()._run(action="route", origin="故宫", destination="天坛")
+        self.assertEqual(result["distance_km"], 3.5)
+        self.assertEqual(result["transport_minutes"], 25)
+        self.assertEqual(result["source"], "mock")
+
+    def test_live_route_train_intercepts_before_get_route(self) -> None:
+        """Live 版 train 必须在 get_route 前拦截（防 ValueError「不支持的路线模式」）。"""
+        client = self.make_mock_amap_client()
+        tool = MapToolLive(client)
+        result = tool._run(
+            action="route", origin="北京", destination="上海", mode="train"
+        )
+        self.assertEqual(result["source"], "estimate")
+        self.assertEqual(result["duration_min"], 280)
+        client.get_route.assert_not_called()
+        client.geocode.assert_not_called()
+
+    def test_live_route_train_missing_edge_falls_back_driving_live(self) -> None:
+        """表外城市对 → 回退高德 driving 真源（geocode + get_route mode=driving）。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.9, 116.4),   # 北京
+            (23.1, 113.3),   # 广州
+        ]
+        client.get_route.return_value = {
+            "distance": 2_200_000,   # 2200km
+            "duration": 72_000,      # 1200min
+        }
+        tool = MapToolLive(client)
+        result = tool._run(
+            action="route", origin="北京", destination="广州", mode="train"
+        )
+        self.assertEqual(result["mode"], "driving")
+        self.assertEqual(result["source"], "live")
+        self.assertEqual(result["duration_min"], 1200)
+        client.get_route.assert_called_once()
+        self.assertEqual(client.get_route.call_args.kwargs["mode"], "driving")
+
+    def test_live_route_unknown_mode_rejected(self) -> None:
+        """mode 校验：enum 之外的模式（如 taxi）仍被 amap_client 拒绝（不静默吞错）。"""
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [(39.9, 116.4), (39.9, 116.4)]
+        client.get_route.side_effect = ValueError("不支持的路线模式: taxi")
+        tool = MapToolLive(client)
+        with self.assertRaises(ValueError):
+            tool._run(action="route", origin="故宫", destination="天坛", mode="taxi")
 
 
 if __name__ == "__main__":

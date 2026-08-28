@@ -6,11 +6,20 @@ Mock 版（MapTool）：从 MockWorld 读取模拟数据，Demo 剧情用。
 Live 版（MapToolLive）：调高德地图 API，返回真实 POI 和路线数据。
 
 切换方式：build_registry() 按 settings.use_real_map_api 自动选择。
+
+城际模式（train / air，批次 1a）：
+- mode=train/air → ``_intercity``：查估算表（B 仓库 ``fake_spots/city_travel.json`` 的
+  ``options``），返回 ``{mode, duration_min, cost_per_person, source:"estimate"}``；
+  表缺失 / 城市对未收录 → 自动回退 driving（Mock 固定值 / Live 高德驾车真源），不报错。
+- 高德开放平台无城际火车/航班时刻票价接口（真源走 12306MCP / 航班聚合，阶段二接入），
+  估算表只保级不冒充真数据（``source=estimate`` 标注）。
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from tools.base_tool import BaseTool
@@ -24,7 +33,36 @@ _MODE_TEXT: Dict[str, str] = {
     "driving": "驾车",
     "riding": "骑行",
     "walk": "步行",
+    "train": "高铁",
+    "air": "飞机",
 }
+
+# 城际模式：走估算/兜底管线，不调高德 get_route（高德无对应端点，透传会 ValueError）
+_INTERCITY_MODES = ("train", "air")
+
+# 城际估算表：B 仓库 fake_spots/city_travel.json（与 A 侧 fake_spots/city_travel.json 单一来源同步）
+_CITY_TRAVEL_ESTIMATE_JSON = (
+    Path(__file__).resolve().parent.parent / "fake_spots" / "city_travel.json"
+)
+
+
+def _lookup_intercity_estimate(
+    origin: str, destination: str, mode: str
+) -> Optional[Dict[str, Any]]:
+    """查城际估算表：命中返回该 mode 的 options 条目，否则 None。
+
+    表缺失 / 损坏 / 城市对未收录 → ``None``，由调用方回退 driving（不报错）。
+    """
+    try:
+        raw = json.loads(_CITY_TRAVEL_ESTIMATE_JSON.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for edge in raw.get("edges", []):
+        if edge.get("origin") == origin and edge.get("destination") == destination:
+            for opt in edge.get("options", []):
+                if opt.get("mode") == mode:
+                    return opt
+    return None
 
 
 def _parse_coord(text: Any) -> Optional[Tuple[float, float]]:
@@ -83,9 +121,10 @@ class MapTool(BaseTool):
                 "description": "地理编码限定城市（默认北京，避免同名歧义）",
             },
             "mode": {
-                "enum": ["transit", "driving", "riding", "walk"],
-                "description": "路线模式：公交/驾车/骑行/步行，默认 transit；"
-                "batch_route 仅支持 driving / walk",
+                "enum": ["transit", "driving", "riding", "walk", "train", "air"],
+                "description": "路线模式：公交/驾车/骑行/步行/高铁/飞机，默认 transit；"
+                "batch_route 仅支持 driving / walk；train/air 为城际模式"
+                "（估算表兜底，source=estimate，批次 1a）",
             },
         },
         "required": ["action"],
@@ -130,16 +169,57 @@ class MapTool(BaseTool):
 
     def _route(self, origin: str, destination: str, mode: str = "transit",
                city: str = "北京") -> Dict[str, Any]:
+        """单对路线：train/air 走城际估算（``_intercity``），其余走市内固定值（Mock）。"""
+        if mode in _INTERCITY_MODES:
+            return self._intercity(origin, destination, mode, city=city)
         # Mock：固定行程参数；真实接入高德后按 API 返回替换
         return {
             "from": origin,
             "to": destination,
+            "mode": mode,
             "distance_km": 3.5,
             "duration_min": 25,
             "transport_minutes": 25,   # 规范字段（A 侧适配层 parse 用）
             "transit": "地铁1号线 + 步行800m",
             "fare": 4.0,
+            "source": "mock",
         }
+
+    def _intercity(self, origin: str, destination: str, mode: str,
+                   city: str = "北京") -> Dict[str, Any]:
+        """城际模式（train/air）：查估算表 → 估算结果；表缺失回退 driving（不报错）。
+
+        返回字段契约（阶段二 A 侧 live provider 直接消费）：
+        ``mode / duration_min / transport_minutes / cost_per_person /
+        distance_km / transit_text / source / legs``。
+        """
+        opt = _lookup_intercity_estimate(origin, destination, mode)
+        if opt is not None:
+            minutes = int(opt.get("transport_minutes") or 0)
+            return {
+                "mode": mode,
+                "from": origin,
+                "to": destination,
+                "distance_km": float(opt.get("distance_km") or 0.0),
+                "duration_min": minutes,
+                "transport_minutes": minutes,   # 规范字段（A 侧适配层 parse 用）
+                "cost_per_person": float(opt.get("cost_per_person") or 0.0),
+                "transit_text": opt.get("transit_text")
+                or f"{_MODE_TEXT.get(mode, mode)}（估算）",
+                "transit": _MODE_TEXT.get(mode, mode),
+                "fare": 0.0,
+                "source": "estimate",          # 估算保级，不冒充真数据
+                "legs": [],
+            }
+        logger.warning(
+            "城际估算表缺失 %s→%s mode=%s，回退 driving", origin, destination, mode
+        )
+        return self._route_driving(origin, destination, city=city)
+
+    def _route_driving(self, origin: str, destination: str,
+                       city: str = "北京") -> Dict[str, Any]:
+        """驾车兜底：Mock 固定值；MapToolLive 覆写为高德驾车真源。"""
+        return self._route(origin, destination, mode="driving", city=city)
 
     def _batch_route(self, origins: List[str], destinations: List[str],
                      mode: str = "transit", city: str = "北京") -> List[Dict[str, Any]]:
@@ -166,6 +246,8 @@ class MapToolLive(MapTool):
       1. search_poi → AmapClient.search_poi() → /v5/place/text
       2. route → AmapClient.geocode(origin/destination) 获取坐标
                → AmapClient.get_route() → /v3/direction/{mode}
+      3. train/air（城际）→ ``_intercity`` 估算表兜底，**绝不透传 get_route**
+         （高德无对应端点，直接透传会 ValueError「不支持的路线模式」）
 
     返回与 Mock 版完全相同的 dict 结构，调用方零改动。
     """
@@ -208,7 +290,21 @@ class MapToolLive(MapTool):
 
         先地理编码获取起终点坐标，再调路线规划 API。
         地理编码时限定 ``city``（默认北京，避免同名地点歧义）。
+        train/air 城际模式在调用高德前拦截（走 ``_intercity`` 估算/兜底）。
         """
+        if mode in _INTERCITY_MODES:
+            # 批次 1a：必须在 get_route 前拦截，否则 ValueError「不支持的路线模式」
+            return self._intercity(origin, destination, mode, city=city)
+        return self._route_live(origin, destination, mode, city=city)
+
+    def _route_driving(self, origin: str, destination: str,
+                       city: str = "北京") -> Dict[str, Any]:
+        """城际估算表缺失时回退 → 高德驾车真源（跨城 driving 高德可用）。"""
+        return self._route_live(origin, destination, "driving", city=city)
+
+    def _route_live(self, origin: str, destination: str, mode: str,
+                    city: str = "北京") -> Dict[str, Any]:
+        """高德市内/驾车路线真源实现（geocode + get_route + 字段映射）。"""
         # 地理编码：地址 → 坐标（限定城市，避免同名歧义）；"lng,lat" 坐标直连跳过编码
         origin_coord: Tuple[float, float] = _resolve_coord(
             origin, city, self._client.geocode
@@ -234,11 +330,13 @@ class MapToolLive(MapTool):
         return {
             "from": origin,
             "to": destination,
+            "mode": mode,
             "distance_km": round(distance_m / 1000, 2),    # 米 → 公里
             "duration_min": duration_min,
             "transport_minutes": duration_min,             # 规范字段（A 侧适配层 parse 用）
             "transit": _MODE_TEXT.get(mode, mode),
             "fare": fare,
+            "source": "live",
         }
 
     def _batch_route(self, origins: List[str], destinations: List[str],
