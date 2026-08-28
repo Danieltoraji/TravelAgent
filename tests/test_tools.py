@@ -1948,6 +1948,43 @@ class TestMapIntercity(unittest.TestCase):
         with self.assertRaises(ValueError):
             tool._run(action="route", origin="故宫", destination="天坛", mode="taxi")
 
+    def test_live_route_driving_cross_city_falls_back_nationwide_geocode(self) -> None:
+        """跨城 driving 直连（京→沪）：限定 city=北京 解析「上海」30001 →
+        自动全国搜索兜底（阶段二 provider 选 driving 模式的必经路径）。"""
+        from tools.map_tool import _resolve_coord_fallback
+
+        client = self.make_mock_amap_client()
+        client.geocode.side_effect = [
+            (39.9042, 116.4074),                    # 北京（限定命中）
+            ValueError("高德 API 错误 [30001]: ENGINE_RESPONSE_DATA_ERROR"),  # 上海限定于北京 → 失败
+            (31.2304, 121.4737),                    # 全国搜索上海 → 命中
+        ]
+        client.get_route.return_value = {
+            "distance": 1_260_000,
+            "duration": 43_200,   # 12h
+        }
+        tool = MapToolLive(client)
+        result = tool._run(
+            action="route", origin="北京", destination="上海", mode="driving"
+        )
+        self.assertEqual(result["mode"], "driving")
+        self.assertEqual(result["source"], "live")
+        self.assertEqual(result["duration_min"], 720)
+        self.assertEqual(client.geocode.call_count, 3)
+        # 第一次：北京限定北京；第二次：上海限定北京失败；第三次：全国搜索（city 空）
+        self.assertEqual(client.geocode.call_args_list[1].kwargs["city"], "北京")
+        self.assertEqual(client.geocode.call_args_list[2].args[0], "上海")
+        self.assertEqual(client.geocode.call_args_list[2].kwargs["city"], "")
+
+    def test_resolve_coord_fallback_passthrough_on_city_hit(self) -> None:
+        """市内正常路径：限定 city 命中时不走全国搜索（不引入多余请求）。"""
+        from tools.map_tool import _resolve_coord_fallback
+
+        geocode = MagicMock(return_value=(39.9, 116.4))
+        coord = _resolve_coord_fallback("故宫", "北京", geocode)
+        self.assertEqual(coord, (39.9, 116.4))
+        geocode.assert_called_once_with("故宫", city="北京")
+
 
 if __name__ == "__main__":
     unittest.main()

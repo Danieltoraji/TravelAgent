@@ -91,6 +91,24 @@ def _resolve_coord(name: str, city: str, geocode) -> Tuple[float, float]:
     return geocode(name, city=city)
 
 
+def _resolve_coord_fallback(name: str, city: str, geocode) -> Tuple[float, float]:
+    """地理编码带全国搜索兜底：限定 ``city`` 失败（如跨城 driving 用统一默认 city
+    解析他城城市名 → 高德 30001）→ 降级为不限城市全国搜索；仍失败才抛错。
+
+    市内正常路径不受影响（限定 city 命中即返回，避免同名歧义）。
+    """
+    coord = _parse_coord(name)
+    if coord is not None:
+        return coord
+    try:
+        return geocode(name, city=city)
+    except ValueError:
+        logger.warning(
+            "geocode(%r, city=%r) 失败，回退全国搜索（可能为城际 driving 跨城场景）", name, city
+        )
+        return geocode(name, city="")
+
+
 class MapTool(BaseTool):
     name = "map"
     description = "地图服务：搜索景点位置、计算两点间路线距离与预计耗时。"
@@ -324,11 +342,12 @@ class MapToolLive(MapTool):
             origin_city = city
         if dest_city is None:
             dest_city = city
-        # 地理编码：地址 → 坐标（限定城市，避免同名歧义）；"lng,lat" 坐标直连跳过编码
-        origin_coord: Tuple[float, float] = _resolve_coord(
+        # 地理编码：地址 → 坐标（限定城市，避免同名歧义；跨城场景自动全国搜索兜底）；
+        # "lng,lat" 坐标直连跳过编码
+        origin_coord: Tuple[float, float] = _resolve_coord_fallback(
             origin, origin_city, self._client.geocode
         )
-        dest_coord: Tuple[float, float] = _resolve_coord(
+        dest_coord: Tuple[float, float] = _resolve_coord_fallback(
             destination, dest_city, self._client.geocode
         )
 
