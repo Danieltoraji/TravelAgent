@@ -196,7 +196,7 @@ def _attach_trip_segment_places(
       返程（``return``）追加 **items 尾部**（游玩毕再返程）；
     - ``Place.details`` 透传段 details（mode / from_station / to_station /
       cost_per_person / source / legs），C 端可读客运站对与两段式衔接结构；
-      ``price`` 带人均费用（批次 3 预算口径 `transit` 计入口径前仅供展示）。
+      ``price`` 带人均费用（批次 3 起计入 ``cost_breakdown.transit``）。
     """
     segments = plan.get("trip_segments") or []
     if not segments:
@@ -243,10 +243,11 @@ def plan_to_trip_timeline(
     写入，replan 换宿后由 replanner 更新），按晚数映射到每天末尾一个
     ``Place(category="hotel")``（当晚酒店）。
 
-    8.30 预算口径：``total_cost`` = 门票 + 讲解 + 酒店 + 餐饮（目的地内四项，
-    不含城际/市内交通；餐饮 = 已安排 meal 段人均价 × 人数），由
+    8.30 预算口径（批次 3 扩展五项）：``total_cost`` = 门票 + 讲解 + 酒店 + 餐饮
+    + **城际交通**（`transit`，去程+返程人均价 × 人数；市内交通金额小不计），由
     ``algorithoms._common._plan_cost_summary`` 单一来源计算；明细写入
-    ``TripTimeline.cost_breakdown``（ticket/guide/hotel/meal/total），供 C 端拆分展示。
+    ``TripTimeline.cost_breakdown``（ticket/guide/hotel/meal/transit/total），
+    供 C 端拆分展示。
     """
     plan = plan or {}
     days_in = plan.get("days") or []
@@ -292,7 +293,8 @@ def plan_to_trip_timeline(
     # 返程（kind=return）追加尾部；段 details 透传 mode/车站对/cost/source/legs
     # （两段式决策：城际方式已定，市内衔接 legs 预留供阶段三填充）。
     _attach_trip_segment_places(plan, days)
-    # 8.30 预算口径：四项完整汇总（门票/讲解/餐饮/酒店），单一来源 _plan_cost_summary
+    # 8.30 预算口径（批次 3 扩展五项：门票/讲解/餐饮/酒店/城际交通），
+    # 单一来源 _plan_cost_summary
     from algorithoms._common import _plan_cost_summary
 
     summary = _plan_cost_summary(plan)
@@ -308,6 +310,7 @@ def plan_to_trip_timeline(
             "guide": summary["guide"],
             "meal": summary["meal"],
             "hotel": summary["hotel"],
+            "transit": summary["transit"],
             "total": summary["total"],
         },
         walking_distance=float(plan.get("total_route_distance_km") or 0.0),

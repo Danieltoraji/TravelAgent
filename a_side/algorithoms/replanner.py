@@ -1213,6 +1213,13 @@ def replan(
         repaired["accommodation"] = new_accommodation
     elif hotel_changes:
         repaired.pop("accommodation", None)
+    # 城际来去程是重规划不变量（事件只影响目的地内景点/住宿）：把 trip_segments
+    # 及其预估交通费原样带进 new_plan——增量修复（_repair_affected_days 重建 dict）
+    # 与全量兜底（plan_multi_day 新输出）都不会自带，缺少则线上 replan 后城际
+    # transport 段与 cost_breakdown.transit 双双丢失（批次 3 补上）。
+    for key in ("trip_segments", "estimated_transit_cost"):
+        if key in current_plan and key not in repaired:
+            repaired[key] = current_plan[key]
     return {
         "triggered_by": [event.get("event_type") for event in events],
         "changes": changes,

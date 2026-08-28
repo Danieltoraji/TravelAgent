@@ -275,6 +275,10 @@ class BPlannerHook:
         本地 options 按 train→air→driving 偏好链，或 live provider 单调用降级），
         站点/机场对落定后段 details 内预留市内衔接 legs（local 段占位，阶段三用
         map 真源填充——「再选择 A 到车站 / 车站到 B 的方式」）。
+
+        批次 3（预算 transit）：同时写 ``plan["estimated_transit_cost"]``（= 去程 +
+        返程人均费用之和 × 人数，预算五项的权威来源；replan 时由 replanner 保留，
+        ``_plan_cost_summary`` 优先读它，缺省再从 trip_segments 兜底推导）。
         """
         from data_transmission.travel import build_trip_segments
 
@@ -295,6 +299,16 @@ class BPlannerHook:
             segments = []
         if segments:
             plan["trip_segments"] = segments
+            per_person = sum(
+                float((seg.get("details") or {}).get("cost_per_person") or 0.0)
+                for seg in segments
+            )
+            visitor_number = int(
+                plan.get("visitor_number")
+                or (self.requirement.get("content") or {}).get("visitor_number")
+                or 1
+            )
+            plan["estimated_transit_cost"] = round(per_person * visitor_number, 2)
 
     def _attach_hotels(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         """把住宿安排写入计划（``plan["accommodation"]``，与 main.py 口径一致）。

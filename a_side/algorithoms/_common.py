@@ -93,7 +93,7 @@ def _visit_cost(spots: Sequence[Spot], visitor_number: int) -> float:
 
 
 def _plan_cost_summary(plan: Dict[str, Any]) -> Dict[str, float]:
-    """目的地内四项费用汇总（单一来源，b_contract / main.py / demo 共用）。
+    """目的地内 + 城际交通五项费用汇总（单一来源，b_contract / main.py / demo 共用）。
 
     ``plan`` 为排程输出（``plan_multi_day`` / ``plan_one_day`` / replan 结果）：
     - ticket：门票总价。优先取 ``plan.estimated_ticket_cost``（planner/replanner
@@ -102,13 +102,19 @@ def _plan_cost_summary(plan: Dict[str, Any]) -> Dict[str, float]:
     - meal：餐饮总价 = Σ(已安排 meal 段 average_cost) × visitor_number
       （人均单价；未安排/占位餐 average_cost=0 自然不计）；
     - hotel：住宿房费 = ``accommodation.hotel_cost``（按房间计，不乘人数）；
-    - total：四项求和 — 目的地内预算完整口径，不含城际/市内交通。
+    - transit：城际交通总价 = 去程 + 返程人均费用 × visitor_number。优先取
+      ``plan.estimated_transit_cost``（b_planner_hook 权威输出；replan 保留），
+      否则从 ``plan.trip_segments``（``build_trip_segments`` 产出）累加
+      Σ details.cost_per_person × visitor_number——兜底覆盖 replan 前手工构造
+      的计划；无城际段（纯目的地游）自然为 0。
+    - total：五项求和 — 预算完整口径（目的地内四项 + 城际交通；市内交通金额小不计）。
     """
     summary: Dict[str, float] = {
         "ticket": 0.0,
         "guide": 0.0,
         "meal": 0.0,
         "hotel": 0.0,
+        "transit": 0.0,
         "total": 0.0,
     }
     if not isinstance(plan, dict):
@@ -140,8 +146,24 @@ def _plan_cost_summary(plan: Dict[str, Any]) -> Dict[str, float]:
     summary["ticket"] = float(ticket)
     acc = plan.get("accommodation") or {}
     summary["hotel"] = float(acc.get("hotel_cost") or 0.0)
+
+    transit = plan.get("estimated_transit_cost")
+    if transit is None or isinstance(transit, bool):
+        transit = 0.0
+        for seg in plan.get("trip_segments") or []:
+            if not isinstance(seg, dict):
+                continue
+            details = seg.get("details") or {}
+            transit += float(details.get("cost_per_person") or 0.0)
+        transit *= visitor_number
+    summary["transit"] = float(transit)
     summary["total"] = round(
-        summary["ticket"] + summary["guide"] + summary["meal"] + summary["hotel"], 2
+        summary["ticket"]
+        + summary["guide"]
+        + summary["meal"]
+        + summary["hotel"]
+        + summary["transit"],
+        2,
     )
     return summary
 
