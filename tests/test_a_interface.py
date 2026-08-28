@@ -92,7 +92,7 @@ class TestPlannerHookThreadsToolProvider(unittest.TestCase):
         map_calls = [c for c in tool.calls if c[0] == "map"]
         self.assertTrue(map_calls, "live 模式应调用 map.batch_route 构建交通矩阵")
         self.assertTrue(all(kw["action"] == "batch_route" for _, kw in map_calls))
-        self.assertTrue(timeline.days)
+        self.assertTrue(timeline.days, f"时间轴不应为空，last_error={hook.last_error!r}")
 
     def test_live_falls_back_on_scenic_failure(self) -> None:
         os.environ["USE_LIVE_DATA"] = "1"
@@ -101,7 +101,7 @@ class TestPlannerHookThreadsToolProvider(unittest.TestCase):
         timeline = hook.generate_timeline()
         self.assertEqual(hook.last_data_source, "live_fallback")
         self.assertIn("真实数据接入失败", hook.last_error or "")
-        self.assertTrue(timeline.days)
+        self.assertTrue(timeline.days, f"回退假数据后时间轴不应为空，last_error={hook.last_error!r}")
 
     def test_switch_off_keeps_fake_and_never_calls_tools(self) -> None:
         os.environ.pop("USE_LIVE_DATA", None)   # 开关关闭
@@ -110,7 +110,7 @@ class TestPlannerHookThreadsToolProvider(unittest.TestCase):
         timeline = hook.generate_timeline()
         self.assertEqual(hook.last_data_source, "fake")
         self.assertEqual([c[0] for c in tool.calls], [])
-        self.assertTrue(timeline.days)
+        self.assertTrue(timeline.days, f"假数据时间轴不应为空，last_error={hook.last_error!r}")
 
 
 if __name__ == "__main__":
