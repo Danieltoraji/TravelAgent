@@ -1,33 +1,321 @@
 {
   "stations": {
     "北京": [
-      {"name": "北京南站", "type": "rail", "lat": 39.8652, "lng": 116.3786},
-      {"name": "北京西站", "type": "rail", "lat": 39.8951, "lng": 116.3220},
-      {"name": "北京大兴国际机场", "type": "air", "lat": 39.5098, "lng": 116.4105},
-      {"name": "北京首都国际机场", "type": "air", "lat": 40.0799, "lng": 116.6031}
+      {
+        "name": "北京南站",
+        "type": "rail",
+        "lat": 39.8652,
+        "lng": 116.3786
+      },
+      {
+        "name": "北京西站",
+        "type": "rail",
+        "lat": 39.8951,
+        "lng": 116.322
+      },
+      {
+        "name": "北京大兴国际机场",
+        "type": "air",
+        "lat": 39.5098,
+        "lng": 116.4105
+      },
+      {
+        "name": "北京首都国际机场",
+        "type": "air",
+        "lat": 40.0799,
+        "lng": 116.6031
+      }
     ],
     "上海": [
-      {"name": "上海虹桥站", "type": "rail", "lat": 31.1956, "lng": 121.3211},
-      {"name": "上海站", "type": "rail", "lat": 31.2500, "lng": 121.4556},
-      {"name": "上海虹桥国际机场", "type": "air", "lat": 31.1979, "lng": 121.3363},
-      {"name": "上海浦东国际机场", "type": "air", "lat": 31.1443, "lng": 121.8083}
+      {
+        "name": "上海虹桥站",
+        "type": "rail",
+        "lat": 31.1956,
+        "lng": 121.3211
+      },
+      {
+        "name": "上海站",
+        "type": "rail",
+        "lat": 31.25,
+        "lng": 121.4556
+      },
+      {
+        "name": "上海虹桥国际机场",
+        "type": "air",
+        "lat": 31.1979,
+        "lng": 121.3363
+      },
+      {
+        "name": "上海浦东国际机场",
+        "type": "air",
+        "lat": 31.1443,
+        "lng": 121.8083
+      }
     ],
     "成都": [
-      {"name": "成都东站", "type": "rail", "lat": 30.6300, "lng": 104.1400},
-      {"name": "成都天府国际机场", "type": "air", "lat": 30.3125, "lng": 104.4419},
-      {"name": "成都双流国际机场", "type": "air", "lat": 30.5783, "lng": 103.9470}
+      {
+        "name": "成都东站",
+        "type": "rail",
+        "lat": 30.63,
+        "lng": 104.14
+      },
+      {
+        "name": "成都天府国际机场",
+        "type": "air",
+        "lat": 30.3125,
+        "lng": 104.4419
+      },
+      {
+        "name": "成都双流国际机场",
+        "type": "air",
+        "lat": 30.5783,
+        "lng": 103.947
+      }
     ],
     "天津": [
-      {"name": "天津站", "type": "rail", "lat": 39.1343, "lng": 117.2078}
+      {
+        "name": "天津站",
+        "type": "rail",
+        "lat": 39.1343,
+        "lng": 117.2078
+      }
     ],
     "苏州": [
-      {"name": "苏州站", "type": "rail", "lat": 31.3310, "lng": 120.6090},
-      {"name": "苏州北站", "type": "rail", "lat": 31.4170, "lng": 120.6460}
+      {
+        "name": "苏州站",
+        "type": "rail",
+        "lat": 31.331,
+        "lng": 120.609
+      },
+      {
+        "name": "苏州北站",
+        "type": "rail",
+        "lat": 31.417,
+        "lng": 120.646
+      }
     ],
     "杭州": [
-      {"name": "杭州东站", "type": "rail", "lat": 30.2910, "lng": 120.2110}
+      {
+        "name": "杭州东站",
+        "type": "rail",
+        "lat": 30.291,
+        "lng": 120.211
+      }
+    ],
+    "石家庄": [
+      {
+        "name": "石家庄站",
+        "type": "rail",
+        "lat": 38.0428,
+        "lng": 114.5149
+      },
+      {
+        "name": "石家庄正定国际机场",
+        "type": "air",
+        "lat": 38.2804,
+        "lng": 114.6973
+      }
+    ],
+    "沈阳": [
+      {
+        "name": "沈阳北站",
+        "type": "rail",
+        "lat": 41.8169,
+        "lng": 123.43
+      },
+      {
+        "name": "沈阳桃仙国际机场",
+        "type": "air",
+        "lat": 41.6401,
+        "lng": 123.4873
+      }
+    ],
+    "西安": [
+      {
+        "name": "西安北站",
+        "type": "rail",
+        "lat": 34.3714,
+        "lng": 108.9358
+      },
+      {
+        "name": "西安咸阳国际机场",
+        "type": "air",
+        "lat": 34.4471,
+        "lng": 108.751
+      }
+    ],
+    "兰州": [
+      {
+        "name": "兰州西站",
+        "type": "rail",
+        "lat": 36.071,
+        "lng": 103.752
+      },
+      {
+        "name": "兰州中川国际机场",
+        "type": "air",
+        "lat": 36.5162,
+        "lng": 103.6207
+      }
+    ],
+    "乌鲁木齐": [
+      {
+        "name": "乌鲁木齐站",
+        "type": "rail",
+        "lat": 43.8387,
+        "lng": 87.581
+      },
+      {
+        "name": "乌鲁木齐地窝堡国际机场",
+        "type": "air",
+        "lat": 43.907,
+        "lng": 87.4742
+      }
+    ],
+    "张掖": [
+      {
+        "name": "张掖西站",
+        "type": "rail",
+        "lat": 38.9468,
+        "lng": 100.451
+      },
+      {
+        "name": "张掖甘州机场",
+        "type": "air",
+        "lat": 39.0257,
+        "lng": 100.68
+      }
+    ],
+    "银川": [
+      {
+        "name": "银川站",
+        "type": "rail",
+        "lat": 38.4875,
+        "lng": 106.181
+      },
+      {
+        "name": "银川河东国际机场",
+        "type": "air",
+        "lat": 38.325,
+        "lng": 106.383
+      }
+    ],
+    "武汉": [
+      {
+        "name": "武汉站",
+        "type": "rail",
+        "lat": 30.6089,
+        "lng": 114.424
+      },
+      {
+        "name": "武汉天河国际机场",
+        "type": "air",
+        "lat": 30.7836,
+        "lng": 114.2064
+      }
+    ],
+    "南京": [
+      {
+        "name": "南京南站",
+        "type": "rail",
+        "lat": 31.971,
+        "lng": 118.79
+      },
+      {
+        "name": "南京禄口国际机场",
+        "type": "air",
+        "lat": 31.741,
+        "lng": 118.861
+      }
+    ],
+    "重庆": [
+      {
+        "name": "重庆北站",
+        "type": "rail",
+        "lat": 29.602,
+        "lng": 106.546
+      },
+      {
+        "name": "重庆江北国际机场",
+        "type": "air",
+        "lat": 29.719,
+        "lng": 106.641
+      }
+    ],
+    "昆明": [
+      {
+        "name": "昆明南站",
+        "type": "rail",
+        "lat": 24.952,
+        "lng": 102.83
+      },
+      {
+        "name": "昆明长水国际机场",
+        "type": "air",
+        "lat": 25.101,
+        "lng": 102.929
+      }
     ]
   },
+  "regions": [
+    {
+      "name": "华北",
+      "hubs": [
+        "北京"
+      ],
+      "members": [
+        "天津",
+        "石家庄"
+      ]
+    },
+    {
+      "name": "东北",
+      "hubs": [
+        "沈阳"
+      ],
+      "members": []
+    },
+    {
+      "name": "西北",
+      "hubs": [
+        "西安",
+        "兰州",
+        "乌鲁木齐"
+      ],
+      "members": [
+        "张掖",
+        "银川"
+      ]
+    },
+    {
+      "name": "华东",
+      "hubs": [
+        "上海"
+      ],
+      "members": [
+        "苏州",
+        "杭州",
+        "南京"
+      ]
+    },
+    {
+      "name": "华中",
+      "hubs": [
+        "武汉"
+      ],
+      "members": []
+    },
+    {
+      "name": "西南",
+      "hubs": [
+        "成都"
+      ],
+      "members": [
+        "重庆",
+        "昆明"
+      ]
+    }
+  ],
   "edges": [
     {
       "origin": "北京",
@@ -35,9 +323,31 @@
       "transport_minutes": 280,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 280, "cost_per_person": 553.0, "distance_km": 1318.0, "from_station": "北京南站", "to_station": "上海虹桥站", "transit_text": "G字头高铁约4h40m（北京南→上海虹桥）"},
-        {"mode": "air", "transport_minutes": 150, "cost_per_person": 980.0, "distance_km": 1084.0, "from_station": "北京大兴国际机场", "to_station": "上海虹桥国际机场", "transit_text": "直飞约2h20m（大兴→虹桥）"},
-        {"mode": "driving", "transport_minutes": 720, "cost_per_person": 450.0, "distance_km": 1250.0, "transit_text": "自驾约12h"}
+        {
+          "mode": "train",
+          "transport_minutes": 280,
+          "cost_per_person": 553.0,
+          "from_station": "北京南站",
+          "to_station": "上海虹桥站",
+          "distance_km": 1318.0,
+          "transit_text": "G字头高铁约4h40m（北京南→上海虹桥）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 150,
+          "cost_per_person": 980.0,
+          "from_station": "北京大兴国际机场",
+          "to_station": "上海虹桥国际机场",
+          "distance_km": 1084.0,
+          "transit_text": "直飞约2h20m（大兴→虹桥）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 720,
+          "cost_per_person": 450.0,
+          "distance_km": 1250.0,
+          "transit_text": "自驾约12h"
+        }
       ]
     },
     {
@@ -46,9 +356,31 @@
       "transport_minutes": 280,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 280, "cost_per_person": 553.0, "distance_km": 1318.0, "from_station": "上海虹桥站", "to_station": "北京南站", "transit_text": "G字头高铁约4h40m（虹桥→北京南）"},
-        {"mode": "air", "transport_minutes": 150, "cost_per_person": 980.0, "distance_km": 1084.0, "from_station": "上海虹桥国际机场", "to_station": "北京大兴国际机场", "transit_text": "直飞约2h20m（虹桥→大兴）"},
-        {"mode": "driving", "transport_minutes": 720, "cost_per_person": 450.0, "distance_km": 1250.0, "transit_text": "自驾约12h"}
+        {
+          "mode": "train",
+          "transport_minutes": 280,
+          "cost_per_person": 553.0,
+          "from_station": "上海虹桥站",
+          "to_station": "北京南站",
+          "distance_km": 1318.0,
+          "transit_text": "G字头高铁约4h40m（虹桥→北京南）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 150,
+          "cost_per_person": 980.0,
+          "from_station": "上海虹桥国际机场",
+          "to_station": "北京大兴国际机场",
+          "distance_km": 1084.0,
+          "transit_text": "直飞约2h20m（虹桥→大兴）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 720,
+          "cost_per_person": 450.0,
+          "distance_km": 1250.0,
+          "transit_text": "自驾约12h"
+        }
       ]
     },
     {
@@ -57,9 +389,31 @@
       "transport_minutes": 480,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 480, "cost_per_person": 778.0, "distance_km": 1874.0, "from_station": "北京西站", "to_station": "成都东站", "transit_text": "G字头高铁约8h（北京西→成都东）"},
-        {"mode": "air", "transport_minutes": 190, "cost_per_person": 1200.0, "distance_km": 1557.0, "from_station": "北京大兴国际机场", "to_station": "成都天府国际机场", "transit_text": "直飞约3h10m（大兴→天府）"},
-        {"mode": "driving", "transport_minutes": 1200, "cost_per_person": 800.0, "distance_km": 1800.0, "transit_text": "自驾约20h"}
+        {
+          "mode": "train",
+          "transport_minutes": 480,
+          "cost_per_person": 778.0,
+          "from_station": "北京西站",
+          "to_station": "成都东站",
+          "distance_km": 1874.0,
+          "transit_text": "G字头高铁约8h（北京西→成都东）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 190,
+          "cost_per_person": 1200.0,
+          "from_station": "北京大兴国际机场",
+          "to_station": "成都天府国际机场",
+          "distance_km": 1557.0,
+          "transit_text": "直飞约3h10m（大兴→天府）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1200,
+          "cost_per_person": 800.0,
+          "distance_km": 1800.0,
+          "transit_text": "自驾约20h"
+        }
       ]
     },
     {
@@ -68,9 +422,31 @@
       "transport_minutes": 480,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 480, "cost_per_person": 778.0, "distance_km": 1874.0, "from_station": "成都东站", "to_station": "北京西站", "transit_text": "G字头高铁约8h（成都东→北京西）"},
-        {"mode": "air", "transport_minutes": 190, "cost_per_person": 1200.0, "distance_km": 1557.0, "from_station": "成都天府国际机场", "to_station": "北京大兴国际机场", "transit_text": "直飞约3h10m（天府→大兴）"},
-        {"mode": "driving", "transport_minutes": 1200, "cost_per_person": 800.0, "distance_km": 1800.0, "transit_text": "自驾约20h"}
+        {
+          "mode": "train",
+          "transport_minutes": 480,
+          "cost_per_person": 778.0,
+          "from_station": "成都东站",
+          "to_station": "北京西站",
+          "distance_km": 1874.0,
+          "transit_text": "G字头高铁约8h（成都东→北京西）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 190,
+          "cost_per_person": 1200.0,
+          "from_station": "成都天府国际机场",
+          "to_station": "北京大兴国际机场",
+          "distance_km": 1557.0,
+          "transit_text": "直飞约3h10m（天府→大兴）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1200,
+          "cost_per_person": 800.0,
+          "distance_km": 1800.0,
+          "transit_text": "自驾约20h"
+        }
       ]
     },
     {
@@ -79,9 +455,31 @@
       "transport_minutes": 700,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 700, "cost_per_person": 999.0, "distance_km": 1980.0, "from_station": "上海虹桥站", "to_station": "成都东站", "transit_text": "高铁约11h40m（虹桥→成都东）"},
-        {"mode": "air", "transport_minutes": 200, "cost_per_person": 1300.0, "distance_km": 1660.0, "from_station": "上海虹桥国际机场", "to_station": "成都天府国际机场", "transit_text": "直飞约3h20m（虹桥→天府）"},
-        {"mode": "driving", "transport_minutes": 1260, "cost_per_person": 850.0, "distance_km": 2000.0, "transit_text": "自驾约21h"}
+        {
+          "mode": "train",
+          "transport_minutes": 700,
+          "cost_per_person": 999.0,
+          "from_station": "上海虹桥站",
+          "to_station": "成都东站",
+          "distance_km": 1980.0,
+          "transit_text": "高铁约11h40m（虹桥→成都东）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 200,
+          "cost_per_person": 1300.0,
+          "from_station": "上海虹桥国际机场",
+          "to_station": "成都天府国际机场",
+          "distance_km": 1660.0,
+          "transit_text": "直飞约3h20m（虹桥→天府）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1260,
+          "cost_per_person": 850.0,
+          "distance_km": 2000.0,
+          "transit_text": "自驾约21h"
+        }
       ]
     },
     {
@@ -90,9 +488,31 @@
       "transport_minutes": 700,
       "mode": "train",
       "options": [
-        {"mode": "train", "transport_minutes": 700, "cost_per_person": 999.0, "distance_km": 1980.0, "from_station": "成都东站", "to_station": "上海虹桥站", "transit_text": "高铁约11h40m（成都东→虹桥）"},
-        {"mode": "air", "transport_minutes": 200, "cost_per_person": 1300.0, "distance_km": 1660.0, "from_station": "成都天府国际机场", "to_station": "上海虹桥国际机场", "transit_text": "直飞约3h20m（天府→虹桥）"},
-        {"mode": "driving", "transport_minutes": 1260, "cost_per_person": 850.0, "distance_km": 2000.0, "transit_text": "自驾约21h"}
+        {
+          "mode": "train",
+          "transport_minutes": 700,
+          "cost_per_person": 999.0,
+          "from_station": "成都东站",
+          "to_station": "上海虹桥站",
+          "distance_km": 1980.0,
+          "transit_text": "高铁约11h40m（成都东→虹桥）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 200,
+          "cost_per_person": 1300.0,
+          "from_station": "成都天府国际机场",
+          "to_station": "上海虹桥国际机场",
+          "distance_km": 1660.0,
+          "transit_text": "直飞约3h20m（天府→虹桥）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1260,
+          "cost_per_person": 850.0,
+          "distance_km": 2000.0,
+          "transit_text": "自驾约21h"
+        }
       ]
     },
     {
@@ -101,8 +521,22 @@
       "transport_minutes": 40,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 35, "cost_per_person": 55.0, "distance_km": 120.0, "from_station": "天津站", "to_station": "北京南站", "transit_text": "城际高铁约35m（天津站→北京南）"},
-        {"mode": "driving", "transport_minutes": 120, "cost_per_person": 40.0, "distance_km": 120.0, "transit_text": "自驾约2h"}
+        {
+          "mode": "train",
+          "transport_minutes": 35,
+          "cost_per_person": 55.0,
+          "from_station": "天津站",
+          "to_station": "北京南站",
+          "distance_km": 120.0,
+          "transit_text": "城际高铁约35m（天津站→北京南）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 120,
+          "cost_per_person": 40.0,
+          "distance_km": 120.0,
+          "transit_text": "自驾约2h"
+        }
       ]
     },
     {
@@ -111,8 +545,22 @@
       "transport_minutes": 40,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 35, "cost_per_person": 55.0, "distance_km": 120.0, "from_station": "北京南站", "to_station": "天津站", "transit_text": "城际高铁约35m（北京南→天津站）"},
-        {"mode": "driving", "transport_minutes": 120, "cost_per_person": 40.0, "distance_km": 120.0, "transit_text": "自驾约2h"}
+        {
+          "mode": "train",
+          "transport_minutes": 35,
+          "cost_per_person": 55.0,
+          "from_station": "北京南站",
+          "to_station": "天津站",
+          "distance_km": 120.0,
+          "transit_text": "城际高铁约35m（北京南→天津站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 120,
+          "cost_per_person": 40.0,
+          "distance_km": 120.0,
+          "transit_text": "自驾约2h"
+        }
       ]
     },
     {
@@ -121,8 +569,22 @@
       "transport_minutes": 25,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 25, "cost_per_person": 40.0, "distance_km": 100.0, "from_station": "上海站", "to_station": "苏州站", "transit_text": "高铁约25m（上海→苏州站）"},
-        {"mode": "driving", "transport_minutes": 100, "cost_per_person": 30.0, "distance_km": 100.0, "transit_text": "自驾约1h40m"}
+        {
+          "mode": "train",
+          "transport_minutes": 25,
+          "cost_per_person": 40.0,
+          "from_station": "上海站",
+          "to_station": "苏州站",
+          "distance_km": 100.0,
+          "transit_text": "高铁约25m（上海→苏州站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 100,
+          "cost_per_person": 30.0,
+          "distance_km": 100.0,
+          "transit_text": "自驾约1h"
+        }
       ]
     },
     {
@@ -131,8 +593,22 @@
       "transport_minutes": 25,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 25, "cost_per_person": 40.0, "distance_km": 100.0, "from_station": "苏州站", "to_station": "上海站", "transit_text": "高铁约25m（苏州站→上海）"},
-        {"mode": "driving", "transport_minutes": 100, "cost_per_person": 30.0, "distance_km": 100.0, "transit_text": "自驾约1h40m"}
+        {
+          "mode": "train",
+          "transport_minutes": 25,
+          "cost_per_person": 40.0,
+          "from_station": "苏州站",
+          "to_station": "上海站",
+          "distance_km": 100.0,
+          "transit_text": "高铁约25m（苏州站→上海）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 100,
+          "cost_per_person": 30.0,
+          "distance_km": 100.0,
+          "transit_text": "自驾约1h"
+        }
       ]
     },
     {
@@ -141,8 +617,22 @@
       "transport_minutes": 50,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 50, "cost_per_person": 73.0, "distance_km": 165.0, "from_station": "上海虹桥站", "to_station": "杭州东站", "transit_text": "高铁约50m（虹桥→杭州东）"},
-        {"mode": "driving", "transport_minutes": 120, "cost_per_person": 40.0, "distance_km": 180.0, "transit_text": "自驾约2h"}
+        {
+          "mode": "train",
+          "transport_minutes": 50,
+          "cost_per_person": 73.0,
+          "from_station": "上海虹桥站",
+          "to_station": "杭州东站",
+          "distance_km": 165.0,
+          "transit_text": "高铁约50m（虹桥→杭州东）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 120,
+          "cost_per_person": 40.0,
+          "distance_km": 180.0,
+          "transit_text": "自驾约2h"
+        }
       ]
     },
     {
@@ -151,8 +641,1242 @@
       "transport_minutes": 50,
       "mode": "高铁",
       "options": [
-        {"mode": "train", "transport_minutes": 50, "cost_per_person": 73.0, "distance_km": 165.0, "from_station": "杭州东站", "to_station": "上海虹桥站", "transit_text": "高铁约50m（杭州东→虹桥）"},
-        {"mode": "driving", "transport_minutes": 120, "cost_per_person": 40.0, "distance_km": 180.0, "transit_text": "自驾约2h"}
+        {
+          "mode": "train",
+          "transport_minutes": 50,
+          "cost_per_person": 73.0,
+          "from_station": "杭州东站",
+          "to_station": "上海虹桥站",
+          "distance_km": 165.0,
+          "transit_text": "高铁约50m（杭州东→虹桥）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 120,
+          "cost_per_person": 40.0,
+          "distance_km": 180.0,
+          "transit_text": "自驾约2h"
+        }
+      ]
+    },
+    {
+      "origin": "北京",
+      "destination": "沈阳",
+      "transport_minutes": 170,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 170,
+          "cost_per_person": 306.0,
+          "from_station": "北京站",
+          "to_station": "沈阳北站",
+          "distance_km": 700.0,
+          "transit_text": "高铁约2h50m（北京站→沈阳北站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 90,
+          "cost_per_person": 520.0,
+          "from_station": "北京大兴国际机场",
+          "to_station": "沈阳桃仙国际机场",
+          "distance_km": 650.0,
+          "transit_text": "直飞约1h30m（北京大兴国际机场→沈阳桃仙国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 480,
+          "cost_per_person": 300.0,
+          "transit_text": "自驾约8h"
+        }
+      ]
+    },
+    {
+      "origin": "沈阳",
+      "destination": "北京",
+      "transport_minutes": 170,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 170,
+          "cost_per_person": 306.0,
+          "from_station": "沈阳北站",
+          "to_station": "北京站",
+          "distance_km": 700.0,
+          "transit_text": "高铁约2h50m（沈阳北站→北京站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 90,
+          "cost_per_person": 520.0,
+          "from_station": "沈阳桃仙国际机场",
+          "to_station": "北京大兴国际机场",
+          "distance_km": 650.0,
+          "transit_text": "直飞约1h30m（沈阳桃仙国际机场→北京大兴国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 480,
+          "cost_per_person": 300.0,
+          "transit_text": "自驾约8h"
+        }
+      ]
+    },
+    {
+      "origin": "北京",
+      "destination": "西安",
+      "transport_minutes": 280,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 280,
+          "cost_per_person": 515.0,
+          "from_station": "北京西站",
+          "to_station": "西安北站",
+          "distance_km": 1100.0,
+          "transit_text": "高铁约4h40m（北京西站→西安北站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 150,
+          "cost_per_person": 620.0,
+          "from_station": "北京大兴国际机场",
+          "to_station": "西安咸阳国际机场",
+          "distance_km": 1000.0,
+          "transit_text": "直飞约2h30m（北京大兴国际机场→西安咸阳国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 720,
+          "cost_per_person": 500.0,
+          "transit_text": "自驾约12h"
+        }
+      ]
+    },
+    {
+      "origin": "西安",
+      "destination": "北京",
+      "transport_minutes": 280,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 280,
+          "cost_per_person": 515.0,
+          "from_station": "西安北站",
+          "to_station": "北京西站",
+          "distance_km": 1100.0,
+          "transit_text": "高铁约4h40m（西安北站→北京西站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 150,
+          "cost_per_person": 620.0,
+          "from_station": "西安咸阳国际机场",
+          "to_station": "北京大兴国际机场",
+          "distance_km": 1000.0,
+          "transit_text": "直飞约2h30m（西安咸阳国际机场→北京大兴国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 720,
+          "cost_per_person": 500.0,
+          "transit_text": "自驾约12h"
+        }
+      ]
+    },
+    {
+      "origin": "北京",
+      "destination": "兰州",
+      "transport_minutes": 480,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 480,
+          "cost_per_person": 630.0,
+          "from_station": "北京西站",
+          "to_station": "兰州西站",
+          "distance_km": 1800.0,
+          "transit_text": "高铁约8h00m（北京西站→兰州西站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 130,
+          "cost_per_person": 760.0,
+          "from_station": "北京大兴国际机场",
+          "to_station": "兰州中川国际机场",
+          "distance_km": 1560.0,
+          "transit_text": "直飞约2h10m（北京大兴国际机场→兰州中川国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1080,
+          "cost_per_person": 700.0,
+          "transit_text": "自驾约18h"
+        }
+      ]
+    },
+    {
+      "origin": "兰州",
+      "destination": "北京",
+      "transport_minutes": 480,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 480,
+          "cost_per_person": 630.0,
+          "from_station": "兰州西站",
+          "to_station": "北京西站",
+          "distance_km": 1800.0,
+          "transit_text": "高铁约8h00m（兰州西站→北京西站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 130,
+          "cost_per_person": 760.0,
+          "from_station": "兰州中川国际机场",
+          "to_station": "北京大兴国际机场",
+          "distance_km": 1560.0,
+          "transit_text": "直飞约2h10m（兰州中川国际机场→北京大兴国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1080,
+          "cost_per_person": 700.0,
+          "transit_text": "自驾约18h"
+        }
+      ]
+    },
+    {
+      "origin": "北京",
+      "destination": "乌鲁木齐",
+      "transport_minutes": 260,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 260,
+          "cost_per_person": 1150.0,
+          "from_station": "北京大兴国际机场",
+          "to_station": "乌鲁木齐地窝堡国际机场",
+          "distance_km": 2800.0,
+          "transit_text": "直飞约4h20m（北京大兴国际机场→乌鲁木齐地窝堡国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1800,
+          "cost_per_person": 900.0,
+          "transit_text": "自驾约30h"
+        }
+      ]
+    },
+    {
+      "origin": "乌鲁木齐",
+      "destination": "北京",
+      "transport_minutes": 260,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 260,
+          "cost_per_person": 1150.0,
+          "from_station": "乌鲁木齐地窝堡国际机场",
+          "to_station": "北京大兴国际机场",
+          "distance_km": 2800.0,
+          "transit_text": "直飞约4h20m（乌鲁木齐地窝堡国际机场→北京大兴国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1800,
+          "cost_per_person": 900.0,
+          "transit_text": "自驾约30h"
+        }
+      ]
+    },
+    {
+      "origin": "上海",
+      "destination": "西安",
+      "transport_minutes": 330,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 330,
+          "cost_per_person": 600.0,
+          "from_station": "上海虹桥站",
+          "to_station": "西安北站",
+          "distance_km": 1400.0,
+          "transit_text": "高铁约5h30m（上海虹桥站→西安北站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 135,
+          "cost_per_person": 680.0,
+          "from_station": "上海虹桥国际机场",
+          "to_station": "西安咸阳国际机场",
+          "distance_km": 1300.0,
+          "transit_text": "直飞约2h15m（上海虹桥国际机场→西安咸阳国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 900,
+          "cost_per_person": 600.0,
+          "transit_text": "自驾约15h"
+        }
+      ]
+    },
+    {
+      "origin": "西安",
+      "destination": "上海",
+      "transport_minutes": 330,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 330,
+          "cost_per_person": 600.0,
+          "from_station": "西安北站",
+          "to_station": "上海虹桥站",
+          "distance_km": 1400.0,
+          "transit_text": "高铁约5h30m（西安北站→上海虹桥站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 135,
+          "cost_per_person": 680.0,
+          "from_station": "西安咸阳国际机场",
+          "to_station": "上海虹桥国际机场",
+          "distance_km": 1300.0,
+          "transit_text": "直飞约2h15m（西安咸阳国际机场→上海虹桥国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 900,
+          "cost_per_person": 600.0,
+          "transit_text": "自驾约15h"
+        }
+      ]
+    },
+    {
+      "origin": "上海",
+      "destination": "乌鲁木齐",
+      "transport_minutes": 300,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 300,
+          "cost_per_person": 1050.0,
+          "from_station": "上海虹桥国际机场",
+          "to_station": "乌鲁木齐地窝堡国际机场",
+          "distance_km": 3500.0,
+          "transit_text": "直飞约5h00m（上海虹桥国际机场→乌鲁木齐地窝堡国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 2100,
+          "cost_per_person": 1000.0,
+          "transit_text": "自驾约35h"
+        }
+      ]
+    },
+    {
+      "origin": "乌鲁木齐",
+      "destination": "上海",
+      "transport_minutes": 300,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 300,
+          "cost_per_person": 1050.0,
+          "from_station": "乌鲁木齐地窝堡国际机场",
+          "to_station": "上海虹桥国际机场",
+          "distance_km": 3500.0,
+          "transit_text": "直飞约5h00m（乌鲁木齐地窝堡国际机场→上海虹桥国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 2100,
+          "cost_per_person": 1000.0,
+          "transit_text": "自驾约35h"
+        }
+      ]
+    },
+    {
+      "origin": "上海",
+      "destination": "沈阳",
+      "transport_minutes": 130,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 130,
+          "cost_per_person": 580.0,
+          "from_station": "上海虹桥国际机场",
+          "to_station": "沈阳桃仙国际机场",
+          "distance_km": 1450.0,
+          "transit_text": "直飞约2h10m（上海虹桥国际机场→沈阳桃仙国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1200,
+          "cost_per_person": 700.0,
+          "transit_text": "自驾约20h"
+        }
+      ]
+    },
+    {
+      "origin": "沈阳",
+      "destination": "上海",
+      "transport_minutes": 130,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 130,
+          "cost_per_person": 580.0,
+          "from_station": "沈阳桃仙国际机场",
+          "to_station": "上海虹桥国际机场",
+          "distance_km": 1450.0,
+          "transit_text": "直飞约2h10m（沈阳桃仙国际机场→上海虹桥国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1200,
+          "cost_per_person": 700.0,
+          "transit_text": "自驾约20h"
+        }
+      ]
+    },
+    {
+      "origin": "北京",
+      "destination": "武汉",
+      "transport_minutes": 260,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 260,
+          "cost_per_person": 470.0,
+          "from_station": "北京西站",
+          "to_station": "武汉站",
+          "distance_km": 1150.0,
+          "transit_text": "高铁约4h20m（北京西站→武汉站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 110,
+          "cost_per_person": 560.0,
+          "from_station": "北京大兴国际机场",
+          "to_station": "武汉天河国际机场",
+          "distance_km": 1050.0,
+          "transit_text": "直飞约1h50m（北京大兴国际机场→武汉天河国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 720,
+          "cost_per_person": 500.0,
+          "transit_text": "自驾约12h"
+        }
+      ]
+    },
+    {
+      "origin": "武汉",
+      "destination": "北京",
+      "transport_minutes": 260,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 260,
+          "cost_per_person": 470.0,
+          "from_station": "武汉站",
+          "to_station": "北京西站",
+          "distance_km": 1150.0,
+          "transit_text": "高铁约4h20m（武汉站→北京西站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 110,
+          "cost_per_person": 560.0,
+          "from_station": "武汉天河国际机场",
+          "to_station": "北京大兴国际机场",
+          "distance_km": 1050.0,
+          "transit_text": "直飞约1h50m（武汉天河国际机场→北京大兴国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 720,
+          "cost_per_person": 500.0,
+          "transit_text": "自驾约12h"
+        }
+      ]
+    },
+    {
+      "origin": "上海",
+      "destination": "武汉",
+      "transport_minutes": 210,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 210,
+          "cost_per_person": 380.0,
+          "from_station": "上海虹桥站",
+          "to_station": "武汉站",
+          "distance_km": 800.0,
+          "transit_text": "高铁约3h30m（上海虹桥站→武汉站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 100,
+          "cost_per_person": 500.0,
+          "from_station": "上海虹桥国际机场",
+          "to_station": "武汉天河国际机场",
+          "distance_km": 750.0,
+          "transit_text": "直飞约1h40m（上海虹桥国际机场→武汉天河国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 600,
+          "cost_per_person": 400.0,
+          "transit_text": "自驾约10h"
+        }
+      ]
+    },
+    {
+      "origin": "武汉",
+      "destination": "上海",
+      "transport_minutes": 210,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 210,
+          "cost_per_person": 380.0,
+          "from_station": "武汉站",
+          "to_station": "上海虹桥站",
+          "distance_km": 800.0,
+          "transit_text": "高铁约3h30m（武汉站→上海虹桥站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 100,
+          "cost_per_person": 500.0,
+          "from_station": "武汉天河国际机场",
+          "to_station": "上海虹桥国际机场",
+          "distance_km": 750.0,
+          "transit_text": "直飞约1h40m（武汉天河国际机场→上海虹桥国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 600,
+          "cost_per_person": 400.0,
+          "transit_text": "自驾约10h"
+        }
+      ]
+    },
+    {
+      "origin": "成都",
+      "destination": "武汉",
+      "transport_minutes": 95,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 95,
+          "cost_per_person": 540.0,
+          "from_station": "成都天府国际机场",
+          "to_station": "武汉天河国际机场",
+          "distance_km": 850.0,
+          "transit_text": "直飞约1h35m（成都天府国际机场→武汉天河国际机场）"
+        },
+        {
+          "mode": "train",
+          "transport_minutes": 420,
+          "cost_per_person": 520.0,
+          "from_station": "成都东站",
+          "to_station": "武汉站",
+          "distance_km": 1500.0,
+          "transit_text": "高铁约7h00m（成都东站→武汉站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 780,
+          "cost_per_person": 550.0,
+          "transit_text": "自驾约13h"
+        }
+      ]
+    },
+    {
+      "origin": "武汉",
+      "destination": "成都",
+      "transport_minutes": 95,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 95,
+          "cost_per_person": 540.0,
+          "from_station": "武汉天河国际机场",
+          "to_station": "成都天府国际机场",
+          "distance_km": 850.0,
+          "transit_text": "直飞约1h35m（武汉天河国际机场→成都天府国际机场）"
+        },
+        {
+          "mode": "train",
+          "transport_minutes": 420,
+          "cost_per_person": 520.0,
+          "from_station": "武汉站",
+          "to_station": "成都东站",
+          "distance_km": 1500.0,
+          "transit_text": "高铁约7h00m（武汉站→成都东站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 780,
+          "cost_per_person": 550.0,
+          "transit_text": "自驾约13h"
+        }
+      ]
+    },
+    {
+      "origin": "武汉",
+      "destination": "西安",
+      "transport_minutes": 90,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 90,
+          "cost_per_person": 500.0,
+          "from_station": "武汉天河国际机场",
+          "to_station": "西安咸阳国际机场",
+          "distance_km": 700.0,
+          "transit_text": "直飞约1h30m（武汉天河国际机场→西安咸阳国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 600,
+          "cost_per_person": 400.0,
+          "transit_text": "自驾约10h"
+        }
+      ]
+    },
+    {
+      "origin": "西安",
+      "destination": "武汉",
+      "transport_minutes": 90,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 90,
+          "cost_per_person": 500.0,
+          "from_station": "西安咸阳国际机场",
+          "to_station": "武汉天河国际机场",
+          "distance_km": 700.0,
+          "transit_text": "直飞约1h30m（西安咸阳国际机场→武汉天河国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 600,
+          "cost_per_person": 400.0,
+          "transit_text": "自驾约10h"
+        }
+      ]
+    },
+    {
+      "origin": "成都",
+      "destination": "西安",
+      "transport_minutes": 200,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 200,
+          "cost_per_person": 410.0,
+          "from_station": "成都东站",
+          "to_station": "西安北站",
+          "distance_km": 700.0,
+          "transit_text": "高铁约3h20m（成都东站→西安北站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 85,
+          "cost_per_person": 520.0,
+          "from_station": "成都天府国际机场",
+          "to_station": "西安咸阳国际机场",
+          "distance_km": 600.0,
+          "transit_text": "直飞约1h25m（成都天府国际机场→西安咸阳国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 480,
+          "cost_per_person": 350.0,
+          "transit_text": "自驾约8h"
+        }
+      ]
+    },
+    {
+      "origin": "西安",
+      "destination": "成都",
+      "transport_minutes": 200,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 200,
+          "cost_per_person": 410.0,
+          "from_station": "西安北站",
+          "to_station": "成都东站",
+          "distance_km": 700.0,
+          "transit_text": "高铁约3h20m（西安北站→成都东站）"
+        },
+        {
+          "mode": "air",
+          "transport_minutes": 85,
+          "cost_per_person": 520.0,
+          "from_station": "西安咸阳国际机场",
+          "to_station": "成都天府国际机场",
+          "distance_km": 600.0,
+          "transit_text": "直飞约1h25m（西安咸阳国际机场→成都天府国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 480,
+          "cost_per_person": 350.0,
+          "transit_text": "自驾约8h"
+        }
+      ]
+    },
+    {
+      "origin": "成都",
+      "destination": "兰州",
+      "transport_minutes": 100,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 100,
+          "cost_per_person": 580.0,
+          "from_station": "成都天府国际机场",
+          "to_station": "兰州中川国际机场",
+          "distance_km": 620.0,
+          "transit_text": "直飞约1h40m（成都天府国际机场→兰州中川国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 600,
+          "cost_per_person": 400.0,
+          "transit_text": "自驾约10h"
+        }
+      ]
+    },
+    {
+      "origin": "兰州",
+      "destination": "成都",
+      "transport_minutes": 100,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 100,
+          "cost_per_person": 580.0,
+          "from_station": "兰州中川国际机场",
+          "to_station": "成都天府国际机场",
+          "distance_km": 620.0,
+          "transit_text": "直飞约1h40m（兰州中川国际机场→成都天府国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 600,
+          "cost_per_person": 400.0,
+          "transit_text": "自驾约10h"
+        }
+      ]
+    },
+    {
+      "origin": "成都",
+      "destination": "乌鲁木齐",
+      "transport_minutes": 190,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 190,
+          "cost_per_person": 900.0,
+          "from_station": "成都天府国际机场",
+          "to_station": "乌鲁木齐地窝堡国际机场",
+          "distance_km": 2300.0,
+          "transit_text": "直飞约3h10m（成都天府国际机场→乌鲁木齐地窝堡国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1500,
+          "cost_per_person": 800.0,
+          "transit_text": "自驾约25h"
+        }
+      ]
+    },
+    {
+      "origin": "乌鲁木齐",
+      "destination": "成都",
+      "transport_minutes": 190,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 190,
+          "cost_per_person": 900.0,
+          "from_station": "乌鲁木齐地窝堡国际机场",
+          "to_station": "成都天府国际机场",
+          "distance_km": 2300.0,
+          "transit_text": "直飞约3h10m（乌鲁木齐地窝堡国际机场→成都天府国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1500,
+          "cost_per_person": 800.0,
+          "transit_text": "自驾约25h"
+        }
+      ]
+    },
+    {
+      "origin": "西安",
+      "destination": "乌鲁木齐",
+      "transport_minutes": 160,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 160,
+          "cost_per_person": 700.0,
+          "from_station": "西安咸阳国际机场",
+          "to_station": "乌鲁木齐地窝堡国际机场",
+          "distance_km": 2300.0,
+          "transit_text": "直飞约2h40m（西安咸阳国际机场→乌鲁木齐地窝堡国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1440,
+          "cost_per_person": 800.0,
+          "transit_text": "自驾约24h"
+        }
+      ]
+    },
+    {
+      "origin": "乌鲁木齐",
+      "destination": "西安",
+      "transport_minutes": 160,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 160,
+          "cost_per_person": 700.0,
+          "from_station": "乌鲁木齐地窝堡国际机场",
+          "to_station": "西安咸阳国际机场",
+          "distance_km": 2300.0,
+          "transit_text": "直飞约2h40m（乌鲁木齐地窝堡国际机场→西安咸阳国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1440,
+          "cost_per_person": 800.0,
+          "transit_text": "自驾约24h"
+        }
+      ]
+    },
+    {
+      "origin": "北京",
+      "destination": "张掖",
+      "transport_minutes": 145,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 145,
+          "cost_per_person": 600.0,
+          "from_station": "北京大兴国际机场",
+          "to_station": "张掖甘州机场",
+          "distance_km": 1400.0,
+          "transit_text": "直飞约2h25m（北京大兴国际机场→张掖甘州机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1140,
+          "cost_per_person": 800.0,
+          "transit_text": "自驾约19h"
+        }
+      ]
+    },
+    {
+      "origin": "张掖",
+      "destination": "北京",
+      "transport_minutes": 145,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 145,
+          "cost_per_person": 600.0,
+          "from_station": "张掖甘州机场",
+          "to_station": "北京大兴国际机场",
+          "distance_km": 1400.0,
+          "transit_text": "直飞约2h25m（张掖甘州机场→北京大兴国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 1140,
+          "cost_per_person": 800.0,
+          "transit_text": "自驾约19h"
+        }
+      ]
+    },
+    {
+      "origin": "石家庄",
+      "destination": "北京",
+      "transport_minutes": 90,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 90,
+          "cost_per_person": 106.0,
+          "from_station": "石家庄站",
+          "to_station": "北京西站",
+          "distance_km": 280.0,
+          "transit_text": "高铁约1h30m（石家庄站→北京西站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 200,
+          "cost_per_person": 80.0,
+          "transit_text": "自驾约3h"
+        }
+      ]
+    },
+    {
+      "origin": "北京",
+      "destination": "石家庄",
+      "transport_minutes": 90,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 90,
+          "cost_per_person": 106.0,
+          "from_station": "北京西站",
+          "to_station": "石家庄站",
+          "distance_km": 280.0,
+          "transit_text": "高铁约1h30m（北京西站→石家庄站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 200,
+          "cost_per_person": 80.0,
+          "transit_text": "自驾约3h"
+        }
+      ]
+    },
+    {
+      "origin": "银川",
+      "destination": "兰州",
+      "transport_minutes": 150,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 150,
+          "cost_per_person": 95.0,
+          "from_station": "银川站",
+          "to_station": "兰州西站",
+          "distance_km": 360.0,
+          "transit_text": "高铁约2h30m（银川站→兰州西站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 420,
+          "cost_per_person": 150.0,
+          "transit_text": "自驾约7h"
+        }
+      ]
+    },
+    {
+      "origin": "兰州",
+      "destination": "银川",
+      "transport_minutes": 150,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 150,
+          "cost_per_person": 95.0,
+          "from_station": "兰州西站",
+          "to_station": "银川站",
+          "distance_km": 360.0,
+          "transit_text": "高铁约2h30m（兰州西站→银川站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 420,
+          "cost_per_person": 150.0,
+          "transit_text": "自驾约7h"
+        }
+      ]
+    },
+    {
+      "origin": "张掖",
+      "destination": "兰州",
+      "transport_minutes": 160,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 160,
+          "cost_per_person": 98.0,
+          "from_station": "张掖西站",
+          "to_station": "兰州西站",
+          "distance_km": 450.0,
+          "transit_text": "高铁约2h40m（张掖西站→兰州西站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 330,
+          "cost_per_person": 120.0,
+          "transit_text": "自驾约5h"
+        }
+      ]
+    },
+    {
+      "origin": "兰州",
+      "destination": "张掖",
+      "transport_minutes": 160,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 160,
+          "cost_per_person": 98.0,
+          "from_station": "兰州西站",
+          "to_station": "张掖西站",
+          "distance_km": 450.0,
+          "transit_text": "高铁约2h40m（兰州西站→张掖西站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 330,
+          "cost_per_person": 120.0,
+          "transit_text": "自驾约5h"
+        }
+      ]
+    },
+    {
+      "origin": "张掖",
+      "destination": "西安",
+      "transport_minutes": 100,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 100,
+          "cost_per_person": 480.0,
+          "from_station": "张掖甘州机场",
+          "to_station": "西安咸阳国际机场",
+          "distance_km": 700.0,
+          "transit_text": "直飞约1h40m（张掖甘州机场→西安咸阳国际机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 600,
+          "cost_per_person": 300.0,
+          "transit_text": "自驾约10h"
+        }
+      ]
+    },
+    {
+      "origin": "西安",
+      "destination": "张掖",
+      "transport_minutes": 100,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 100,
+          "cost_per_person": 480.0,
+          "from_station": "西安咸阳国际机场",
+          "to_station": "张掖甘州机场",
+          "distance_km": 700.0,
+          "transit_text": "直飞约1h40m（西安咸阳国际机场→张掖甘州机场）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 600,
+          "cost_per_person": 300.0,
+          "transit_text": "自驾约10h"
+        }
+      ]
+    },
+    {
+      "origin": "南京",
+      "destination": "上海",
+      "transport_minutes": 70,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 70,
+          "cost_per_person": 134.0,
+          "from_station": "南京南站",
+          "to_station": "上海虹桥站",
+          "distance_km": 300.0,
+          "transit_text": "高铁约1h10m（南京南站→上海虹桥站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 200,
+          "cost_per_person": 80.0,
+          "transit_text": "自驾约3h"
+        }
+      ]
+    },
+    {
+      "origin": "上海",
+      "destination": "南京",
+      "transport_minutes": 70,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 70,
+          "cost_per_person": 134.0,
+          "from_station": "上海虹桥站",
+          "to_station": "南京南站",
+          "distance_km": 300.0,
+          "transit_text": "高铁约1h10m（上海虹桥站→南京南站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 200,
+          "cost_per_person": 80.0,
+          "transit_text": "自驾约3h"
+        }
+      ]
+    },
+    {
+      "origin": "重庆",
+      "destination": "成都",
+      "transport_minutes": 90,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 90,
+          "cost_per_person": 155.0,
+          "from_station": "重庆北站",
+          "to_station": "成都东站",
+          "distance_km": 310.0,
+          "transit_text": "高铁约1h30m（重庆北站→成都东站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 180,
+          "cost_per_person": 80.0,
+          "transit_text": "自驾约3h"
+        }
+      ]
+    },
+    {
+      "origin": "成都",
+      "destination": "重庆",
+      "transport_minutes": 90,
+      "mode": "train",
+      "options": [
+        {
+          "mode": "train",
+          "transport_minutes": 90,
+          "cost_per_person": 155.0,
+          "from_station": "成都东站",
+          "to_station": "重庆北站",
+          "distance_km": 310.0,
+          "transit_text": "高铁约1h30m（成都东站→重庆北站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 180,
+          "cost_per_person": 80.0,
+          "transit_text": "自驾约3h"
+        }
+      ]
+    },
+    {
+      "origin": "昆明",
+      "destination": "成都",
+      "transport_minutes": 80,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 80,
+          "cost_per_person": 420.0,
+          "from_station": "昆明长水国际机场",
+          "to_station": "成都天府国际机场",
+          "distance_km": 640.0,
+          "transit_text": "直飞约1h20m（昆明长水国际机场→成都天府国际机场）"
+        },
+        {
+          "mode": "train",
+          "transport_minutes": 300,
+          "cost_per_person": 420.0,
+          "from_station": "昆明南站",
+          "to_station": "成都东站",
+          "distance_km": 950.0,
+          "transit_text": "高铁约5h00m（昆明南站→成都东站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 540,
+          "cost_per_person": 300.0,
+          "transit_text": "自驾约9h"
+        }
+      ]
+    },
+    {
+      "origin": "成都",
+      "destination": "昆明",
+      "transport_minutes": 80,
+      "mode": "air",
+      "options": [
+        {
+          "mode": "air",
+          "transport_minutes": 80,
+          "cost_per_person": 420.0,
+          "from_station": "成都天府国际机场",
+          "to_station": "昆明长水国际机场",
+          "distance_km": 640.0,
+          "transit_text": "直飞约1h20m（成都天府国际机场→昆明长水国际机场）"
+        },
+        {
+          "mode": "train",
+          "transport_minutes": 300,
+          "cost_per_person": 420.0,
+          "from_station": "成都东站",
+          "to_station": "昆明南站",
+          "distance_km": 950.0,
+          "transit_text": "高铁约5h00m（成都东站→昆明南站）"
+        },
+        {
+          "mode": "driving",
+          "transport_minutes": 540,
+          "cost_per_person": 300.0,
+          "transit_text": "自驾约9h"
+        }
       ]
     }
   ]

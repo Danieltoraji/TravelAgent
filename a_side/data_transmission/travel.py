@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from data_transmission.city_travel import (
+    AIR_BUFFER_MIN,
+    DEFAULT_MAX_TOTAL_MINUTES,
+    IntercityRoute,
     find_city_travel_preferred,
+    find_intercity_route,
     load_city_travel_options,
     mode_text,
 )
@@ -123,55 +127,101 @@ def clarify_travel(
     return requirement
 
 
-def _build_segment_legs(
-    origin: str, destination: str, edge: Any
+def _build_route_legs(
+    origin: str, destination: str, route: Any
 ) -> List[Dict[str, Any]]:
-    """两段式 legs（批次 2，用户 8.28 建议「先定城际方式」）：
+    """段级 legs（批次 2 两段式 + 2.5 联运扩展）：
 
-    - train/air 站点对 → ``[local(出发地→出发站), intercity(出发站→到达站),
-      local(到达站→目的地)]``：intercity leg 方式已定（mode/时长/费用/source
-      已填充），local 市内衔接 leg 为占位（``duration_min=None``，阶段三用
-      map 真源填充——对应「再选择 A 到车站 / 车站到 B 的方式」）；
-    - driving / 无站点 → 单条 intercity leg（城市对直达）。
+    - 单段（train/air 站点对）→ ``[local, intercity, local]``；
+    - 多段联运 → 每段一条 intercity leg，**段间插入同城转场 local 占位**
+      （如 北京南站→大兴 的站际衔接，阶段三用 map 真源填充），首尾各一条
+      local 接驳占位；
+    - driving / 无站点 → 单条 intercity leg（城市对直达，无 local 骨架）。
     """
-    from_station = edge.from_station or ""
-    to_station = edge.to_station or ""
-    intercity: Dict[str, Any] = {
-        "kind": "intercity",
-        "from": from_station or origin,
-        "to": to_station or destination,
-        "mode": edge.mode,
-        "duration_min": int(edge.transport_minutes),
-        "cost_per_person": float(edge.cost_per_person),
-        "source": edge.source,
-        "note": "城际主段（方式已定）",
-    }
-    if not (from_station and to_station):
-        return [intercity]
-    return [
-        {
-            "kind": "local", "from": origin, "to": from_station,
-            "duration_min": None, "mode": "", "source": "",
-            "note": "市内衔接（阶段三 map 真源填充）",
-        },
-        intercity,
-        {
-            "kind": "local", "from": to_station, "to": destination,
-            "duration_min": None, "mode": "", "source": "",
-            "note": "市内衔接（阶段三 map 真源填充）",
-        },
+    edges = route.edges
+    first = edges[0]
+    last = edges[-1]
+
+    def intercity_leg(e: Any) -> Dict[str, Any]:
+        return {
+            "kind": "intercity",
+            "from": e.from_station or e.origin,
+            "to": e.to_station or e.destination,
+            "mode": e.mode,
+            "duration_min": int(e.transport_minutes),
+            "buffer_min": AIR_BUFFER_MIN if e.mode == "air" else 0,
+            "cost_per_person": float(e.cost_per_person),
+            "source": e.source,
+            "note": "城际主段（方式已定）",
+        }
+
+    def local_leg(a: str, b: str, note: str) -> Dict[str, Any]:
+        return {
+            "kind": "local", "from": a, "to": b,
+            "duration_min": None, "mode": "", "source": "", "note": note,
+        }
+
+    if not (first.from_station and first.to_station):
+        # 城市级直达（driving 等）：无车站骨架，仅一条 intercity leg
+        return [intercity_leg(first)]
+
+    legs: List[Dict[str, Any]] = [
+        local_leg(origin, first.from_station, "市内衔接（阶段三 map 真源填充）")
     ]
+    prev_to = first.to_station or first.destination
+    for i, e in enumerate(edges):
+        e_from = e.from_station or e.origin
+        if i > 0 and e_from and prev_to and e_from != prev_to:
+            legs.append(local_leg(
+                prev_to, e_from, "同城转场（车站/机场衔接，阶段三 map 真源填充）"
+            ))
+        legs.append(intercity_leg(e))
+        prev_to = e.to_station or e.destination
+    legs.append(local_leg(
+        prev_to or destination, destination, "市内衔接（阶段三 map 真源填充）"
+    ))
+    return legs
 
 
-def _segment_name(
-    origin: str, destination: str, edge: Any, schedule_name: str
+def _route_name(
+    origin: str, destination: str, route: Any, schedule_name: str
 ) -> str:
-    """段名：有站点对 → 「天津站 → 北京南站（高铁）」；否则城市级。"""
-    if edge.from_station and edge.to_station:
-        return (
-            f"{edge.from_station} → {edge.to_station}（{mode_text(edge.mode)}）"
-        )
-    return f"{origin} → {destination}（{mode_text(edge.mode)}）"
+    """段名：单段站点对 → 「天津站 → 北京南站（高铁）」；单段城市级 →
+    「天津 → 北京（高铁）」；多段联运 → 「天津 → 北京 → 张掖（联运）」（中转城市串联）。"""
+    if not route.is_chain:
+        e = route.edges[0]
+        if e.from_station and e.to_station:
+            return f"{e.from_station} → {e.to_station}（{mode_text(e.mode)}）"
+        return f"{origin} → {destination}（{mode_text(e.mode)}）"
+    via = " → ".join(
+        (e.destination) for e in route.edges[:-1]
+    )
+    return f"{origin} → {via} → {destination}（联运）"
+
+
+def _resolve_intercity_route(
+    origin: str,
+    destination: str,
+    provider: Optional[Callable[[str, str], Optional[Any]]],
+    options: Dict[Tuple[str, str], Dict[str, Any]],
+) -> Optional[IntercityRoute]:
+    """城际路线解析（单段直达 或 多段联运），返回 ``IntercityRoute`` 或 None：
+
+    1. 直达（provider 真源优先；本地 options 偏好链）且 ≤ 12h → 单段 route；
+    2. 直达超 12h 或不存在 → 区域模板（本地估算表，``source=estimate``）；
+    3. 模板无解 → 回落 provider/本地直达 如实给出（如表外 driving 兜底 19h）。
+    """
+    direct = find_city_travel_preferred(
+        origin, destination, options=options, provider=provider
+    )
+    if direct is not None and direct.transport_minutes <= DEFAULT_MAX_TOTAL_MINUTES:
+        return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
+    route = find_intercity_route(origin, destination, options=options)
+    if route is not None:
+        return route
+    if direct is not None:
+        return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
+    return None
 
 
 def build_trip_segments(
@@ -182,21 +232,22 @@ def build_trip_segments(
     """按 origin + travel_schedule 生成城际来去程行程段（时间轴头尾，不占每日时长）。
 
     ``travel_provider``：``fn(origin, dest) -> Optional[CityTravelEdge]``——真实数据
-    接入时由 ``live_data.make_live_city_travel_provider`` 注入；给定优先（live map
-    工具内部自带 train→表外→driving 真源降级），否则本地 options 按偏好链
-    （高铁 → 飞机 → 自驾）选方式。
+    接入时由 ``live_data.make_live_city_travel_provider`` 注入；给定优先。
+
+    路线选择（批次 2.5 区域模板）：直达（≤12h）优先 → 多段联运（区域枢纽候选
+    枚举取最短，含 air 值机缓冲）→ truant 直达兜底如实给出。段 details 透传
+    mode/车站对/费用/source/legs（两段式结构：城际方式已定，市内衔接预留）。
 
     返回形如：:
         [
-          {"type": "transport", "name": "天津站 → 北京南站（高铁）",
-           "day_label": "2026-08-21", "start_minutes": 1200, "end_minutes": 1240,
-           "duration_minutes": 40,
-           "details": {"from": "天津", "to": "北京", "mode": "train",
-                       "from_station": "天津站", "to_station": "北京南站",
-                       "cost_per_person": 55.0, "source": "estimate",
+          {"type": "transport", "name": "天津 → 北京 → 张掖（联运）",
+           "day_label": "2026-08-04", "start_minutes": 540, "end_minutes": 780,
+           "duration_minutes": 240,
+           "details": {"from": "天津", "to": "张掖", "mode": "联运",
+                       "from_station": "天津站", "to_station": "张掖甘州机场",
+                       "cost_per_person": 655.0, "source": "estimate",
                        "kind": "outbound",
-                       "legs": [{"kind": "local", ...}, {"kind": "intercity", ...},
-                                {"kind": "local", ...}]}},
+                       "legs": [local, intercity, 转场local, intercity, local]}},
           ...
         ]
     无 origin / 缺城际数据 / 缺对应日期或时刻 → 返回 []（向后兼容：纯目的地游无来去程）。
@@ -218,56 +269,58 @@ def build_trip_segments(
         except (ValueError, AttributeError):
             return None
 
-    def make_segment(edge: Any, name: str, day_label: str, start_minutes: int,
-                     kind: str) -> Dict[str, Any]:
+    def make_segment(route: IntercityRoute, name: str, day_label: str,
+                     start_minutes: int, kind: str) -> Dict[str, Any]:
+        edges = route.edges
+        first, last = edges[0], edges[-1]
+        chain = route.is_chain
         return {
             "type": "transport",
             "name": name,
             "day_label": day_label,
             "start_minutes": start_minutes,
-            "end_minutes": start_minutes + edge.transport_minutes,
-            "duration_minutes": edge.transport_minutes,
+            "end_minutes": start_minutes + route.total_minutes,
+            "duration_minutes": route.total_minutes,
             "details": {
                 "from": origin if kind == "outbound" else destination,
                 "to": destination if kind == "outbound" else origin,
-                "mode": edge.mode,
-                "from_station": edge.from_station,
-                "to_station": edge.to_station,
-                "cost_per_person": edge.cost_per_person,
-                "source": edge.source,
+                "mode": "联运" if chain else first.mode,
+                "from_station": first.from_station or origin,
+                "to_station": last.to_station or destination,
+                "cost_per_person": route.total_cost,
+                "source": "estimate" if chain else first.source,
                 "kind": kind,
-                "legs": _build_segment_legs(origin, destination, edge),
+                "stops": (
+                    [e.destination for e in edges[:-1]] if chain else []
+                ),
+                "legs": _build_route_legs(origin, destination, route),
             },
         }
 
-    outbound = find_city_travel_preferred(
-        origin, destination, options=options, provider=travel_provider
+    outbound = _resolve_intercity_route(
+        origin, destination, travel_provider, options
     )
     if outbound is not None and schedule.get("departure_date") and schedule.get("departure_time"):
         start = hhmm_to_minutes(schedule["departure_time"])
         if start is not None:
             segments.append(make_segment(
                 outbound,
-                _segment_name(origin, destination, outbound, "去程"),
+                _route_name(origin, destination, outbound, "去程"),
                 schedule.get("departure_date") or "去程",
                 start,
                 "outbound",
             ))
 
     homeward = (
-        find_city_travel_preferred(
-            destination, origin, options=options, provider=travel_provider
-        )
-        or find_city_travel_preferred(
-            origin, destination, options=options, provider=travel_provider
-        )
+        _resolve_intercity_route(destination, origin, travel_provider, options)
+        or _resolve_intercity_route(origin, destination, travel_provider, options)
     )
     if homeward is not None and schedule.get("return_date") and schedule.get("return_time"):
         start = hhmm_to_minutes(schedule["return_time"])
         if start is not None:
             segments.append(make_segment(
                 homeward,
-                _segment_name(destination, origin, homeward, "返程"),
+                _route_name(destination, origin, homeward, "返程"),
                 schedule.get("return_date") or "返程",
                 start,
                 "return",

@@ -193,3 +193,186 @@ def find_city_travel_preferred(
         if mode in by_mode:
             return by_mode[mode]
     return None
+
+
+# ---------------------------------------------------------------------------
+# 区域模板（多式联运，批次 2.5）：分区 → 多枢纽 → 天津→张掖 空铁联运
+# ---------------------------------------------------------------------------
+
+AIR_BUFFER_MIN = 60              # 每段 air 的值机缓冲（计入联运总时长）
+DEFAULT_MAX_TOTAL_MINUTES = 720  # 单程 12h 硬约束（uncompleted_list 一-1）
+
+
+@dataclass(frozen=True)
+class IntercityRoute:
+    """多段联运链（本地直达 或 区域模板候选拼接）。
+
+    ``total_minutes`` = Σ段净时长 + Σ air 段缓冲（值机），即真实行程总时长；
+    ``total_cost`` = Σ 各段人均费用。
+    """
+    edges: Tuple[CityTravelEdge, ...]
+    total_minutes: int
+    total_cost: float
+
+    @property
+    def is_chain(self) -> bool:
+        """是否多段联运（>1 段）。"""
+        return len(self.edges) > 1
+
+
+def load_regions(path: Optional[Any] = None) -> list:
+    """区域表 ``[{name, hubs, members}]``；文件缺失 / 无 regions → []。"""
+    travel_path = Path(path) if path is not None else DEFAULT_CITY_TRAVEL_PATH
+    if not travel_path.exists():
+        return []
+    try:
+        data = json.loads(travel_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return data.get("regions", []) or []
+
+
+def find_region_of(
+    city: str, regions: Optional[list] = None
+) -> Optional[dict]:
+    """城市所在区域（hub 或 member 命中）；不在任何区域 → None。
+
+    ``regions=None`` → 读默认表：便于调用方一次加载复用。
+    """
+    regions = regions if regions is not None else load_regions()
+    for region in regions:
+        if city in (region.get("hubs") or []) or city in (region.get("members") or []):
+            return region
+    return None
+
+
+def _pick_segment(
+    a: str,
+    b: str,
+    options: Dict[Tuple[str, str], Dict[str, CityTravelEdge]],
+    prefer: str = "rail",
+) -> Optional[CityTravelEdge]:
+    """a→b 偏好段：在 ``prefer`` 允许的交通方式内取**时长最短**（踩中最优）。
+
+    - ``prefer="air"``（区域间干线）：候选 air + train 取短；
+    - ``prefer="rail"``（区域内接驳）：候选 train + air 取短；
+    两者都无 → driving 兜底；仍无 → None。
+    """
+    if a == b:
+        return None
+    modes = ("air", "train") if prefer == "air" else ("train", "air")
+    by_mode = options.get((a, b)) or {}
+    candidates = [by_mode[m] for m in modes if m in by_mode]
+    if not candidates:
+        driving = by_mode.get("driving")
+        return driving if driving is not None else None
+    return min(candidates, key=lambda e: e.transport_minutes)
+
+
+def _route_minutes(edges: Tuple[CityTravelEdge, ...]) -> int:
+    """段净时长 + Σ air 值机缓冲。"""
+    return sum(e.transport_minutes for e in edges) + sum(
+        AIR_BUFFER_MIN for e in edges if e.mode == "air"
+    )
+
+
+def find_intercity_route_template(
+    origin: str,
+    destination: str,
+    max_total_minutes: int = DEFAULT_MAX_TOTAL_MINUTES,
+    options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
+) -> Optional[IntercityRoute]:
+    """区域模板候选枚举（不查直达，供直达失败/超时后调用）：
+
+    出发区枢纽 × 目标区枢纽（含「本区枢纽 → 目标区成员直飞」特例），枚举全部
+    ≤2 跳链，取总时长（含 air 缓冲）最短且 ≤ ``max_total_minutes``；无候选 → None。
+
+    例如 天津→张掖（华北[北京] → 西北[西安/兰州/乌鲁木齐]）：
+    - 北京→张掖 直飞（大兴→甘州）→ 链 [天津→北京, 北京→张掖] 约 240min ★
+    - 经兰州 → [天津→北京, 北京→兰州, 兰州→张掖] 约 385min
+    取最短 → 踩中「天津→大兴→直飞张掖」的最优策略（多枢纽价值所在）。
+    """
+    if not origin or not destination or origin == destination:
+        return None
+    options = options if options is not None else load_city_travel_options()
+    origin_region = find_region_of(origin)
+    dest_region = find_region_of(destination)
+    if origin_region is None or dest_region is None:
+        return None
+
+    candidates: List[IntercityRoute] = []
+    seen = set()
+    hubs1 = origin_region.get("hubs") or []
+    hubs2 = dest_region.get("hubs") or []
+
+    def add(chain: Tuple[CityTravelEdge, ...]) -> None:
+        if not chain:
+            return
+        key = tuple((e.origin, e.destination, e.mode) for e in chain)
+        if key in seen:
+            return
+        seen.add(key)
+        minutes = _route_minutes(chain)
+        if minutes <= max_total_minutes:
+            candidates.append(
+                IntercityRoute(chain, minutes, sum(e.cost_per_person for e in chain))
+            )
+
+    for h1 in hubs1:
+        seg1 = None if origin == h1 else _pick_segment(origin, h1, options, "rail")
+        if origin != h1 and seg1 is None:
+            continue  # 到不了本区枢纽 → 该 h1 无候选
+        head = (seg1,) if seg1 is not None else ()
+        # 特例：本区枢纽 → 目标区成员直飞（如 去程 天津→张掖：北京→张掖 大兴→甘州）
+        if destination != h1:
+            seg_direct = _pick_segment(h1, destination, options, "air")
+            if seg_direct is not None:
+                add(head + (seg_direct,))
+        # 经目标区枢纽：h1 → h2 → destination
+        for h2 in hubs2:
+            if h2 == h1 or h2 == destination:
+                continue
+            mid = _pick_segment(h1, h2, options, "air")
+            tail = _pick_segment(h2, destination, options, "rail")
+            if mid is None or tail is None:
+                continue
+            add(head + (mid, tail))
+    # 特例（对称）：成员直连目标区枢纽（如 返程 张掖→天津：张掖→北京 直飞 145m
+    # 优于 张掖→兰州→北京 385m——h1 循环只枚举「本区枢纽出发」，此处补 origin 直连）
+    if origin not in hubs1 and destination not in hubs2:
+        for h2 in hubs2:
+            seg0 = _pick_segment(origin, h2, options, "air")
+            tail0 = _pick_segment(h2, destination, options, "rail")
+            if seg0 is None or tail0 is None:
+                continue
+            add((seg0, tail0))
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda r: r.total_minutes)
+
+
+def find_intercity_route(
+    origin: str,
+    destination: str,
+    max_total_minutes: int = DEFAULT_MAX_TOTAL_MINUTES,
+    options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
+) -> Optional[IntercityRoute]:
+    """多式联运总入口：本地直达（≤12h）优先 → 区域模板 → None。
+
+    注意：provider（live）场景直达由调用方先行权衡（表外 driving 兜底超 12h 时
+    才回落本函数），本函数只消费本地表。
+    """
+    options = options if options is not None else load_city_travel_options()
+    direct = find_city_travel_preferred(origin, destination, options=options)
+    if direct is not None and direct.transport_minutes <= max_total_minutes:
+        return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
+    template = find_intercity_route_template(
+        origin, destination, max_total_minutes=max_total_minutes, options=options
+    )
+    if template is not None:
+        return template
+    if direct is not None:
+        # 直达超 12h（罕见）：仍如实给出（source 标注后由外层兜底语义处理）
+        return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
+    return None
