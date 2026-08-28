@@ -121,11 +121,14 @@ requirement_schema = {
                 },
                 "travel_priority": {
                     "type": ["string", "null"],
-                    "enum": ["speed", "cost", "comfort"],
+                    "enum": ["rail", "air", "speed", "earliest", "cost"],
                     "title": "城际交通偏好",
-                    "description": "可选；用户对来去城际交通的偏好：speed=越快越好（如「赶时间/最快/少在路上」）、"
-                    "cost=越省钱越好（如「便宜/省钱/预算紧张」）、comfort=舒适优先（如「舒适/轻松/不要太折腾」）；"
-                    "没有交通方式偏好则为 null 或省略",
+                    "description": "可选；用户对城际来去程的交通偏好（C 端四维：高铁优先/飞机优先/速度最快/最早到达）："
+                    "rail=高铁优先（有高铁就用高铁，链式命中 train→air→driving）、"
+                    "air=飞机优先（air→train→driving）、"
+                    "speed=速度最快（总耗时最短，飞机按净时长+值机缓冲公平比）、"
+                    "earliest=最早到达（到达时刻最早；估算表无班次时与 speed 等价，真源班次化后按到达时刻选）、"
+                    "cost=越省钱越好（人均费用最低，C 端可选暴露）；没有交通偏好则省略该字段",
                 },
             },
             "required": ["preferred_tags", "avoid_tags"],

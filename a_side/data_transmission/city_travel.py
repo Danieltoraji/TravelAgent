@@ -25,6 +25,9 @@ DEFAULT_CITY_TRAVEL_PATH = (
 
 # 城际方式偏好（来去程段生成时的选择顺序：高铁优先，逐项回退到命中为止）
 MODE_PREFERENCE: Tuple[str, ...] = ("train", "air", "driving")
+# C 端四维偏好（travel_priority）对应的模式优先链（「优先」= 链式命中，非取最短）：
+MODE_PRIORITY_RAIL: Tuple[str, ...] = ("train", "air", "driving")   # 高铁优先（= 默认链）
+MODE_PRIORITY_AIR: Tuple[str, ...] = ("air", "train", "driving")    # 飞机优先
 
 # mode → 中文方式名（段展示用）
 _MODE_TEXT: Dict[str, str] = {
@@ -180,23 +183,32 @@ def find_city_travel_preferred(
     provider: Optional[Callable[[str, str], Optional[CityTravelEdge]]] = None,
     priority: Optional[str] = None,
 ) -> Optional[CityTravelEdge]:
-    """按偏好链逐个方式查，返回第一个命中（先定城际方式）。
+    """按偏好选择城际单边方式（先定城际方式）。
 
     - ``provider`` 非空：直接单调用（live map 工具内部自带
       train→表外→driving 真源的降级，无需 A 侧重试链）；
-    - 否则本地 options，按 ``priority`` 决策（均为「单方向一条边」）：
-      - ``None`` / ``"comfort"``：按 ``modes`` 偏好链逐个命中
-        （默认 高铁→飞机→自驾；舒适语义即此默认次序）；
-      - ``"speed"``：所有可用方式里取**总耗时最短**
+    - 否则本地 options，按 ``priority``（C 端四维 + 省钱）决策：
+      - ``"rail"`` 高铁优先：按 ``MODE_PRIORITY_RAIL``（train→air→driving）链式命中；
+      - ``"air"`` 飞机优先：按 ``MODE_PRIORITY_AIR``（air→train→driving）链式命中；
+      - ``"speed"`` 速度最快：所有可用方式里取**总耗时最短**
         （air 净时长 + 值机缓冲 60min 一并比较，公平起见）；
-      - ``"cost"``：有价格条目（``cost_per_person > 0``）里取**人均费用最低**；
-        全部无价 → 回落偏好链逐个命中。
+      - ``"earliest"`` 最早到达：估算表无班次，当前与 speed 同值（总耗时最短），
+        真源班次化后（阶段三）按到达时刻选最早的班次组合；
+      - ``"cost"`` 越省钱越好：有价格条目（``cost_per_person > 0``）里取人均费用最低，
+        全部无价 → 回落 ``modes`` 偏好链；
+      - ``None`` / 其它（含已移除的 comfort 兜底）：按 ``modes`` 偏好链逐个命中。
     """
     if provider is not None:
         return provider(origin, destination)
     options = options if options is not None else load_city_travel_options()
     by_mode = options.get((origin, destination)) or {}
-    if priority == "speed":
+    if priority in ("rail", "air"):
+        chain = MODE_PRIORITY_RAIL if priority == "rail" else MODE_PRIORITY_AIR
+        for mode in chain:
+            if mode in by_mode:
+                return by_mode[mode]
+        return None
+    if priority in ("speed", "earliest"):
         accessible = list(by_mode.values())
         if not accessible:
             return None
@@ -275,25 +287,43 @@ def _pick_segment(
     prefer: str = "rail",
     priority: Optional[str] = None,
 ) -> Optional[CityTravelEdge]:
-    """a→b 偏好段：在 ``prefer`` 允许的交通方式内取**时长最短**（踩中最优）。
+    """a→b 偏好段：默认（None）在 ``prefer`` 允许的方式内取**时长最短**（踩中最优）。
 
     - ``prefer="air"``（区域间干线）：候选 air + train 取短；
     - ``prefer="rail"``（区域内接驳）：候选 train + air 取短；
-    - ``priority="cost"``：候选里取**人均费用最低**（0 价/无价条目视为不可比，回落时长最短）；
-    - 两者都无 → driving 兜底；仍无 → None。
+    - ``priority`` 覆盖（C 端四维偏好）：
+      - ``"rail"`` 高铁优先 / ``"air"`` 飞机优先：按对应链**链式命中**
+        （有该模式就用，即使更慢/更贵——「优先」语义）；
+      - ``"speed"`` / ``"earliest"``：候选里取总耗时最短（air 含值机缓冲）；
+      - ``"cost"``：候选里取**人均费用最低**（0 价/无价条目视为不可比，回落时长最短）；
+    - 候选为空 → driving 兜底；仍无 → None。
     """
     if a == b:
         return None
-    modes = ("air", "train") if prefer == "air" else ("train", "air")
+    if priority == "rail":
+        chain = MODE_PRIORITY_RAIL
+    elif priority == "air":
+        chain = MODE_PRIORITY_AIR
+    else:
+        chain = ("air", "train") if prefer == "air" else ("train", "air")
     by_mode = options.get((a, b)) or {}
-    candidates = [by_mode[m] for m in modes if m in by_mode]
+    candidates = [by_mode[m] for m in chain if m in by_mode]
     if not candidates:
         driving = by_mode.get("driving")
         return driving if driving is not None else None
+    if priority in ("rail", "air"):
+        # 模式优先 = 链式命中（train 或 air 存在即用，不做最短比较）
+        return candidates[0]
     if priority == "cost":
         priced = [e for e in candidates if e.cost_per_person and e.cost_per_person > 0]
         if priced:
             return min(priced, key=lambda e: e.cost_per_person)
+    if priority in ("speed", "earliest"):
+        return min(
+            candidates,
+            key=lambda e: e.transport_minutes
+            + (AIR_BUFFER_MIN if e.mode == "air" else 0),
+        )
     return min(candidates, key=lambda e: e.transport_minutes)
 
 
@@ -390,7 +420,7 @@ def find_intercity_route(
 ) -> Optional[IntercityRoute]:
     """多式联运总入口：本地直达（≤12h）优先 → 区域模板 → None。
 
-    ``priority``（speed/cost/comfort/None）：直达与模板各段的方式选择偏好，
+    ``priority``（rail/air/speed/earliest/cost/None）：直达与模板各段的方式选择偏好，
     见 ``find_city_travel_preferred`` / ``_pick_segment``。
 
     注意：provider（live）场景直达由调用方先行权衡（表外 driving 兜底超 12h 时

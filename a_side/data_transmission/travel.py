@@ -265,9 +265,10 @@ def build_trip_segments(
     if not origin or not destination:
         return []
 
-    # 城际交通偏好（批次：偏好驱动选方式）：speed/cost/comfort/None。
+    # 城际交通偏好（批次「偏好驱动选方式」）：rail/air/speed/earliest/cost/None。
     # 影响直达方式选择（find_city_travel_preferred）与联运各段方式
-    # （_pick_segment）：speed=总耗时最短、cost=人均费用最低、comfort/缺省=高铁优先链。
+    # （_pick_segment）：rail=高铁优先、air=飞机优先（链式命中）、speed=总耗时最短、
+    # earliest=最早到达（当前与 speed 等价）、cost=人均费用最低、缺省=高铁优先链。
     priority = (content.get("preferences") or {}).get("travel_priority")
     options = load_city_travel_options()
     segments: List[Dict[str, Any]] = []
