@@ -186,6 +186,11 @@ def plan(request: HttpRequest) -> JsonResponse:
     payload = _json_body(request)
     if not payload:
         return _error("requirement JSON body required")
+    # B1（8.28 反馈）：C 端一直发 `departure_location` 但从未映射到
+    # `content.origin`（views 零引用）→ 一行映射（已传 origin 则以其为准）。
+    content = payload.get("content") if isinstance(payload, dict) else None
+    if isinstance(content, dict) and not content.get("origin") and content.get("departure_location"):
+        content["origin"] = content.pop("departure_location")
     try:
         timeline_obj = runtime.init_from_requirement(payload)
     except Exception as exc:

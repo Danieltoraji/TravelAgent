@@ -175,6 +175,10 @@ class Place:
     restaurant_name: str = ""       # 餐厅名（meal 段 name 仍是「午餐/晚餐」餐段类型）
     cuisine: List[str] = field(default_factory=list)  # 菜系标签
     average_cost: float = 0.0       # 人均消费（元）
+    # 批次 2（城际来去程）：transport 段透传结构化信息（mode / from_station /
+    # to_station / cost_per_person / source / legs 市内衔接预留）——非 transport
+    # 段保持默认空 dict，旧消费方（asdict 自动透出、逆向转换忽略）向后兼容。
+    details: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

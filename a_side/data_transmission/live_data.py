@@ -658,10 +658,20 @@ def make_live_restaurants_provider(
 
 def make_live_city_travel_provider(
     tool_provider: Any,
+    mode: str = "train",
 ) -> Callable[[str, str], Optional[CityTravelEdge]]:
-    """返回 ``provider(origin, dest) -> Optional[CityTravelEdge]``。
+    """返回 ``provider(origin, dest) -> Optional[CityTravelEdge]``（真源城际查询）。
 
-    无此线路（工具缺数据）返回 None，与假表 ``find_city_travel`` 缺边语义一致。
+    ``mode`` 城际方式参数化（train/air/driving，默认 train；批次 2 A2 修复——
+    不再硬编码死的 ``"train"``）。B 侧 map 工具对 train/air 查估算表
+    （``source=estimate``，含车站/机场对），表外自动回退 driving 真源——provider
+    单调用即完成「方式优先 → 兜底」降级，无需 A 侧重试链。
+
+    解析新返回字段：``duration_min/transport_minutes`` → 分钟、
+    ``cost_per_person / from_station / to_station / source`` → Edge 对应字段。
+
+    无此线路（工具缺数据 / status=error / 分钟不可解析）返回 None，
+    与假表 ``find_city_travel`` 缺边语义一致。
     """
 
     def city_travel_provider(origin: str, destination: str) -> Optional[CityTravelEdge]:
@@ -671,7 +681,7 @@ def make_live_city_travel_provider(
                 action="route",
                 origin=origin,
                 destination=destination,
-                mode="train",
+                mode=mode,
             )
         except Exception as exc:  # noqa: BLE001
             raise LiveDataError(
@@ -681,12 +691,16 @@ def make_live_city_travel_provider(
         minutes = _minutes_from_payload(payload)
         if minutes is None:
             return None
-        mode = _as_str(payload.get("mode") or payload.get("transit_mode") or "城际交通")
+        edge_mode = _as_str(payload.get("mode") or payload.get("transit_mode") or mode)
         return CityTravelEdge(
             origin=origin,
             destination=destination,
             transport_minutes=minutes,
-            mode=mode,
+            mode=edge_mode,
+            cost_per_person=_as_float(payload.get("cost_per_person")),
+            from_station=_as_str(payload.get("from_station")),
+            to_station=_as_str(payload.get("to_station")),
+            source=_as_str(payload.get("source")),
         )
 
     return city_travel_provider

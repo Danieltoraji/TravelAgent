@@ -186,6 +186,43 @@ def _node_to_place(node: Dict[str, Any]) -> Place:
     )
 
 
+def _attach_trip_segment_places(
+    plan: Dict[str, Any], days: List[DayPlan]
+) -> None:
+    """把 ``plan["trip_segments"]``（城际来去程段）映射进 ``days`` 对应日期。
+
+    - 段含 ``day_label``（YYYY-MM-DD）→ 匹配 ``DayPlan.date``；找不到该日 → 跳过；
+    - 去程（``details.kind == "outbound"``）插到当天 **items 头部**（先出发再游玩），
+      返程（``return``）追加 **items 尾部**（游玩毕再返程）；
+    - ``Place.details`` 透传段 details（mode / from_station / to_station /
+      cost_per_person / source / legs），C 端可读客运站对与两段式衔接结构；
+      ``price`` 带人均费用（批次 3 预算口径 `transit` 计入口径前仅供展示）。
+    """
+    segments = plan.get("trip_segments") or []
+    if not segments:
+        return
+    day_by_label = {d.date.isoformat(): d for d in days}
+    for seg in segments:
+        if not isinstance(seg, dict) or seg.get("type") != "transport":
+            continue
+        day = day_by_label.get(str(seg.get("day_label") or ""))
+        if day is None:
+            continue
+        details = seg.get("details") or {}
+        place = Place(
+            name=str(seg.get("name") or ""),
+            category="transport",
+            arrival=format_minutes(_safe_minutes(seg.get("start_minutes"))),
+            end_time=format_minutes(_safe_minutes(seg.get("end_minutes"))),
+            price=float(details.get("cost_per_person") or 0.0),
+            details=dict(details),
+        )
+        if details.get("kind") == "return":
+            day.items.append(place)
+        else:
+            day.items.insert(0, place)
+
+
 def plan_to_trip_timeline(
     plan: Dict[str, Any],
     *,
@@ -250,6 +287,11 @@ def plan_to_trip_timeline(
                 items=items,
             )
         )
+    # 批次 2（城际来去程 A1 闭环）：plan["trip_segments"]（build_trip_segments
+    # 产出）→ 头/尾 transport 段——去程（kind=outbound）插入当天 items 头部、
+    # 返程（kind=return）追加尾部；段 details 透传 mode/车站对/cost/source/legs
+    # （两段式决策：城际方式已定，市内衔接 legs 预留供阶段三填充）。
+    _attach_trip_segment_places(plan, days)
     # 8.30 预算口径：四项完整汇总（门票/讲解/餐饮/酒店），单一来源 _plan_cost_summary
     from algorithoms._common import _plan_cost_summary
 

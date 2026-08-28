@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -242,6 +243,59 @@ class BPlannerHook:
         """A 的结构化需求 → B 的 ``PlannerOutput``（只含最小编制字段）。"""
         return requirement_to_planner_output(self.requirement)
 
+    def _ensure_default_travel_schedule(self) -> Dict[str, Any]:
+        """Web 场景无交互：缺 ``travel_schedule`` 时注入默认来去程窗。
+
+        默认策略（计划 §4.1）：去程首日 09:00 前出发、返程末日 18:00 前；
+        无 ``start_date`` → 无法定默认窗，跳过（保底不生成来去程段）。
+        已具备完整 schedule 的请求不动（幂等）。
+        """
+        content = self.requirement.get("content") or {}
+        schedule = content.get("travel_schedule") or {}
+        keys = ("departure_date", "departure_time", "return_date", "return_time")
+        if all(schedule.get(key) for key in keys):
+            return content
+        if not content.get("start_date"):
+            return content
+        days_n = int(content.get("days") or 1)
+        start = _as_date(content["start_date"])
+        end = start + timedelta(days=max(0, days_n - 1))
+        content["travel_schedule"] = {
+            "departure_date": start.isoformat(),
+            "departure_time": "09:00",
+            "return_date": end.isoformat(),
+            "return_time": "18:00",
+        }
+        return content
+
+    def _attach_trip_segments(self, plan: Dict[str, Any]) -> None:
+        """城际来去程段写入 ``plan["trip_segments"]``（A1 死代码解除，Web 链路接通）。
+
+        决策顺序（用户 8.28 建议）：**先定城际方式**（``build_trip_segments`` 内
+        本地 options 按 train→air→driving 偏好链，或 live provider 单调用降级），
+        站点/机场对落定后段 details 内预留市内衔接 legs（local 段占位，阶段三用
+        map 真源填充——「再选择 A 到车站 / 车站到 B 的方式」）。
+        """
+        from data_transmission.travel import build_trip_segments
+
+        self._ensure_default_travel_schedule()
+        provider = None
+        if self._use_live and getattr(self, "_tool_provider", None) is not None:
+            from data_transmission.live_data import make_live_city_travel_provider
+
+            provider = make_live_city_travel_provider(
+                self._tool_provider, mode="train"
+            )
+        try:
+            segments = build_trip_segments(
+                plan, self.requirement, travel_provider=provider
+            )
+        except Exception as exc:  # noqa: BLE001  城际段失败不阻断规划
+            logger.warning("build_trip_segments failed: %s", exc)
+            segments = []
+        if segments:
+            plan["trip_segments"] = segments
+
     def _attach_hotels(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         """把住宿安排写入计划（``plan["accommodation"]``，与 main.py 口径一致）。
 
@@ -373,6 +427,7 @@ class BPlannerHook:
         self._current_plan = plan
         self.last_error = None
         self.last_data_source = "live"
+        self._attach_trip_segments(plan)
         self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
             plan,
@@ -559,6 +614,7 @@ class BPlannerHook:
         self._current_plan = plan
         self.last_error = None
         self.last_data_source = source
+        self._attach_trip_segments(plan)
         self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
             plan,
