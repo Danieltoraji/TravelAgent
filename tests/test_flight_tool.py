@@ -304,10 +304,13 @@ class TestFlightToolsLive(unittest.TestCase):
         self.assertEqual(r.data, [])
 
     def test_live_missing_city_errors(self) -> None:
+        # C5（PR#3）：base_tool 按 schema required 校验，空串在 execute 层
+        # 即报「必填参数为空: from_city」，不会走到 _run 内单独的空值分支。
         r = FlightSearchToolLive(self._client()).execute(
             from_city="", to_city="上海", date="2026-09-05")
         self.assertEqual(r.status, ToolStatus.ERROR)
-        self.assertIn("不能为空", r.error)
+        self.assertIn("必填参数为空", r.error)
+        self.assertIn("from_city", r.error)
 
     def test_live_bad_date_errors(self) -> None:
         r = FlightSearchToolLive(self._client()).execute(
