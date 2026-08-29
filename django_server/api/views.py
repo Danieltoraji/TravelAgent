@@ -207,6 +207,15 @@ def _parse_free_text_requirement(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(parsed, dict) or not isinstance(parsed.get("content"), dict):
         logger.warning("free_text_requirement LLM 解析结果形状异常，按无备注规划")
         return payload
+    # LLM 按 prompt 规则会把「没有对应信息」的字段填 null，而 A 侧
+    # ``_include_meal_time_in_daily_limit`` 对显式 null 报错（要求用户确认）。
+    # 备注里通常不含这个信息 → 解析结果里把它降级为历史默认 False，
+    # 与 C 端一直没发该字段时的行为一致（缺省即 False）。
+    constraints = parsed["content"].get("constraints")
+    if isinstance(constraints, dict) and constraints.get(
+        "include_meal_time_in_daily_limit"
+    ) is None:
+        constraints["include_meal_time_in_daily_limit"] = False
     return parsed
 
 

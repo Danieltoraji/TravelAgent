@@ -166,3 +166,28 @@ def test_plan_view_feeds_parsed_payload_to_runtime(monkeypatch):
     resp = views.plan(req)
     assert resp.status_code == 200
     assert captured == [parsed], "runtime 应收到 LLM 解析后的需求"
+
+
+def test_llm_null_include_meal_time_downgraded(monkeypatch):
+    """回归（8.30 线上首测发现）：LLM 把 include_meal_time_in_daily_limit 填 null
+    → 必须降级为 False（A 侧对显式 null 报错，缺省才回退 False）。"""
+    parsed = _body("（已解析）")
+    parsed["content"]["constraints"]["include_meal_time_in_daily_limit"] = None
+    _patch_parse(monkeypatch, lambda raw, **kw: parsed)
+
+    result = views._parse_free_text_requirement(_body("备注内容"))
+
+    assert (
+        result["content"]["constraints"]["include_meal_time_in_daily_limit"] is False
+    ), "LLM 的 null 应降级为历史默认 False"
+
+
+def test_llm_false_include_meal_time_kept(monkeypatch):
+    """LLM 给了明确 False → 保持不变（不强行覆盖）。"""
+    parsed = _body("（已解析）")
+    parsed["content"]["constraints"]["include_meal_time_in_daily_limit"] = False
+    _patch_parse(monkeypatch, lambda raw, **kw: parsed)
+
+    result = views._parse_free_text_requirement(_body("备注内容"))
+
+    assert result["content"]["constraints"]["include_meal_time_in_daily_limit"] is False
