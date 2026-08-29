@@ -79,13 +79,13 @@ class TestDemoTrainMockCityChecks(unittest.TestCase):
 
     def test_changzhou_shanghai_demo_rows(self) -> None:
         rows = _demo_train_rows("常州", "上海")
-        self.assertEqual([r["code"] for r in rows], ["G7132", "G7365"])
+        self.assertEqual([r["code"] for r in rows], ["G7132", "G7365", "G7121"])
         self.assertEqual(rows[0]["from_station"], "常州北")
         self.assertEqual(rows[0]["to_station"], "上海虹桥")
         self.assertGreater(rows[0]["price"], 0)  # Demo 样例必须带票价
 
     def test_station_name_variant_accepted(self) -> None:
-        self.assertEqual(len(_demo_train_rows("常州北站", "上海虹桥站")), 2)
+        self.assertEqual(len(_demo_train_rows("常州北站", "上海虹桥站")), 3)
 
     def test_unknown_pair_returns_empty(self) -> None:
         self.assertEqual(_demo_train_rows("郑州", "上海"), [])
@@ -101,8 +101,8 @@ class TestDemoTrainMockCityChecks(unittest.TestCase):
     def test_trip_tool_earliest_picks_shortest(self) -> None:
         r = TrainTripSkill().execute(from_city="常州", to_city="上海", date=DATE)
         self.assertEqual(r.status.value, "ok")
-        # G7365（01:24）短于 G7132（01:26）→ earliest 推荐 G7365
-        self.assertEqual(r.data["code"], "G7365")
+        # G7121（01:22，82min）短于 G7132/G7365 → earliest 推荐 G7121
+        self.assertEqual(r.data["code"], "G7121")
 
     def test_trip_tool_unknown_pair_errors(self) -> None:
         r = TrainTripSkill().execute(from_city="郑州", to_city="上海", date=DATE)
@@ -141,7 +141,8 @@ class TestDemoCandidateChain(unittest.TestCase):
             self.assertEqual(candidate.legs[0].mode, "air")
             self.assertEqual(candidate.legs[1].mode, "train")
             self.assertEqual(candidate.legs[0].service_no, "KN5621")
-            self.assertIn(candidate.legs[1].service_no, ("G7132", "G7365"))
+            # 默认只返回可接续候选（阶段 2 换乘校验后的可行组合）
+            self.assertEqual(candidate.legs[1].service_no, "G7121")
 
     def test_legs_min_fields(self) -> None:
         candidates = self._build()

@@ -45,20 +45,30 @@ _DEMO_TRAIN_PAIRS = {
          "seats": {"soft_sleeper": "无", "dongwo": "候补", "second_class": "8"}},
     ],
     # 常州北（或 常州）→ 上海虹桥（或 上海）：Demo 候选链「锦州→常州→上海」铁路段
+    # （阶段 2：G7132/G7365 早班无法接续 KN5621（09:55 到 + 出机30+转场45+进站30 =
+    #  105min → 需 ≥11:40 发车），G7121 12:30 为可接续样例；电报码 ESH=常州北 已按
+    #  12306 真源修正）
     ("常州北", "上海虹桥"): [
         {"code": "G7132", "train_no": "2400000G71320", "status": "预订",
          "from_station": "常州北", "to_station": "上海虹桥",
-         "from_station_code": "CEG", "to_station_code": "AOH",
+         "from_station_code": "ESH", "to_station_code": "AOH",
          "depart_time": "08:30", "arrive_time": "09:56", "duration": "01:26",
          "price": 112.0,
          "seats": {"business": "有", "first_class": "有", "second_class": "23",
                    "no_seat": "有"}},
         {"code": "G7365", "train_no": "2400000G73650", "status": "预订",
          "from_station": "常州北", "to_station": "上海虹桥",
-         "from_station_code": "CEG", "to_station_code": "AOH",
+         "from_station_code": "ESH", "to_station_code": "AOH",
          "depart_time": "11:30", "arrive_time": "12:54", "duration": "01:24",
          "price": 108.0,
          "seats": {"business": "无", "first_class": "有", "second_class": "15",
+                   "no_seat": "有"}},
+        {"code": "G7121", "train_no": "2400000G71210", "status": "预订",
+         "from_station": "常州北", "to_station": "上海虹桥",
+         "from_station_code": "ESH", "to_station_code": "AOH",
+         "depart_time": "12:30", "arrive_time": "13:52", "duration": "01:22",
+         "price": 116.0,
+         "seats": {"business": "无", "first_class": "有", "second_class": "16",
                    "no_seat": "有"}},
     ],
 }
