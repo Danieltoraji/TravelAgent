@@ -57,14 +57,15 @@ class TestParseResult(unittest.TestCase):
 
 
 class TestClassifyException(unittest.TestCase):
+    """_classify_exception 是纯函数（只读异常对象）——用 __new__ 裸实例，
+    不触发 RollingGoClient.__init__（会启动后台 worker 并真连 url，
+    违反「单测禁联网」且在无服务地址下时序 flaky）。"""
+
     def setUp(self) -> None:
-        self.client = RollingGoClient(
-            url="http://localhost", api_key="test",
-            timeout=1, max_retries=0, retry_backoff_base=0,
-        )
+        self.client = RollingGoClient.__new__(RollingGoClient)
 
     def tearDown(self) -> None:
-        self.client.close()
+        self.client = None
 
     def test_auth_status(self) -> None:
         response = SimpleNamespace(status_code=401)
