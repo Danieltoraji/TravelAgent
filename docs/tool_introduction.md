@@ -463,10 +463,10 @@ client = AmapClient(
 
 | 方法 | 说明 |
 |------|------|
-| `geocode(address, city="") → (lat, lng)` | 调 `/v3/geocode/geo`，地址→坐标，带缓存 |
+| `geocode(address, city="") → (lat, lng)` | 调 `/v3/geocode/geo`，地址→坐标，带缓存；QPS 类限流（10019/10020/10021）自动退避重试（T2） |
 | `search_poi(query, city="", limit=10) → list[dict]` | 调 `/v5/place/text`（v5 API），关键词搜索 POI |
 | `search_poi_around(location, radius=1000, ...) → list[dict]` | 调 `/v5/place/around`（v5 API），周边搜索 POI |
-| `get_route(origin, destination, mode="transit") → dict` | 调路线规划 API，返回 `{distance, duration}` |
+| `get_route(origin, destination, mode="transit") → dict` | 调路线规划 API，返回 `{distance, duration}`；QPS 类限流自动退避重试（T2） |
 | `api_key` (property) | 获取 API Key |
 
 #### 认证方式
@@ -685,6 +685,7 @@ ScenicToolLive._run(place="故宫")
 | `origin` | string | ✅ | 起点 |
 | `destination` | string | ✅ | 终点 |
 | `mode` | enum | ❌ | `transit` / `taxi` / `walk`（默认 transit） |
+| `city` | string | ❌ | 起终点所在城市（T1 修复：地理编码与公交规划限定；不传则全国查询、transit 回退北京） |
 
 #### 返回字段
 
@@ -721,15 +722,15 @@ TrafficToolLive(client, world=None)
 #### Live 版调用链路
 
 ```
-TrafficToolLive._run(origin="故宫", destination="天坛", mode="taxi")
+TrafficToolLive._run(origin="故宫", destination="天坛", mode="taxi", city="北京")
   │
-  ├─ client.geocode("故宫", city="北京")          # 地理编码（带缓存）
+  ├─ client.geocode("故宫", city="北京")          # 地理编码（带缓存；T1：city 由调用方传入）
   │    → (39.916, 116.397)
   │
   ├─ client.geocode("天坛", city="北京")          # 地理编码（带缓存）
   │    → (39.882, 116.407)
   │
-  ├─ client.get_route(origin_coord, dest_coord, mode="driving")
+  ├─ client.get_route(origin_coord, dest_coord, mode="driving", city="北京")
   │    GET /v3/direction/driving?origin=116.397,39.916&destination=116.407,39.882
   │    → {distance: 5500, duration: 1260}
   │    → duration_min=21, distance_km=5.5
