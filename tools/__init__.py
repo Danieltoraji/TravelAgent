@@ -14,10 +14,13 @@ Demo 剧情需共享同一个 MockWorld（以便触发天气/排队变化）时�
 from __future__ import annotations
 
 from tools.amap_client import AmapClient
+from tools.action_skill import ActionSkill
 from tools.base_tool import BaseTool, ToolRegistry
 from tools.tool_provider import ToolProvider
 from tools.booking_tool import BookingTool
 from tools.food_tool import FoodTool, FoodToolLive
+from tools.hotel_book import HotelBookSkill, HotelBookSkillLive
+from tools.ticket_book import TicketBookSkill, TicketBookSkillLive
 from tools.hotel_tool import HotelTool, HotelToolLive
 from tools.map_tool import MapTool, MapToolLive
 from tools.mock_data import PLACES, MockWorld, WeatherData
@@ -108,8 +111,10 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
             retry_backoff_base=settings.rollinggo_mcp_retry_backoff_base,
         )
         registry.register(HotelToolLive(rollinggo_client))
+        registry.register(HotelBookSkillLive(rollinggo_client))
     else:
         registry.register(HotelTool())
+        registry.register(HotelBookSkill())
 
     # 火车票查询 Tool 组：按配置自动切换 Mock / Live（12306 公开接口，无需 API Key）
     if settings.use_real_train_api:
@@ -119,12 +124,14 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(TrainRouteToolLive(train_client))
         registry.register(TrainPriceToolLive(train_client))
         registry.register(TrainTripSkillLive(train_client))
+        registry.register(TicketBookSkillLive(train_client))
     else:
         registry.register(TrainTicketTool())
         registry.register(TrainTransferTool())
         registry.register(TrainRouteTool())
         registry.register(TrainPriceTool())
         registry.register(TrainTripSkill())
+        registry.register(TicketBookSkill())
 
     # 网页抓取/搜索 Tool：按配置自动切换 Mock / Live（无需 API Key）
     if settings.use_real_web:
@@ -147,8 +154,11 @@ __all__ = [
     "AirQualityToolLive",
     "AmapClient",
     "BaseTool",
+    "ActionSkill",
     "FoodTool",
     "FoodToolLive",
+    "HotelBookSkill",
+    "HotelBookSkillLive",
     "HotelTool",
     "HotelToolLive",
     "MapTool",
@@ -171,6 +181,8 @@ __all__ = [
     "TrainTicketToolLive",
     "TrainTransferTool",
     "TrainTransferToolLive",
+    "TicketBookSkill",
+    "TicketBookSkillLive",
     "TrainTripSkill",
     "TrainTripSkillLive",
     "WeatherBriefSkill",
