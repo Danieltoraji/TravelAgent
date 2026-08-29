@@ -27,6 +27,69 @@ logger = logging.getLogger("tools.train")
 _TRAIN_CODE_RE = re.compile(r"[A-Z]+\d+")
 
 
+_DEMO_TRAIN_PAIRS = {
+    # 北京南（或 北京）→ 上海虹桥（或 上海）：Demo 既有样例（保留回归）
+    ("北京南", "上海虹桥"): [
+        {"code": "G39", "train_no": "24000000G390I", "status": "预订",
+         "from_station": "北京南", "to_station": "上海虹桥",
+         "from_station_code": "VNP", "to_station_code": "AOH",
+         "depart_time": "08:00", "arrive_time": "13:24", "duration": "05:24",
+         "price": 662.0,
+         "seats": {"business": "12", "first_class": "有", "second_class": "23",
+                   "no_seat": "有"}},
+        {"code": "D311", "train_no": "24000000D3110", "status": "预订",
+         "from_station": "北京南", "to_station": "上海虹桥",
+         "from_station_code": "VNP", "to_station_code": "AOH",
+         "depart_time": "19:21", "arrive_time": "01:52", "duration": "06:31",
+         "price": 545.0,
+         "seats": {"soft_sleeper": "无", "dongwo": "候补", "second_class": "8"}},
+    ],
+    # 常州北（或 常州）→ 上海虹桥（或 上海）：Demo 候选链「锦州→常州→上海」铁路段
+    ("常州北", "上海虹桥"): [
+        {"code": "G7132", "train_no": "2400000G71320", "status": "预订",
+         "from_station": "常州北", "to_station": "上海虹桥",
+         "from_station_code": "CEG", "to_station_code": "AOH",
+         "depart_time": "08:30", "arrive_time": "09:56", "duration": "01:26",
+         "price": 112.0,
+         "seats": {"business": "有", "first_class": "有", "second_class": "23",
+                   "no_seat": "有"}},
+        {"code": "G7365", "train_no": "2400000G73650", "status": "预订",
+         "from_station": "常州北", "to_station": "上海虹桥",
+         "from_station_code": "CEG", "to_station_code": "AOH",
+         "depart_time": "11:30", "arrive_time": "12:54", "duration": "01:24",
+         "price": 108.0,
+         "seats": {"business": "无", "first_class": "有", "second_class": "15",
+                   "no_seat": "有"}},
+    ],
+}
+
+# 城市名 / 站名别名 → 城市（用于 Demo 城市对校验，I-04 对齐 flight mock）
+_DEMO_CITY_ALIASES = {
+    "北京": {"北京", "北京南", "北京南站", "北京站"},
+    "常州": {"常州", "常州北", "常州北站", "常州站"},
+    "上海": {"上海", "上海虹桥", "上海虹桥站", "上海站"},
+}
+
+
+def _demo_train_rows(from_station: str, to_station: str) -> List[Dict[str, Any]]:
+    """城市对/站对 → Demo 车次样例列表（**城市对校验**——任意城市对绝不
+    返回北京南→上海虹桥等固定样例冒充真实数据（I-04 铁路侧对齐）；
+    未收录城市对返回 []（诚实空，由上层降级）。"""
+    def city_of(value: str) -> Optional[str]:
+        for city, aliases in _DEMO_CITY_ALIASES.items():
+            if value in aliases:
+                return city
+        return None
+
+    fcity, tcity = city_of(from_station), city_of(to_station)
+    if fcity is None or tcity is None:
+        return []
+    for (left, right), rows in _DEMO_TRAIN_PAIRS.items():
+        if left in _DEMO_CITY_ALIASES[fcity] and right in _DEMO_CITY_ALIASES[tcity]:
+            return [dict(row) for row in rows]
+    return []
+
+
 class TrainTicketTool(BaseTool):
     name = "train_ticket"
     domain = "train"
@@ -47,20 +110,12 @@ class TrainTicketTool(BaseTool):
     def _run(self, from_station: str = "", to_station: str = "",
              date: str = "", purpose_codes: str = "ADULT",
              limit: int = 20) -> List[Dict[str, Any]]:
-        # Mock：固定车次（与 Live 输出同构）
-        return [
-            {"code": "G39", "train_no": "24000000G390I", "status": "预订",
-             "from_station": "北京南", "to_station": "上海虹桥",
-             "from_station_code": "VNP", "to_station_code": "AOH",
-             "depart_time": "08:00", "arrive_time": "13:24", "duration": "05:24",
-             "seats": {"business": "12", "first_class": "有", "second_class": "23",
-                       "no_seat": "有"}},
-            {"code": "D311", "train_no": "24000000D3110", "status": "预订",
-             "from_station": "北京南", "to_station": "上海虹桥",
-             "from_station_code": "VNP", "to_station_code": "AOH",
-             "depart_time": "19:21", "arrive_time": "01:52", "duration": "06:31",
-             "seats": {"soft_sleeper": "无", "dongwo": "候补", "second_class": "8"}},
-        ]
+        # Mock：城市对校验的 Demo 样例（I-04 铁路侧对齐——任意城市对
+        # 绝不返回固定北京南→上海虹桥车次；未收录城市对返回空）
+        rows = _demo_train_rows(from_station, to_station)
+        if limit and limit > 0:
+            rows = rows[:limit]
+        return rows
 
 
 class TrainTicketToolLive(TrainTicketTool):

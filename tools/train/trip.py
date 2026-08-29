@@ -106,17 +106,31 @@ class TrainTripSkill(Skill):
 
     def _run(self, from_city: str = "", to_city: str = "", date: str = "",
              preference: str = "earliest") -> Dict[str, Any]:
-        # Mock：固定班次（北京南→上海虹桥），与 Live 输出同构
+        # Mock：城市对校验的 Demo 样例（任意城市对绝不返回固定北京南→上海虹桥
+        # 冒充真实数据；未收录城市对报错，由上层回落 train_ticket/估算）
         if not from_city or not to_city:
             raise ValueError("from_city / to_city 不能为空")
+        from tools.train.tools import _demo_train_rows
+        rows = _demo_train_rows(from_city, to_city)
+        if not rows:
+            raise ValueError(f"该城市对（{from_city}→{to_city}）暂无演示车次样例")
+        # earliest=历时最短（与 Live 语义一致）；cheapest=二等座价最低
+        if preference == "cheapest":
+            priced = [t for t in rows if t.get("price")]
+            best = min(priced, key=lambda t: t["price"]) if priced else rows[0]
+        else:
+            best = min(rows, key=_duration_minutes)
         return {
             "origin": from_city, "destination": to_city,
-            "from_station": "北京南", "to_station": "上海虹桥",
-            "from_station_code": "VNP", "to_station_code": "AOH",
-            "code": "G39", "train_no": "24000000G390I",
-            "depart_time": "08:00", "arrive_time": "13:24", "duration": "05:24",
-            "transport_minutes": 324, "cost_per_person": 662.0,
-            "seats": {"second_class": "23"},
+            "from_station": best["from_station"], "to_station": best["to_station"],
+            "from_station_code": best.get("from_station_code", ""),
+            "to_station_code": best.get("to_station_code", ""),
+            "code": best["code"], "train_no": best.get("train_no", ""),
+            "depart_time": best["depart_time"], "arrive_time": best["arrive_time"],
+            "duration": best["duration"],
+            "transport_minutes": _duration_minutes(best),
+            "cost_per_person": float(best.get("price") or 0.0),
+            "seats": best.get("seats", {}),
             "preference": preference, "source": "mock",
         }
 
