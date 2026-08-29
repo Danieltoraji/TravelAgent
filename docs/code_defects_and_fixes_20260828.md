@@ -354,3 +354,21 @@
 | 4 | readonly 布尔 → safety 权限轴、LLM/C/内部三份白名单分层 | 是元数据框架变更 | 设计文档 §2 |
 | 5 | `_capture_hotel_data` 特例缓存 | 泛化为领域缓存钩子属框架变更 | 设计文档 §4 |
 | 6 | R1 双入口收紧 | breaking change，已决策不动 | 维持标注 |
+
+
+---
+
+## 附：T1–T4 交通故障修复记录（0829 二轮，对应 C 端排查报告）
+
+C 端报告（AI 排查方案）逐条核实结果与修复：
+
+| 编号 | 核实结论 | 修复 |
+|------|----------|------|
+| T1 | **属实且比报告更严重**：共 3 处硬编码——traffic_tool 两次 geocode + get_route 默认 `city="北京"`（报告漏了第三处） | `TrafficToolLive._run` 增 `city` 参数全链透传（geocode/get_route）；Mock 版签名与 schema 同步；监控规则传 `timeline.city`。真源验证：广州塔→陈家祠 transit 查通（此前必失败） |
+| T2 | **属实**：QPS 退避重试只存在于批量 distance 端点；geocode/get_route 被限流即立即失败（ValueError → BaseTool 不重试） | `AmapClient._get_with_transient_retry`：infocode 10019/10020/10021 退避 0.4s×n 重试（最多 3 次），非瞬时错误原样抛出；geocode 与 get_route 全部 4 个端点接入。同秒去重不做（缓存稳态已消化，标注后续） |
+| T3 | 属实（语义问题） | traffic-poll 监控改为 **timeline 前两个到达点**（排除 hotel）之间的通勤；不足两个回退旧行为（城市→首景点） |
+| T4 | 部分属实（infocode 已在错误串，但无分类与参数） | `_poll` 失败返回增 `params`（触发查询的 kwargs）与 `error_category`（RATE_LIMITED / GEOCODE_NOT_FOUND / OTHER） |
+| H1 | **非回退 bug，是满房演示的刻意设计**：演示/smoke 刻意使用假池酒店名 +"（满房）"后缀触发模拟失败闭环 | 不改代码；已在 PR 中向 C 说明 |
+| H2 | 验收程序问题（replans 内存态被新计划重置） | actions 已持久化（E5）；验收按 smoke 清单 3 执行并留存产物 |
+
+新增 11 个单测（tests/test_traffic_fix.py）。

@@ -47,6 +47,12 @@ _DISTANCE_ATTEMPTS = 3            # 单终点最大尝试次数（首次 + 2 次
 _DISTANCE_RETRY_BACKOFF = 0.4     # 重试退避秒数
 _DISTANCE_INTER_REQUEST_DELAY = 0.3  # 终点间间隔秒数（防批量 QPS 突刺）
 
+# T2（0829）：QPS 类瞬时 infocode——geocode/get_route 命中时退避重试
+# （此前仅批量 distance 端点有重试，单点查询被限流即立即失败）
+_TRANSIENT_INFOCODES = ("10019", "10020", "10021")
+_TRANSIENT_ATTEMPTS = 3           # 首次 + 2 次重试
+_TRANSIENT_RETRY_BACKOFF = 0.4    # 退避秒数
+
 
 class AmapClient:
     """高德地图 API 客户端（API Key 认证）。
@@ -69,6 +75,32 @@ class AmapClient:
     # 公开方法
     # ------------------------------------------------------------------
 
+    def _get_with_transient_retry(self, path: str,
+                                  params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """T2（0829）：带 QPS 类瞬时错误退避重试的 GET。
+
+        infocode 10019/10020/10021（QPS 限流类）→ 退避重试；非瞬时错误
+        （如 10001 key 无效、10003 超限）原样抛出，不改变异常类型。
+        """
+        last_error: Optional[ValueError] = None
+        for attempt in range(_TRANSIENT_ATTEMPTS):
+            try:
+                return self._get(path, params)
+            except ValueError as exc:
+                last_error = exc
+                message = str(exc)
+                if any(code in message for code in _TRANSIENT_INFOCODES) \
+                        and attempt < _TRANSIENT_ATTEMPTS - 1:
+                    delay = _TRANSIENT_RETRY_BACKOFF * (attempt + 1)
+                    logger.warning(
+                        "amap 瞬时限流（%s），%.1fs 后重试 %d/%d: %s",
+                        path, delay, attempt + 1, _TRANSIENT_ATTEMPTS - 1, message,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+        raise last_error  # pragma: no cover（循环内必 return/raise）
+
     def geocode(self, address: str, city: str = "") -> Tuple[float, float]:
         """地理编码：地址 → 坐标 (lat, lng)。
 
@@ -81,7 +113,7 @@ class AmapClient:
         params: Dict[str, str] = {"address": address}
         if city:
             params["city"] = city
-        resp = self._get("/v3/geocode/geo", params)
+        resp = self._get_with_transient_retry("/v3/geocode/geo", params)
 
         geocodes = resp.get("geocodes", [])
         if not geocodes:
@@ -190,22 +222,22 @@ class AmapClient:
                 "destination": dest_str,
                 "city": city,
             }
-            resp = self._get("/v3/direction/transit/integrated", params)
+            resp = self._get_with_transient_retry("/v3/direction/transit/integrated", params)
             return self._extract_transit_route(resp)
 
         if mode == "driving":
             params = {"origin": origin_str, "destination": dest_str}
-            resp = self._get("/v3/direction/driving", params)
+            resp = self._get_with_transient_retry("/v3/direction/driving", params)
             return self._extract_driving_route(resp)
 
         if mode == "riding":
             params = {"origin": origin_str, "destination": dest_str}
-            resp = self._get("/v4/direction/bicycling", params)
+            resp = self._get_with_transient_retry("/v4/direction/bicycling", params)
             return self._extract_bicycling_route(resp)
 
         if mode == "walk":
             params = {"origin": origin_str, "destination": dest_str}
-            resp = self._get("/v3/direction/walking", params)
+            resp = self._get_with_transient_retry("/v3/direction/walking", params)
             return self._extract_walking_route(resp)
 
         raise ValueError(f"不支持的路线模式: {mode}")

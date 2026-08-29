@@ -15,7 +15,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from booking.booking_manager import BookingManager
 from config.settings import settings
@@ -32,6 +32,15 @@ from tools import ToolRegistry, default_registry
 from tools.tool_provider import ToolProvider
 
 logger = logging.getLogger("execution")
+
+
+def _classify_error(message: str) -> str:
+    """T4（0829）：轮询失败错误分类——C 端据此区分"偶发限流"与"数据缺失"。"""
+    if any(code in message for code in ("10019", "10020", "10021", "CUQPS")):
+        return "RATE_LIMITED"
+    if "未找到地址" in message or "无坐标" in message:
+        return "GEOCODE_NOT_FOUND"
+    return "OTHER"
 
 
 @dataclass
@@ -82,7 +91,13 @@ class ExecutionAgent:
         result = self.registry.call(self._tool_for(event_type), **kwargs)
         if result.status.value == "ok":
             return result.data
-        return {"error": result.error, "status": result.status.value}
+        # T4（0829）：错误上报带触发参数与分类，C 端可区分"偶发限流"与"数据缺失"
+        return {
+            "error": result.error,
+            "status": result.status.value,
+            "params": dict(kwargs),
+            "error_category": _classify_error(result.error or ""),
+        }
 
     def _build_rules(self) -> None:
         cfg = settings.polling
@@ -100,13 +115,9 @@ class ExecutionAgent:
                 event_type=EventType.TRAFFIC,
                 interval_s=cfg.traffic_interval_s,
                 place=self.timeline.city,
-                # 修复：原 origin=destination=city（北京→北京）无意义；
-                # 改为查“当日首个景点”的交通状态，接真实 API 时才有意义。
-                call=lambda: self._poll(
-                    EventType.TRAFFIC,
-                    origin=self.timeline.city,
-                    destination=self._first_scenic_name(),
-                ),
+                # T3/T1（0829）：监控真实游客动线前段（前两个到达点间通勤），
+                # city 透传 POI 所在城市。不足两个到达点回退旧行为（城市→首景点）。
+                call=lambda: self._poll_traffic_pair(),
             ),
         ]
         # 到达前触发规则：景点（前20min）、餐饮（前30min）
@@ -150,6 +161,30 @@ class ExecutionAgent:
                 if item.category == "scenic":
                     return item.name
         return self.timeline.city
+
+    def _first_two_places(self) -> Tuple[str, str]:
+        """T3：行程前两个到达点（排除 hotel，跨天累计）——真实游客动线前段。
+
+        不足两个时回退旧行为：(城市名, 首景点)。
+        """
+        places = [
+            item.name
+            for day in self.timeline.days
+            for item in day.items
+            if item.category != "hotel"
+        ]
+        if len(places) >= 2:
+            return places[0], places[1]
+        return self.timeline.city, self._first_scenic_name()
+
+    def _poll_traffic_pair(self) -> Any:
+        """T1/T3：交通轮询——前两个到达点间通勤，city 透传 POI 所在城市。"""
+        origin, destination = self._first_two_places()
+        return self._poll(
+            EventType.TRAFFIC,
+            origin=origin, destination=destination,
+            city=self.timeline.city,
+        )
 
     @staticmethod
     def _fire_at(day_date: Any, arrival: str, lookahead_min: int) -> datetime:
