@@ -25,6 +25,7 @@
   - [6.5 火车票查询组（Mock/Live 双版本）](#65-火车票查询组mocklive-双版本)
   - [6.6 hotel — 酒店查询（Mock/Live 双版本）](#66-hotel--酒店查询mocklive-双版本)
   - [6.7 web_fetch / web_search — 网页抓取与搜索（Mock/Live 双版本）](#67-web_fetch--web_search--网页抓取与搜索mocklive-双版本)
+  - [6.8 技能（Skill）—— 面向意图的组合工具（0829 起）](#68-技能skill--面向意图的组合工具0829-起)
 - [7. Mock/Live 切换机制](#7-mocklive-切换机制)
 - [8. 和风天气 API 端点汇总](#8-和风天气-api-端点汇总)
 - [9. 高德地图 API 端点汇总](#9-高德地图-api-端点汇总)
@@ -1025,6 +1026,24 @@ hotel_tool **只读查询**，不负责预订/下单/支付（`docs/hotel_tool.m
 返回：`{query, results[{title,url,snippet}], count}`。
 链路：`WebClient.search(query)` → **Bing 搜索**（`www.bing.com/search`）→
 解析 `li.b_algo` 结果块。
+
+---
+
+### 6.8 技能（Skill）—— 面向意图的组合工具（0829 起）
+
+技能 = `Skill(BaseTool)` 子类，构造注入原子工具/共享 client 并组合调用；
+输出为意图级结构（`output_schema` 声明），自动进入 `ToolProvider.list_for_llm()`
+白名单。设计详见 `docs/tool_encapsulation_design_20260828.md` §3。
+
+| 工具名 | 组合 | 输出要点 |
+|--------|------|----------|
+| `weather_brief` | weather + forecast + air_quality + warning | `{city, current, forecast_hours, air_quality, warnings, summary}`；单段失败降级空段 |
+| `train_trip` | train_ticket（选班次）+ train_price（二等座价） | 单一班次 `{code, from_station, to_station, depart_time, arrive_time, transport_minutes, cost_per_person, source}`——与 A 侧城际交通契约对齐 |
+
+train_trip 站名解析顺序：①估算表城市对（"北京"按城市展开为北京南等，避免按
+北京站直查漏站）→ ②站名/电报码直查 → ③ValueError（v1 城市对覆盖范围 =
+估算表城市对）。选班次：`earliest` 历时最短（默认）/ `cheapest` 二等座最低；
+12306 返回同城其他车站车次时，以实际班次到发站为准。
 
 ---
 
