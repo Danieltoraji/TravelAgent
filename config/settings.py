@@ -48,6 +48,12 @@ class Settings:
         os.environ.get("ROLLINGGO_MCP_MAX_RETRIES", "2")))
     rollinggo_mcp_retry_backoff_base: float = field(default_factory=lambda: float(
         os.environ.get("ROLLINGGO_MCP_RETRY_BACKOFF_BASE", "1.0")))
+    # 航班真源：聚合数据-航班查询 1962（juhe_flight_key 为主，已开通）；
+    # aviationstack_key 备选（免费档 100 次/月，无票价）
+    juhe_flight_key: str = field(default_factory=lambda: os.environ.get(
+        "JUHE_FLIGHT_KEY", ""))
+    aviationstack_key: str = field(default_factory=lambda: os.environ.get(
+        "AVIATIONSTACK_KEY", ""))
 
     calendar_tz: str = "Asia/Shanghai"
 
@@ -98,6 +104,18 @@ class Settings:
         """
         return not self.demo_mode
 
+    @property
+    def use_real_flight_api(self) -> bool:
+        """当前是否应使用真实航班查询（Demo 关闭且有 Key 时）。
+
+        航班 Tool 需 juhe_flight_key（聚合数据-航班查询 1962，主）或
+        aviationstack_key（备选免费档）；独立成开关便于在额度/反爬问题时
+        单独回退 Mock 而不影响其他工具。
+        """
+        return not self.demo_mode and bool(
+            self.juhe_flight_key or self.aviationstack_key
+        )
+
     def reload(self) -> None:
         """热更新：重新从环境变量读取 API Key + 重新加载 local_settings.py。
 
@@ -115,6 +133,8 @@ class Settings:
             os.environ.get("ROLLINGGO_MCP_MAX_RETRIES", "2"))
         self.rollinggo_mcp_retry_backoff_base = float(
             os.environ.get("ROLLINGGO_MCP_RETRY_BACKOFF_BASE", "1.0"))
+        self.juhe_flight_key = os.environ.get("JUHE_FLIGHT_KEY", "")
+        self.aviationstack_key = os.environ.get("AVIATIONSTACK_KEY", "")
         try:
             from config.local_settings import apply_local_settings
             apply_local_settings(self)

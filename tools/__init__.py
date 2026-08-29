@@ -17,6 +17,11 @@ from tools.amap_client import AmapClient
 from tools.base_tool import BaseTool, ToolRegistry
 from tools.tool_provider import ToolProvider
 from tools.booking_tool import BookingTool
+from tools.flight import (
+    FlightClient,
+    FlightSearchTool,
+    FlightSearchToolLive,
+)
 from tools.food_tool import FoodTool, FoodToolLive
 from tools.hotel_tool import HotelTool, HotelToolLive
 from tools.map_tool import MapTool, MapToolLive
@@ -119,6 +124,17 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(TrainRouteTool())
         registry.register(TrainPriceTool())
 
+    # 航班查询 Tool：按配置自动切换 Mock / Live（juhe 聚合数据主，aviationstack 备选）
+    if settings.use_real_flight_api:
+        use_juhe = bool(settings.juhe_flight_key)
+        flight_client = FlightClient(
+            backend="juhe" if use_juhe else "aviationstack",
+            api_key=settings.juhe_flight_key or settings.aviationstack_key,
+        )
+        registry.register(FlightSearchToolLive(flight_client))
+    else:
+        registry.register(FlightSearchTool())
+
     # 网页抓取/搜索 Tool：按配置自动切换 Mock / Live（无需 API Key）
     if settings.use_real_web:
         web_client = WebClient()
@@ -140,6 +156,9 @@ __all__ = [
     "AirQualityToolLive",
     "AmapClient",
     "BaseTool",
+    "FlightClient",
+    "FlightSearchTool",
+    "FlightSearchToolLive",
     "FoodTool",
     "FoodToolLive",
     "HotelTool",

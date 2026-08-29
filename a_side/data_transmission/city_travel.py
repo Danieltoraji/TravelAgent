@@ -52,6 +52,14 @@ class CityTravelEdge:
     from_station: str = ""           # 出发站（train/air；driving 无站点为空）
     to_station: str = ""             # 到达站（train/air）
     source: str = ""                 # "estimate"（估算表）| "live"（真源）| ""（假表旧边）
+    candidates: Tuple[Dict[str, Any], ...] = ()  # 真源候选列表（多条车次/航班 × 时刻 × 票价）；估算边恒为空
+
+
+# 候选列表单条结构约定（真源 provider 填充，供展示/未来班次级优化用）：
+#   train: {"code", "depart_time", "arrive_time", "duration", "price",
+#           "seats": {...}, "from_station", "to_station"}
+#   air:   {"flight_no", "airline", "depart_time", "arrive_time",
+#           "duration_min", "price", "from_airport", "to_airport", "status"}
 
 
 def _load_raw_edges(path: Optional[Any] = None) -> list:
