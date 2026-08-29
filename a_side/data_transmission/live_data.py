@@ -117,7 +117,10 @@ def _tool_payload(result: Any) -> Any:
 
 # -- 单对 ETA 容错：瞬时/配额类错误退避重试（A 档，8.25） ----------------------
 
+import logging  # noqa: E402
 import time  # noqa: E402
+
+logger = logging.getLogger("data_transmission.live_data")
 
 _ETA_RETRIES = 2          # 首次 + 1 次重试
 _ETA_RETRY_SLEEP = 0.3    # 退避秒数（压 QPS 突刺）
