@@ -214,16 +214,19 @@ def _resolve_intercity_route(
 
     1. 直达（provider 真源优先；本地 options 按 ``priority`` 偏好选方式）且 ≤ 12h
        → 单段 route；
-    2. 直达超 12h 或不存在 → 区域模板（本地估算表，``source=estimate``，
-       模板各段同样按 ``priority`` 选方式）；
-    3. 模板无解 → 回落 provider/本地直达 如实给出（如表外 driving 兜底 19h）。
+    2. 直达超 12h 或不存在 → 多式联运 BFS（``find_intercity_route``，**本批接入
+       provider 真源**：BFS 每一段都优先用真实班次/航班边，查不到回落估算表）；
+    3. BFS 无解 → 回落 provider/本地直达 如实给出（如表外 driving 兜底 19h）。
     """
     direct = find_city_travel_preferred(
         origin, destination, options=options, provider=provider, priority=priority
     )
     if direct is not None and direct.transport_minutes <= DEFAULT_MAX_TOTAL_MINUTES:
         return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
-    route = find_intercity_route(origin, destination, options=options, priority=priority)
+    route = find_intercity_route(
+        origin, destination, options=options, priority=priority,
+        provider=provider, direct=direct,
+    )
     if route is not None:
         return route
     if direct is not None:

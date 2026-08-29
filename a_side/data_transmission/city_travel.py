@@ -15,9 +15,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("data_transmission.city_travel")
 
 DEFAULT_CITY_TRAVEL_PATH = (
     Path(__file__).resolve().parent.parent / "fake_spots" / "city_travel.json"
@@ -461,6 +464,12 @@ def find_intercity_route_template(
 
 DEFAULT_MAX_HOPS = 3  # 中转链最大跳数：3 段覆盖空铁联运全组合；4 段会明显绕路且被剪
 
+# 真源调用上限（按城市对计）：BFS 只对实际展开的城市对调组合 provider（懒查询），
+# 一次规划单方向 BFS 内缓存 + 上限保护，超限对剩余城市对直接走估算边——
+# 组件 provider 每个城市对最多 1 次 flight_search / train_trip（降级链内各 ≤1），
+# 因此该上限同时约束 train ≤ N、flight ≤ N（交接文档 §4 的额度纪律落地）。
+MAX_LIVE_CALLS = 6
+
 INF = 10**9
 
 
@@ -506,8 +515,11 @@ def find_intercity_route_bfs(
     options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
     priority: Optional[str] = None,
     max_hops: int = DEFAULT_MAX_HOPS,
+    provider: Optional[Callable[..., Optional[CityTravelEdge]]] = None,
+    direct: Optional[CityTravelEdge] = None,
+    max_live_calls: Optional[int] = None,
 ) -> Optional[IntercityRoute]:
-    """多式联运全图 BFS + 剪枝（软直达优先）。
+    """多式联运全图 BFS + 剪枝（软直达优先，真实班次混合图）。
 
     邻接按 ``priority`` 决定每边的候选集（``_segment_candidates``：rail/air 链式 1 条、
     speed/cost 全候选展开），uniform-cost 搜索（heapq 按累计目标值升序）＝广度优先传播
@@ -523,6 +535,22 @@ def find_intercity_route_bfs(
 
     软直达优先（8.29 决策）：直达（≤12h）存在 → 作为初始最优；BFS 只在发现
     「目标值更优」的多跳链时替换——有直达不绕路，但真正更优的小众链不遗漏。
+    ``direct`` 为调用方已算好的直达基准（``find_city_travel_preferred`` 结果，避免
+    重复调 provider）；未传时按旧行为用本地估算直达做基准（纯估算场景一致）。
+
+    ``provider``（本批新增）：真源 provider，签名 ``f(a, b, *, mode=None) ->
+    Optional[CityTravelEdge]``（B 侧组合 provider：train→flight→map 估算三级降级）。
+    频次纪律（交接文档 §4，额度安全）：
+    - **懒查询**：只在 BFS 实际展开的城市对上调 provider（不在邻接构建期盲查 58 边）；
+    - **(城市对) 缓存**：同对只调一次（``_live_cache``，一次 BFS 运行内）；
+    - **per-mode 预算（provider 侧兜底）**：额度由组合 provider 内部按工具分账
+      （train_trip / train_ticket / flight_search 各 ≤6，见 ``make_live_intercity_provider
+      mode_budget``）——车次对多不会挤占航班预算（反之亦然）；BFS 层默认不设对级上限
+      （``max_live_calls=None``），显式传入时作为额外的对级后兜底。
+    真源边只以**代表边**形态参与搜索（最短历时代表，``candidates`` 全量仅透传展示，
+    不放大搜索空间）；真源返回 None（无班次/无直飞/超预售期）→ 保留估算边；
+    单段真源异常（工具故障）→ 估算兜底不炸 BFS（与直达段「抛 LiveDataError 由上层
+    回退」的语义区分：BFS 内部逐段诚实回落，不因一个城市对拖垮整次规划）。
 
     ``priority``：目标值口径——``cost`` 为人均费用累计，其余（rail/air/speed/earliest/
     None）为总到达时长（含 air 缓冲）；两种口径下 720 时长硬约束都照常生效。
@@ -537,16 +565,55 @@ def find_intercity_route_bfs(
     # 软直达优先：直达存在且 ≤ max_total → 初始最优（多跳必须更优才替换）
     best_edges: Optional[Tuple[CityTravelEdge, ...]] = None
     best_value = None  # 目标值（费用 / 含缓冲时长）
-    direct = find_city_travel_preferred(
-        origin, destination, options=options, priority=priority
-    )
     if direct is not None and _edge_weight(direct) <= max_total_minutes:
         best_value = (
             direct.cost_per_person if goal_cost else _edge_weight(direct)
         )
         best_edges = (direct,)
+    else:
+        # 未传直达基准（纯估算场景）：补算本地估算直达，保持旧行为
+        direct = find_city_travel_preferred(
+            origin, destination, options=options, priority=priority
+        )
+        if direct is not None and _edge_weight(direct) <= max_total_minutes:
+            best_value = (
+                direct.cost_per_person if goal_cost else _edge_weight(direct)
+            )
+            best_edges = (direct,)
 
-    # 邻接：每个 (a, b) 按 priority 展开候选边（邻接表，只构建一次）
+    # 真源懒查询缓存 + 上限：只在展开期按需调 provider；(a, b) 有向对为缓存键
+    live_cache: Dict[Tuple[str, str], Optional[CityTravelEdge]] = {}
+    live_calls = 0
+
+    def _live_edge(a: str, b: str, fallback: CityTravelEdge) -> CityTravelEdge:
+        """展开对 (a, b) 的真源边：真源优先（代表边），None/失败/超限 → 估算边。"""
+        nonlocal live_calls
+        if provider is None or (
+            max_live_calls is not None and live_calls >= max_live_calls
+        ):
+            return fallback
+        key = (a, b)
+        if key not in live_cache:
+            live_calls += 1
+            try:
+                live = provider(a, b)
+            except Exception:  # noqa: BLE001  单段真源故障 → 估算兜底（不炸 BFS）
+                logger.warning("BFS 城际真源查询失败（%s→%s），回落估算", a, b)
+                live = None
+            live_cache[key] = live
+        live = live_cache[key]
+        if live is None:
+            return fallback
+        # 真源价格缺失 → 用估算边价格补齐（cost 决策与预算口径要价格）
+        if (
+            (not live.cost_per_person or live.cost_per_person <= 0)
+            and fallback.cost_per_person
+            and fallback.cost_per_person > 0
+        ):
+            return replace(live, cost_per_person=fallback.cost_per_person)
+        return live
+
+    # 邻接：每个 (a, b) 按 priority 展开候选边（估算表邻接，只构建一次；provider 懒查）
     out: Dict[str, List[Tuple[str, CityTravelEdge]]] = {}
     for (a, b), by_mode in options.items():
         if not by_mode:
@@ -574,6 +641,7 @@ def find_intercity_route_bfs(
                 continue  # 起点→终点 直达已由基准（软直达优先）决策，BFS 只搜中转链
             if nxt in visited:
                 continue  # 无环
+            edge = _live_edge(city, nxt, edge)  # 真源优先（懒查询 + 缓存 + 上限）
             n_full = full_minutes + _edge_weight(edge)
             if n_full > max_total_minutes:
                 continue  # 720 硬约束（含 air 缓冲）
@@ -602,6 +670,9 @@ def find_intercity_route(
     options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
     priority: Optional[str] = None,
     max_hops: int = DEFAULT_MAX_HOPS,
+    provider: Optional[Callable[..., Optional[CityTravelEdge]]] = None,
+    direct: Optional[CityTravelEdge] = None,
+    max_live_calls: Optional[int] = None,
 ) -> Optional[IntercityRoute]:
     """多式联运总入口：全图 BFS + 剪枝（8.29 起，替代区域模板候选枚举）。
 
@@ -611,8 +682,11 @@ def find_intercity_route(
     软直达优先：直达（≤12h）→ 初始最优，BFS 只在发现更优链时替换——有直达不绕路，
     更优的小众中转链不遗漏（解决方案：BFS 全图，不再依赖 regions 表）。
 
-    注意：provider（live）场景直达由调用方先行权衡（表外 driving 兜底超 12h 时
-    才回落本函数），本函数只消费本地表。
+    ``provider`` / ``direct`` / ``max_live_calls``（本批新增）：见
+    ``find_intercity_route_bfs``——真实班次混合图：BFS **每一段**都优先用真源边
+    （train_trip→train_ticket→flight→map 估算降级），查不到回落估算表（不假装、不炸）。
+    注意：provider（live）场景直达已由调用方先行权衡（``_resolve_intercity_route``
+    传入 ``direct``），本函数不再重复调 provider 查直达。
     """
     if not origin or not destination or origin == destination:
         return None
@@ -620,15 +694,19 @@ def find_intercity_route(
     route = find_intercity_route_bfs(
         origin, destination, max_total_minutes=max_total_minutes,
         options=options, priority=priority, max_hops=max_hops,
+        provider=provider, direct=direct, max_live_calls=max_live_calls,
     )
     if route is not None:
         return route
-    # 兜底（与旧行为一致）：直达存在但超 12h（罕见）→ 仍如实给出
-    direct = find_city_travel_preferred(
+    # 兜底（与旧行为一致）：直达存在但超 12h（罕见）→ 仍如实给出。
+    # 优先复用调用方传入的 direct（避免重复调 provider）；未传 → 本地估算直达。
+    fallback_direct = direct or find_city_travel_preferred(
         origin, destination, options=options, priority=priority
     )
-    if direct is not None:
+    if fallback_direct is not None:
         return IntercityRoute(
-            (direct,), direct.transport_minutes, direct.cost_per_person
+            (fallback_direct,),
+            fallback_direct.transport_minutes,
+            fallback_direct.cost_per_person,
         )
     return None

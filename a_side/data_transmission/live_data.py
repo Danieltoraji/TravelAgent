@@ -909,29 +909,83 @@ def make_live_flight_provider(
     return flight_provider
 
 
+class _BudgetExceeded(LiveDataError):
+    """工具调用达预算上限（额度纪律：超限该模式走估算，不超额硬查）。"""
+
+
+class _BudgetedToolProvider:
+    """按工具名计数的 tool_provider 包装：达上限抛 ``_BudgetExceeded``。
+
+    用法：把 ``mode_budget`` 传入 ``make_live_intercity_provider``——BFS 一次规划
+    内 train_trip / train_ticket / flight_search 各 ≤6 次（交接文档 §4 额度纪律），
+    超限被各子 provider 的异常兜底转成 None/LiveDataError → 该段回落估算。
+    ``stats`` 为可选外部 dict，实时记录各工具累计调用数（探针/验收用）。
+    """
+
+    def __init__(self, inner: Any, budget: Dict[str, int],
+                 stats: Optional[Dict[str, int]] = None):
+        self._inner = inner
+        self._budget = dict(budget)
+        self._stats = stats if stats is not None else {}
+
+    def call(self, name: str, **kwargs: Any):
+        cap = self._budget.get(name)
+        if cap is not None:
+            used = self._stats.get(name, 0)
+            if used >= cap:
+                raise _BudgetExceeded(
+                    f"{name} 调用达上限 {cap}（额度纪律：超出该模式走估算）"
+                )
+            self._stats[name] = used + 1
+        return self._inner.call(name, **kwargs)
+
+
 def make_live_intercity_provider(
     tool_provider: Any,
     schedule: Dict[str, Any],
     origin: str = "",
     destination: str = "",
+    mode_budget: Optional[Dict[str, int]] = None,
+    stats: Optional[Dict[str, int]] = None,
 ) -> Callable[..., Optional[CityTravelEdge]]:
     """返回组合城际真源 provider：train 真源 → flight 真源 → map 估算兜底。
 
     ``origin`` / ``destination`` 为行程主方向（去程 origin→destination、
     返程 destination→origin），用于按方向自动选查询日期：
-    - 去程用 ``travel_schedule.departure_date``；
-    - 返程用 ``return_date``；
-    - 方向无法判断或缺日期 → 该模式不查真源（返回 None，走估算）。
+    - 去程主方向对（o==origin 且 d==destination）用 ``travel_schedule.departure_date``；
+    - 返程主方向对（d==origin 且 o==destination）用 ``return_date``；
+    - **BFS 中转段（非主方向对）日期回落主链日期**（本批放宽）：按行程轴方向
+      推断——奔向 destination 的链段用去程日期（o==origin 或 d==destination），
+      向 origin 返回的链段用返程日期（d==origin 或 o==destination），完全中间段
+      优先去程日期（车次/班期按日重复，代表性边跨日期稳定；查询失败回落估算）；
+    - 对应方向缺日期 → 该模式该段不查真源（返回 None，走估算）。
     任何真源失败（工具缺 / 无直达 / 网络）都落回 map 估算 provider——
     ``find_city_travel_preferred`` 的真源-None-回落链已兜底，不炸规划。
+
+    ``mode_budget`` / ``stats``（本批新增，额度纪律落地）：一次规划内
+    train_trip / train_ticket / flight_search 各自调用上限（默认各 ≤6），
+    超过上限的工具调用抛 ``_BudgetExceeded`` → 该模式该段回落估算——
+    与 BFS 的懒查询 + (城市对)缓存构成「per-mode 预算」一层，防额度失控
+    （车次对多不会挤占航班预算；反之亦然）。
     """
 
+    if mode_budget is None:
+        mode_budget = {"train_trip": 6, "train_ticket": 6, "flight_search": 6}
+    tool_provider = _BudgetedToolProvider(tool_provider, mode_budget, stats)
+
     def _direction_date(o: str, d: str) -> str:
+        departure = (schedule.get("departure_date") or "").strip()
+        ret = (schedule.get("return_date") or "").strip()
         if o == origin and d == destination:
-            return (schedule.get("departure_date") or "").strip()
+            return departure
         if d == origin and o == destination:
-            return (schedule.get("return_date") or "").strip()
-        return ""
+            return ret
+        # BFS 中转段：按行程轴方向回落主链日期（去程侧用去程日期、返程侧用返程日期）
+        if o == origin or d == destination:
+            return departure
+        if d == origin or o == destination:
+            return ret
+        return departure or ret
 
     map_provider = make_live_city_travel_provider(tool_provider, mode="train")
 
@@ -944,18 +998,25 @@ def make_live_intercity_provider(
                 # P2b（PR#5）：train_trip 技能优先——站名解析更健壮（估算表城市对
                 # → 站名）+ 二等座真票价；无班次/未收录城市对返回 None → 回落本地
                 # train_ticket 候选版（多车次 + candidates 全量透传）。
-                edge = make_live_train_trip_provider(tool_provider, date_str)(
-                    o, d, mode="train"
-                )
-                if edge is None:
-                    edge = make_live_train_provider(tool_provider, date_str)(
+                edge = None
+                try:
+                    edge = make_live_train_trip_provider(tool_provider, date_str)(
                         o, d, mode="train"
                     )
+                    if edge is None:
+                        edge = make_live_train_provider(tool_provider, date_str)(
+                            o, d, mode="train"
+                        )
+                except _BudgetExceeded:
+                    pass  # 车次预算超限 → 该段不再查车次，转航班/估算（预算按模式独立）
                 if edge is not None:
                     return edge
             if mode in (None, "air"):
                 flight_provider = make_live_flight_provider(tool_provider, date_str)
-                edge = flight_provider(o, d, mode="air")
+                try:
+                    edge = flight_provider(o, d, mode="air")
+                except _BudgetExceeded:
+                    edge = None  # 航班预算超限 → 该段回落估算
                 if edge is not None:
                     return edge
         return map_provider(o, d, mode=mode or "train")
