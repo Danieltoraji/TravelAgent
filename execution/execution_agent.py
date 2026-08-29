@@ -308,6 +308,14 @@ class ExecutionAgent:
             # 将 booking_id 附加到事件数据，供下游感知
             if isinstance(event.data, dict):
                 event.data["auto_booking_id"] = record.booking_id
+            # E6：回填时间轴上的 Place，C 端可展示预约状态
+            for day in self.timeline.days:
+                if day.date.isoformat() != target_date:
+                    continue
+                for item in day.items:
+                    if item.name == rule.place:
+                        item.booking_id = record.booking_id
+                        item.booking_status = record.status.value
             logger.info("自动预约: %s (type=%s, id=%s)", rule.place, booking_type, record.booking_id)
         except Exception:  # noqa: BLE001
             logger.exception("自动预约失败: %s", rule.place)

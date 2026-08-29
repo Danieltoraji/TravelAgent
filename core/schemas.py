@@ -179,6 +179,10 @@ class Place:
     # to_station / cost_per_person / source / legs 市内衔接预留）——非 transport
     # 段保持默认空 dict，旧消费方（asdict 自动透出、逆向转换忽略）向后兼容。
     details: Dict[str, Any] = field(default_factory=dict)
+    # E6（0828）：预约关联——自动/人工预约成功后回填，C 端时间轴可表达
+    # "已预约/已确认"。默认空 = 未预约，旧数据完全向后兼容。
+    booking_id: str = ""            # 关联 BookingRecord（如 "A1B2C3D4"）
+    booking_status: str = ""        # pending_confirm / submitted / confirmed…（BookingStatus.value）
 
 
 @dataclass

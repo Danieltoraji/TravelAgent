@@ -103,6 +103,9 @@ def invoke_tool_llm(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["POST"])
 def invoke_tool(request: HttpRequest, name: str) -> JsonResponse:
+    # WARNING（R1）：本端点无 readonly 过滤——booking 等写工具可被直调。
+    # 只读白名单入口是 POST /api/tools/invoke/；收紧前需与 C 确认依赖
+    # （docs/code_defects_and_fixes_20260828.md R1，2026-08-28 决策暂不动）。
     payload = _json_body(request)
     try:
         return JsonResponse(runtime.registry.call(name, **payload).to_dict())
@@ -310,6 +313,19 @@ def approve_action(request: HttpRequest, action_id: str) -> JsonResponse:
     for a in runtime.booking_manager.actions():
         if a.action_id == action_id:
             a.status = ActionStatus.APPROVED
+            a.decided_at = datetime.now().isoformat(timespec="seconds")
+            a.decided_by = "c_end_user"   # 单用户 Demo：无认证体系
+            # E1：hotel: 动作批准即执行真实预订（此前为死信）。
+            # booking:/payment: 等 target 保持仅标记（E2 语义变更待 C 确认）。
+            if a.target.startswith("hotel:"):
+                try:
+                    runtime.booking_manager.execute_action(a)
+                except Exception as exc:  # noqa: BLE001  预订失败 → 动作置 BLOCKED
+                    a.status = ActionStatus.BLOCKED
+                    a.description = (a.description + "；" if a.description else "") + str(exc)
+                    return JsonResponse({
+                        "error": str(exc), "action": to_dict(a),
+                    }, status=400)
             return JsonResponse(to_dict(a))
     return _error(f"Action not found: {action_id}", status=404)
 
@@ -320,8 +336,23 @@ def reject_action(request: HttpRequest, action_id: str) -> JsonResponse:
     for a in runtime.booking_manager.actions():
         if a.action_id == action_id:
             a.status = ActionStatus.REJECTED
+            a.decided_at = datetime.now().isoformat(timespec="seconds")
+            a.decided_by = "c_end_user"
             return JsonResponse(to_dict(a))
     return _error(f"Action not found: {action_id}", status=404)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def booking_mark_confirmed(request: HttpRequest, booking_id: str) -> JsonResponse:
+    """E4：服务方确认回调（SUBMITTED → CONFIRMED；Demo 期人工/脚本触发）。"""
+    try:
+        rec = runtime.booking_manager.mark_confirmed(booking_id)
+        return JsonResponse(to_dict(rec))
+    except KeyError as exc:
+        return _error(str(exc), status=404)
+    except ValueError as exc:
+        return _error(str(exc), status=400)
 
 
 # ── 监控事件 ────────────────────────────────────────────────────────────
