@@ -221,8 +221,16 @@ def _resolve_intercity_route(
     direct = find_city_travel_preferred(
         origin, destination, options=options, provider=provider, priority=priority
     )
-    if direct is not None and direct.transport_minutes <= DEFAULT_MAX_TOTAL_MINUTES:
-        return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
+    if direct is not None and (
+        direct.transport_minutes
+        + (AIR_BUFFER_MIN if direct.mode == "air" else 0)
+    ) <= DEFAULT_MAX_TOTAL_MINUTES:
+        # I-11：直达判断与总时长都按**完整耗时**（air 含值机缓冲），不按裸运行时长
+        return IntercityRoute(
+            (direct,),
+            direct.transport_minutes + (AIR_BUFFER_MIN if direct.mode == "air" else 0),
+            direct.cost_per_person,
+        )
     route = find_intercity_route(
         origin, destination, options=options, priority=priority,
         provider=provider, direct=direct,
@@ -230,7 +238,12 @@ def _resolve_intercity_route(
     if route is not None:
         return route
     if direct is not None:
-        return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
+        # BFS 无解 → 回落直达如实给出；同样计完整耗时
+        return IntercityRoute(
+            (direct,),
+            direct.transport_minutes + (AIR_BUFFER_MIN if direct.mode == "air" else 0),
+            direct.cost_per_person,
+        )
     return None
 
 
@@ -326,9 +339,10 @@ def build_trip_segments(
                 "outbound",
             ))
 
-    homeward = (
-        _resolve_intercity_route(destination, origin, travel_provider, options, priority)
-        or _resolve_intercity_route(origin, destination, travel_provider, options, priority)
+    # I-08：返程**独立解析** destination→origin，查不到就诚实无返程方案
+    # （绝不复用去程方向 origin→destination 伪造反向段；去程可能只有单向数据）
+    homeward = _resolve_intercity_route(
+        destination, origin, travel_provider, options, priority
     )
     if homeward is not None and schedule.get("return_date") and schedule.get("return_time"):
         start = hhmm_to_minutes(schedule["return_time"])
