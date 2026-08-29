@@ -33,6 +33,7 @@ _MODE_TEXT: Dict[str, str] = {
 
 class TrafficTool(BaseTool):
     name = "traffic"
+    domain = "traffic"
     description = "交通状态：公交/地铁/打车预计耗时与拥堵程度。"
     source = "mock"
     input_schema = {

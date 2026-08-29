@@ -19,6 +19,8 @@ from tools.base_tool import BaseTool
 
 class BookingTool(BaseTool):
     name = "booking"
+    domain = "booking"
+    safety = "action"           # 副作用工具：不进 LLM/只读白名单
     description = "预约服务：为景点/酒店准备预约（填写信息），不涉及付款。"
     source = "mock"
     readonly = False

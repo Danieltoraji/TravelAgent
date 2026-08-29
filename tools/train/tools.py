@@ -29,6 +29,7 @@ _TRAIN_CODE_RE = re.compile(r"[A-Z]+\d+")
 
 class TrainTicketTool(BaseTool):
     name = "train_ticket"
+    domain = "train"
     description = "火车余票查询：出发/到达站（中文名、全拼或电报码）+ 日期，返回车次、时刻、历时、各坐席余票。"
     source = "mock"
     input_schema = {
@@ -105,6 +106,7 @@ class TrainTicketToolLive(TrainTicketTool):
 
 class TrainTransferTool(BaseTool):
     name = "train_transfer"
+    domain = "train"
     description = "火车中转换乘方案查询：两站间无直达车时的两段换乘方案（含换乘等待时间与总历时）。"
     source = "mock"
     input_schema = {
@@ -174,6 +176,7 @@ class TrainTransferToolLive(TrainTransferTool):
 
 class TrainRouteTool(BaseTool):
     name = "train_route"
+    domain = "train"
     description = "列车经停站查询：输入车次号（如 G39）或官方编号，返回全部经停站与到发时刻、停站时长。"
     source = "mock"
     input_schema = {
@@ -231,6 +234,7 @@ class TrainRouteToolLive(TrainRouteTool):
 
 class TrainPriceTool(BaseTool):
     name = "train_price"
+    domain = "train"
     description = "火车票价查询：两站间全部（或指定车次的）坐席票价。"
     source = "mock"
     input_schema = {

@@ -63,6 +63,8 @@ def _open_range_to_fields(open_range: str) -> Dict[str, str]:
 
 class ScenicTool(BaseTool):
     name = "scenic"
+    domain = "scenic"
+    internal_actions = ["search"]         # 内部管道：A 侧候选池
     description = (
         "景点实时状态：是否开放、预计排队分钟数、是否需要预约、营业时间、票价；"
         "或按城市搜索景点候选池（action=search）。"

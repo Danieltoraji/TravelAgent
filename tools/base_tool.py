@@ -56,6 +56,12 @@ class BaseTool(abc.ABC):
     source: str = "mock"
     readonly: bool = True           # 是否只读；有副作用工具应设为 False
     input_schema: ClassVar[dict] = {}
+    # P0 三轴分类（0829）：领域 / 层次 / 安全（readonly 为 safety 的推导属性）
+    domain: str = "general"         # weather / map / traffic / scenic / food / hotel / booking / train / web
+    kind: str = "atomic"            # atomic / skill / internal
+    safety: str = "query"           # query（可进 LLM 白名单）/ action（必须过权限闸）
+    output_schema: ClassVar[dict] = {}      # 出参契约（意图级单位）
+    internal_actions: ClassVar[list] = []   # 多动作工具中的内部管道动作名
 
     def __init__(self) -> None:
         self._registry_ref: ToolRegistry | None = None
@@ -68,6 +74,11 @@ class BaseTool(abc.ABC):
             input_schema=dict(self.input_schema),
             readonly=self.readonly,
             source=self.source,
+            domain=self.domain,
+            kind=self.kind,
+            safety=self.safety,
+            output_schema=dict(self.output_schema),
+            internal_actions=list(self.internal_actions),
         )
 
 

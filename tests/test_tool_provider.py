@@ -118,5 +118,48 @@ class TestExecutionAgentToolContext(unittest.TestCase):
         self.assertEqual(req.context["impact_threshold"], agent.impact_threshold)
 
 
+class TestTriAxisWhitelist(unittest.TestCase):
+    """P0 三轴分类：工具标注 + LLM 白名单分层规则。"""
+
+    def setUp(self) -> None:
+        from tools import default_registry
+        self.provider = ToolProvider(default_registry)
+        self.specs = {s.name: s for s in self.provider.list_tools()}
+
+    def test_all_specs_carry_axes(self) -> None:
+        for spec in self.specs.values():
+            self.assertTrue(spec.domain, spec.name)
+            self.assertIn(spec.kind, ("atomic", "skill", "internal"), spec.name)
+            self.assertIn(spec.safety, ("query", "action"), spec.name)
+
+    def test_booking_is_action_and_excluded(self) -> None:
+        from tools import default_registry
+        # booking 被只读白名单过滤，spec 需从 registry 直取
+        booking_spec = default_registry.get_spec("booking")
+        self.assertEqual(booking_spec.safety, "action")
+        self.assertFalse(booking_spec.readonly)
+        names = {s.name for s in self.provider.list_for_llm()}
+        self.assertNotIn("booking", names)
+
+    def test_internal_actions_excluded_from_llm(self) -> None:
+        self.assertEqual(self.specs["map"].internal_actions, ["batch_route"])
+        self.assertEqual(self.specs["scenic"].internal_actions, ["search"])
+        self.assertEqual(self.specs["hotel"].internal_actions, ["tags"])
+        names = {s.name for s in self.provider.list_for_llm()}
+        for hidden in ("map", "scenic", "hotel", "web_fetch"):
+            self.assertNotIn(hidden, names)
+
+    def test_llm_whitelist_contents(self) -> None:
+        names = {s.name for s in self.provider.list_for_llm()}
+        # 语义单一的 query-atomic 全量入列；skill 注册后自动入列
+        self.assertLessEqual({"weather", "weather_forecast", "web_search",
+                              "train_ticket", "food"}, names)
+
+    def test_list_for_client_matches_readonly_allowlist(self) -> None:
+        client_names = {s.name for s in self.provider.list_for_client()}
+        self.assertIn("train_ticket", client_names)
+        self.assertNotIn("booking", client_names)
+
+
 if __name__ == "__main__":
     unittest.main()

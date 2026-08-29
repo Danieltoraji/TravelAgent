@@ -18,6 +18,7 @@ logger = logging.getLogger("tools.web_search")
 
 class WebSearchTool(BaseTool):
     name = "web_search"
+    domain = "web"
     description = "搜索关键词，返回相关网页列表（标题、URL、摘要）。用于查找景点官网、闭馆公告等信息。"
     source = "mock"
     input_schema = {

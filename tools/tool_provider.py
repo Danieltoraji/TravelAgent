@@ -13,11 +13,15 @@ from typing import Any, Dict, List, Optional, Set
 from core.schemas import ToolResult, ToolSpec, to_dict
 from tools.base_tool import ToolRegistry
 
+# LLM 白名单排除项：任意 URL 抓取不暴露给 LLM（防滥用，P0 白名单分层）
+_LLM_EXCLUDED = {"web_fetch"}
+
 
 class ToolProvider:
     """A 侧 LLM 可用的工具门面（Facade）。
 
     - ``list_tools()``  返回工具清单（name / description / input_schema）
+    - ``list_for_llm()``  function calling 白名单（P0 三轴规则，见下）
     - ``call()``        按工具名调用，返回 ToolResult
     - ``call_json()``   按工具名 + 参数字典调用，返回纯 dict（供 JSON 序列化）
     """
@@ -41,6 +45,32 @@ class ToolProvider:
     def list_tools_json(self) -> List[Dict[str, Any]]:
         """返回 LLM 可见工具元数据的 JSON 可序列化列表。"""
         return [to_dict(spec) for spec in self.list_tools()]
+
+    def list_for_llm(self) -> List[ToolSpec]:
+        """LLM function calling 白名单（P0 三轴规则）。
+
+        规则：readonly（query）∩ 不含 internal_actions（内部管道）∩ 不在排除
+        名单。query-skill（train_trip / weather_brief 等）天然满足，注册即入列；
+        action-skill（预定类）永不入列，LLM 只能触达其 prepare 语义（设计文档 §4）。
+        """
+        specs: List[ToolSpec] = []
+        for spec in self.list_tools():
+            if spec.internal_actions:
+                continue
+            if spec.safety != "query":
+                continue
+            if spec.name in _LLM_EXCLUDED:
+                continue
+            specs.append(spec)
+        return specs
+
+    def list_for_llm_json(self) -> List[Dict[str, Any]]:
+        """``list_for_llm`` 的 JSON 可序列化版本（供 OpenAI tools 转换，P4 用）。"""
+        return [to_dict(spec) for spec in self.list_for_llm()]
+
+    def list_for_client(self) -> List[ToolSpec]:
+        """C 端文档/调用白名单（当前与 readonly allowlist 同义，P0 显式命名）。"""
+        return self.list_tools()
 
     def get_tool(self, name: str) -> ToolSpec:
         """获取单个工具元数据；不在白名单内则抛 KeyError。"""

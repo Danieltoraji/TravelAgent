@@ -22,6 +22,7 @@ _NOISE_TAGS = ["script", "style", "nav", "footer", "aside", "header", "form", "n
 
 class WebFetchTool(BaseTool):
     name = "web_fetch"
+    domain = "web"
     description = "抓取指定 URL 的网页内容，提取标题、正文和链接。支持 CSS 选择器精确提取。"
     source = "mock"
     input_schema = {

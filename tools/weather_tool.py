@@ -26,6 +26,7 @@ logger = logging.getLogger("tools.weather")
 
 class WeatherTool(BaseTool):
     name = "weather"
+    domain = "weather"
     description = "查询城市实况天气：天气状况、气温、体感温度、降雨概率、紫外线、风力、湿度、能见度。"
     source = "mock"
     input_schema = {
@@ -185,6 +186,7 @@ class WeatherWarningTool(BaseTool):
     """
 
     name = "weather_warning"
+    domain = "weather"
     description = "查询城市当前天气预警：暴雨、台风、雷电、大风等极端天气预警信息。"
     source = "mock"
     input_schema = {
@@ -250,6 +252,7 @@ class AirQualityTool(BaseTool):
     """
 
     name = "air_quality"
+    domain = "weather"
     description = "查询城市空气质量：AQI 指数、PM2.5、PM10、主要污染物。"
     source = "mock"
     input_schema = {
@@ -348,6 +351,7 @@ class WeatherForecastTool(BaseTool):
     """
 
     name = "weather_forecast"
+    domain = "weather"
     description = "查询城市未来24小时逐小时天气预报：气温、天气状况、降雨概率变化趋势。"
     source = "mock"
     input_schema = {

@@ -53,6 +53,8 @@ class HotelTool(BaseTool):
     """酒店查询工具（Mock）。"""
 
     name = "hotel"
+    domain = "hotel"
+    internal_actions = ["tags"]           # 内部配置：搜索元数据
     description = "酒店信息查询：按城市/日期/人数/星级/价格搜索酒店，或查询单个酒店房型与价格明细。"
     source = "mock"
     readonly = True

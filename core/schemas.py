@@ -124,12 +124,27 @@ class ToolSpec:
 
     - ``input_schema`` 直接复用各 Tool 的 JSON Schema 风格入参说明；
     - ``readonly`` 标记该工具是否只读；有副作用工具（如 booking）默认不应让 LLM 直调。
+
+    P0 三轴分类（0829，见 docs/tool_encapsulation_design_20260828.md §2）：
+    - ``domain``  领域轴：weather / map / traffic / scenic / food / hotel /
+      booking / train / web（代码组织与配置开关归属）；
+    - ``kind``    层次轴：atomic（原子工具）/ skill（意图级组合）/ internal（管道）；
+    - ``safety``  安全轴：query（只读，可进 LLM 白名单）/ action（副作用，必须过
+      权限闸）——readonly 为其推导属性（safety=="query"）；
+    - ``output_schema`` 出参契约（意图级单位：分钟/元/布尔，别名链收敛依据）；
+    - ``internal_actions`` 多动作工具中的内部管道动作名（如 map.batch_route）——
+      含此项的工具不进 LLM 白名单。
     """
     name: str
     description: str
     input_schema: Dict[str, Any] = field(default_factory=dict)
     readonly: bool = True
     source: str = "mock"            # mock / live
+    domain: str = "general"
+    kind: str = "atomic"            # atomic / skill / internal
+    safety: str = "query"           # query / action
+    output_schema: Dict[str, Any] = field(default_factory=dict)
+    internal_actions: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return to_dict(self)

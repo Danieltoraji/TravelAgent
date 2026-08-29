@@ -18,6 +18,7 @@ logger = logging.getLogger("tools.food")
 
 class FoodTool(BaseTool):
     name = "food"
+    domain = "food"
     description = "餐厅推荐：评分、人均价格、营业状态、距离。"
     source = "mock"
     input_schema = {
