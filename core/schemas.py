@@ -268,12 +268,10 @@ class ActionItem:
     type: str = ""                 # 动作类型，如 "BOOK_TICKET"
     date: str = ""                 # 目标日期 YYYY-MM-DD
     quantity: int = 0              # 数量（如购票张数）
+    # 审计（E5）：动作被 approve/reject 的时间与操作方（单用户 Demo 固定 "c_end_user"）
+    decided_at: str = ""
+    decided_by: str = ""
 
 
-@dataclass
-class BookingRequest:
-    """预约请求（只准备，不付款）。"""
-    place: str
-    target_date: str                # YYYY-MM-DD
-    party_size: int = 1
-    note: str = ""
+# E8（2026-08-28）：删除无引用的 BookingRequest 占位——真实需求由
+# BookingManager.prepare + 两段式动作承载（见 docs/tool_encapsulation_design_20260828.md）

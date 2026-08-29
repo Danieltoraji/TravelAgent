@@ -90,7 +90,11 @@ class AppState:
 
     def __init__(self) -> None:
         self.registry: ToolRegistry = default_registry
-        self.booking_manager: BookingManager = BookingManager(self.registry)
+        # E5：动作/预约持久化（BOOKING_PERSIST_PATH 开启，默认关闭）
+        from config.settings import settings as _settings
+        self.booking_manager: BookingManager = BookingManager(
+            self.registry, persist_path=_settings.booking_persist_path or None
+        )
         self.execution_agent: Optional[ExecutionAgent] = None
         self.timeline: Optional[TripTimeline] = None
         self.events: List[MonitorEvent] = []

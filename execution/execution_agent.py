@@ -180,7 +180,9 @@ class ExecutionAgent:
             current_timeline=self.timeline,
             context={
                 "impact_threshold": self.impact_threshold,
-                "tool_specs": self.tool_provider.list_tools_json(),
+                # A1（2026-08-28）：移除 tool_specs——A 侧 hook 只读 impact_threshold，
+                # 工具清单从未进入 prompt；未来 LLM function calling 走
+                # ToolProvider.list_for_llm()（见 docs/tool_encapsulation_design_20260828.md §6）
             },
         )
         if self.decision_hook is not None:

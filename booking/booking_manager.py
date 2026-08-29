@@ -12,8 +12,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, asdict
 from typing import Callable, Dict, List, Optional
 
 from core.schemas import (
@@ -59,11 +61,63 @@ class BookingManager:
         self,
         registry: Optional[ToolRegistry] = None,
         on_booking_failed: Optional[Callable[["BookingRecord"], None]] = None,
+        persist_path: Optional[str] = None,
+        restore: bool = True,
     ) -> None:
         self._registry = registry or default_registry
         self._records: Dict[str, BookingRecord] = {}
         self._actions: List[ActionItem] = []
         self._on_booking_failed = on_booking_failed
+        # E5：持久化（生产传 "logs/actions.json"，测试不传保持内存态）。
+        # restore=False 用于"新会话清空重建"场景（AgentRuntime.init_from_requirement）：
+        # 不加载旧状态，首次落盘时覆写旧文件。
+        self._persist_path = persist_path
+        if persist_path and restore:
+            self._load_persisted()
+
+    # -- E5：持久化 ---------------------------------------------------------
+    def _persist(self) -> None:
+        """动作/预约状态落盘（单用户 Demo 规模：整体 json 覆写）。"""
+        if not self._persist_path:
+            return
+        snapshot = {
+            "records": [asdict(r) | {"status": r.status.value} for r in self._records.values()],
+            "actions": [
+                asdict(a) | {
+                    "status": a.status.value,
+                    "permission": a.permission.value,
+                }
+                for a in self._actions
+            ],
+        }
+        try:
+            os.makedirs(os.path.dirname(self._persist_path) or ".", exist_ok=True)
+            with open(self._persist_path, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=1)
+        except OSError:
+            logger.exception("booking actions persist failed: %s", self._persist_path)
+
+    def _load_persisted(self) -> None:
+        """启动时恢复未决动作与预约记录；文件缺失/损坏静默跳过。"""
+        if not os.path.exists(self._persist_path):
+            return
+        try:
+            with open(self._persist_path, encoding="utf-8") as f:
+                snapshot = json.load(f)
+            for d in snapshot.get("records", []):
+                rec = BookingRecord(**{**d, "status": BookingStatus(d["status"])})
+                self._records[rec.booking_id] = rec
+            for d in snapshot.get("actions", []):
+                item = ActionItem(**{
+                    **d,
+                    "status": ActionStatus(d["status"]),
+                    "permission": PermissionLevel(d["permission"]),
+                })
+                self._actions.append(item)
+            logger.info("booking state restored: %d records, %d actions",
+                        len(self._records), len(self._actions))
+        except (OSError, ValueError, TypeError, KeyError):
+            logger.exception("booking state restore failed: %s", self._persist_path)
 
     # -- 查询 --------------------------------------------------------------
     def records(self) -> List[BookingRecord]:
@@ -83,6 +137,7 @@ class BookingManager:
             if item.action_id not in existing:
                 self._actions.append(item)
                 existing.add(item.action_id)
+        self._persist()
 
     def get(self, booking_id: str) -> BookingRecord:
         if booking_id not in self._records:
@@ -166,6 +221,7 @@ class BookingManager:
             date=target_date,
             quantity=party_size,
         ))
+        self._persist()
         return record
 
     def confirm(self, booking_id: str) -> BookingRecord:
@@ -182,6 +238,7 @@ class BookingManager:
             rec.status = BookingStatus.FAILED
             rec.note = result.error or "submit failed"
             self._mark_action(booking_id, ActionStatus.BLOCKED)
+            self._persist()
             if self._on_booking_failed is not None:
                 try:
                     self._on_booking_failed(rec)
@@ -192,12 +249,14 @@ class BookingManager:
         rec.confirm_code = result.data.get("confirm_code", "")
         rec.note = result.data.get("note", rec.note)
         self._mark_action(booking_id, ActionStatus.EXECUTED)
+        self._persist()
         return rec
 
     def mark_confirmed(self, booking_id: str) -> BookingRecord:
         """服务方确认成功。"""
         rec = self.get(booking_id)
         rec.status = BookingStatus.CONFIRMED
+        self._persist()
         return rec
 
     def mark_failed(self, booking_id: str, reason: str = "") -> BookingRecord:
@@ -205,11 +264,13 @@ class BookingManager:
         rec.status = BookingStatus.FAILED
         if reason:
             rec.note = reason
+        self._persist()
         return rec
 
     def cancel(self, booking_id: str) -> BookingRecord:
         rec = self.get(booking_id)
         rec.status = BookingStatus.CANCELLED
+        self._persist()
         return rec
 
     # -- 付款提醒（人工执行） ----------------------------------------------
@@ -235,6 +296,7 @@ class BookingManager:
             quantity=1,
         )
         self._actions.append(item)
+        self._persist()
         return item
 
     # -- 内部 --------------------------------------------------------------

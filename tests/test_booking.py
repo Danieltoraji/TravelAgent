@@ -352,5 +352,44 @@ class TestBookingManagerFullFlow(unittest.TestCase):
         self.assertEqual(rec.price, 60.0)
 
 
+class TestBookingPersistence(unittest.TestCase):
+    """E5：persist_path 开启时动作/预约落盘并可恢复；不传保持纯内存。"""
+
+    def test_persist_and_restore(self) -> None:
+        import json
+        import os
+        import tempfile
+
+        from booking.booking_manager import BookingManager
+        from core.schemas import ActionStatus, PermissionLevel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "actions.json")
+            bm = BookingManager(persist_path=path)
+            rec = bm.prepare("故宫", target_date="2026-08-01", party_size=2)
+            self.assertTrue(os.path.exists(path))
+
+            # 新实例（同一文件）恢复未决动作与预约记录
+            bm2 = BookingManager(persist_path=path)
+            self.assertIn(rec.booking_id, bm2._records)
+            actions = bm2.actions()
+            self.assertEqual(len(actions), 1)
+            self.assertEqual(actions[0].status, ActionStatus.PENDING)
+            self.assertEqual(actions[0].permission, PermissionLevel.CONFIRM)
+
+            # 文件结构合法（json 且含 records/actions 两组）
+            with open(path, encoding="utf-8") as f:
+                snapshot = json.load(f)
+            self.assertIn("records", snapshot)
+            self.assertIn("actions", snapshot)
+
+    def test_no_persist_path_keeps_memory_only(self) -> None:
+        from booking.booking_manager import BookingManager
+
+        bm = BookingManager()  # 不传 persist_path → 纯内存（默认分支）
+        bm.prepare("故宫", target_date="2026-08-01", party_size=1)
+        self.assertEqual(len(bm.actions()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
