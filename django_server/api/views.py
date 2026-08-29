@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -19,6 +20,8 @@ from itinerary.ics_exporter import build_ics
 from itinerary.markdown_exporter import render_markdown
 from runtime.agent_runtime import runtime
 from tools import ToolProvider
+
+logger = logging.getLogger("api.views")
 
 
 def _json_body(request: HttpRequest) -> Dict[str, Any]:
@@ -175,6 +178,38 @@ def timeline_history(request: HttpRequest) -> JsonResponse:
 
 # ── A 侧需求 → 规划（AB 合码方案 §三.5）────────────────────────────────────
 
+
+def _parse_free_text_requirement(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """备注解析（问题六修复，8.30）：非空 ``free_text_requirement`` → LLM 结构化。
+
+    把 C 端备注框的原始文本 + 表单字段整体交给 A 的
+    ``call_llm.parse_input.parse_requirement_input``（LLM 把备注语义归并到
+    preferred_tags / avoid_tags / constraints / food_preferences /
+    travel_priority / hotel_preferences，标签映射到知识库标准名）。
+
+    - 解析成功 → 返回解析后的完整需求（表单数值字段由解析 prompt 规则 1
+      原样保留，语义字段是新增量）；
+    - 任何失败（无 key / LLM 超时 / 结果不可解析 / content 缺失）→ 原样
+      返回 payload（按无备注规划，绝不阻断主链路）；
+    - 备注为空 → 原样返回（不产生 LLM 调用，零延迟）。
+    """
+    content = payload.get("content") if isinstance(payload, dict) else None
+    remark = content.get("free_text_requirement") if isinstance(content, dict) else None
+    if not isinstance(remark, str) or not remark.strip():
+        return payload
+    try:
+        from call_llm.parse_input import parse_requirement_input
+
+        parsed = parse_requirement_input(payload)
+    except Exception as exc:  # noqa: BLE001  备注解析失败不阻断规划
+        logger.warning("free_text_requirement LLM 解析失败，按无备注规划：%s", exc)
+        return payload
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("content"), dict):
+        logger.warning("free_text_requirement LLM 解析结果形状异常，按无备注规划")
+        return payload
+    return parsed
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def plan(request: HttpRequest) -> JsonResponse:
@@ -183,12 +218,15 @@ def plan(request: HttpRequest) -> JsonResponse:
     body 为 A 侧结构化需求（沿 A 现有管线，含 ``content`` 键，见
     ``data_transmission/requirement.py`` 的 requirement_schema），
     例如 ``{"content": {"destination": "北京", "days": 2, "constraints": {...}}}``。
+    ``content.free_text_requirement``（C 端备注框原文）非空时先经 LLM 解析成
+    结构化需求再规划（失败自动按无备注规划，见 ``_parse_free_text_requirement``）。
     规划失败（BPlannerHook 降级为空时间轴）返回 400 + ``planner_error``。
     旧 ``POST /api/timeline/`` 保留：C 直接喂时间轴的兼容路径。
     """
     payload = _json_body(request)
     if not payload:
         return _error("requirement JSON body required")
+    payload = _parse_free_text_requirement(payload)
     # B1（8.28 反馈）：C 端一直发 `departure_location` 但从未映射到
     # `content.origin`（views 零引用）→ 一行映射（已传 origin 则以其为准）。
     content = payload.get("content") if isinstance(payload, dict) else None

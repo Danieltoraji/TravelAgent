@@ -16,6 +16,16 @@ requirement_schema = {
             "title": "出发地",
             "description": "用户出发的城市；为空表示已在目的地，无需来去程",
         },
+        "free_text_requirement": {
+            **nullable_string,
+            "title": "自由文本备注",
+            "description": (
+                "C 端备注框的原始文本（可空）。B 入口检测到非空时先经 LLM "
+                "解析（parse_requirement_input）把语义并入 tags/constraints/"
+                "food_preferences 等结构化字段；解析失败按无备注规划，不阻断。"
+                "规划层不消费本字段本身。"
+            ),
+        },
         "start_date": {**nullable_string, "title": "出发日期", "description": "YYYY-MM-DD"},
         "days": {**nullable_integer, "title": "旅行天数", "minimum": 1},
         "visitor_number": {**nullable_integer, "title": "出行人数", "minimum": 1},
