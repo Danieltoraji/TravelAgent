@@ -42,11 +42,15 @@ class TrafficTool(BaseTool):
             "origin": {"type": "string"},
             "destination": {"type": "string"},
             "mode": {"enum": ["transit", "taxi", "walk"]},
+            # T1（0829）：POI 所在城市——不传则全国范围地理编码（同名歧义风险），
+            # 公交路线规划回退北京（transit 端点 city 必填）；调用方应显式传
+            "city": {"type": "string", "description": "起终点所在城市（地理编码与公交规划限定）"},
         },
         "required": ["origin", "destination"],
     }
 
-    def _run(self, origin: str = "", destination: str = "", mode: str = "transit") -> Dict[str, Any]:
+    def _run(self, origin: str = "", destination: str = "", mode: str = "transit",
+             city: str = "") -> Dict[str, Any]:
         # Mock：固定畅通状态；真实接入后可返回 delay_min 变化以触发剧情
         return {
             "origin": origin,
@@ -84,15 +88,19 @@ class TrafficToolLive(TrafficTool):
         self._client = client
         self._world = world
 
-    def _run(self, origin: str = "", destination: str = "", mode: str = "transit") -> Dict[str, Any]:
+    def _run(self, origin: str = "", destination: str = "", mode: str = "transit",
+             city: str = "") -> Dict[str, Any]:
         amap_mode = _MODE_MAP.get(mode, "transit")
 
-        # 地理编码：地址 → 坐标（限定北京，避免同名歧义）
-        origin_coord: Tuple[float, float] = self._client.geocode(origin, city="北京")
-        dest_coord: Tuple[float, float] = self._client.geocode(destination, city="北京")
+        # T1（0829）：地理编码与路线规划按 POI 所在城市限定（此前硬编码"北京"，
+        # 非北京目的地的交通监控必现失败）。city 为空 → geocode 全国查询、
+        # transit 规划回退北京（调用方应显式传 city）。
+        origin_coord: Tuple[float, float] = self._client.geocode(origin, city=city)
+        dest_coord: Tuple[float, float] = self._client.geocode(destination, city=city)
 
         # 路线规划
-        route_data = self._client.get_route(origin_coord, dest_coord, mode=amap_mode)
+        route_data = self._client.get_route(origin_coord, dest_coord, mode=amap_mode,
+                                            city=city or "北京")
         distance_m = route_data["distance"]
         duration_s = route_data["duration"]
 
