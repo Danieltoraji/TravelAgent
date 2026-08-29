@@ -628,3 +628,132 @@ def make_demo_flight_provider(
         return [_row_source_from_result(row, result) for row in rows]
 
     return provider
+
+
+# ---------------------------------------------------------------------------
+# B 入口段组装（3:35 集成验收）：候选链路 → 与 build_trip_segments 同构的 segments
+# ---------------------------------------------------------------------------
+
+
+def _demo_leg_to_intercity(leg: CandidateLeg) -> Dict[str, Any]:
+    """CandidateLeg → B 侧 intercity leg（对齐 ``travel._build_route_legs`` 结构，
+    并带班次与发到时刻——验收三：每段包含方式/起终点/站点机场/发到时刻/费用/来源）。"""
+    return {
+        "kind": "intercity",
+        "from": leg.from_station_or_airport,
+        "to": leg.to_station_or_airport,
+        "mode": "air" if leg.mode == "air" else "train",
+        "service_no": leg.service_no,
+        "depart_datetime": leg.depart_datetime,
+        "arrive_datetime": leg.arrive_datetime,
+        "duration_min": int(leg.duration_min),
+        "buffer_min": AIR_CHECKIN_BUFFER_MIN if leg.mode == "air" else RAIL_CHECKIN_BUFFER_MIN,
+        "cost_per_person": float(leg.price),
+        "source": leg.source,
+        "note": f"城际主段（{leg.mode}）",
+    }
+
+
+def _demo_local_leg(a: str, b: str, note: str) -> Dict[str, Any]:
+    return {
+        "kind": "local", "from": a, "to": b,
+        "duration_min": None, "mode": "", "source": "", "note": note,
+    }
+
+
+def build_demo_trip_segments(
+    plan: Dict[str, Any],
+    requirement: Dict[str, Any],
+    *,
+    tool_provider: Any = None,
+) -> List[Dict[str, Any]]:
+    """固定 Demo 场景（锦州→上海 + travel_schedule 日期）从 B 入口生成去程段。
+
+    仅在 requirement 匹配固定场景且存在**可接续候选**时返回段列表（结构对齐
+    ``travel.build_trip_segments``：type/name/day_label/start/end/duration +
+    details.from/to/mode/from_station/to_station/cost_per_person/source/kind/
+    stops/legs）；否则返回 []（调用方走原链路，非 Demo 场景零影响）。
+
+    - 候选 = ``build_demo_candidates`` 完整总耗时升序的第一条可行（时间优先）；
+    - 段时长 = **完整总耗时**（含等待/转场/值机进站缓冲，I-11）；
+    - legs 每条 intercity 段带 service_no + 发到时刻（同一完整班次，I-05）；
+    - 来源 = 按 legs 聚合（demo_fixture / mixed，I-12），绝不冒充 live；
+    - 不发起任何真实付费请求（fixture / B 侧 mock 工具）。
+    """
+    try:
+        from data_transmission.air_routes import load_air_routes
+    except ImportError:  # pragma: no cover
+        return []
+    content = requirement.get("content") or {}
+    origin = (content.get("origin") or "").strip()
+    destination = (content.get("destination") or "").strip()
+    if not (origin == "锦州" and destination == "上海"):
+        return []  # 非固定 Demo 场景 → 调用方走原链
+    schedule = content.get("travel_schedule") or {}
+    departure_date = schedule.get("departure_date")
+    if not departure_date:
+        return []
+    if tool_provider is None:
+        return []
+
+    candidates = build_demo_candidates(
+        origin, destination, departure_date,
+        train_provider=make_demo_train_provider(tool_provider),
+        flight_provider=make_demo_flight_provider(tool_provider),
+        air_routes=load_air_routes(),
+    )
+    if not candidates:
+        return []  # 无可行候选 → 调用方走原链（诚实降级）
+    best = candidates[0]  # 时间优先：完整总耗时最短的可行候选
+
+    legs = best.legs
+    first, last = legs[0], legs[-1]
+    via = " → ".join(leg.destination for leg in legs[:-1])
+    name = f"{origin} → {via} → {destination}（联运）" if best.is_chain else (
+        f"{origin} → {destination}（{('air' if first.mode == 'air' else 'train')}）"
+    )
+    out_legs: List[Dict[str, Any]] = [
+        _demo_local_leg(origin, first.from_station_or_airport or origin,
+                        "市内衔接（Demo 机场/车站接驳占位）")
+    ]
+    prev_to = first.to_station_or_airport
+    for i, leg in enumerate(legs):
+        if i > 0:
+            transfer_min = lookup_transfer_minutes(prev_to, leg.from_station_or_airport)
+            out_legs.append(_demo_local_leg(
+                prev_to, leg.from_station_or_airport,
+                f"同城转场 {transfer_min}min（{prev_to} → {leg.from_station_or_airport}）",
+            ))
+        out_legs.append(_demo_leg_to_intercity(leg))
+        prev_to = leg.to_station_or_airport
+    out_legs.append(_demo_local_leg(
+        last.to_station_or_airport or destination, destination,
+        "市内衔接（Demo 到达接驳占位）",
+    ))
+
+    start = _hhmm_to_minutes(schedule.get("departure_time")) if schedule.get(
+        "departure_time") else 480
+    return [{
+        "type": "transport",
+        "name": name,
+        "day_label": departure_date,
+        "start_minutes": start,
+        "end_minutes": start + best.total_minutes,
+        "duration_minutes": best.total_minutes,
+        "details": {
+            "from": origin,
+            "to": destination,
+            "mode": "联运" if best.is_chain else ("air" if first.mode == "air" else "train"),
+            "from_station": first.from_station_or_airport,
+            "to_station": last.to_station_or_airport,
+            "cost_per_person": best.total_cost,
+            "source": best.agg_source,
+            "kind": "outbound",
+            "stops": [leg.destination for leg in legs[:-1]] if best.is_chain else [],
+            "transfer_note": best.transfer_note,
+            "transfer_wait_min": best.transfer_wait_min,
+            "running_minutes": best.running_minutes,
+            "reject_reason": best.reject_reason or "",
+            "legs": out_legs,
+        },
+    }]

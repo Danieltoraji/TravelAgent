@@ -24,6 +24,7 @@ SYNC_FILES = [
     "travel.py",
     "air_routes.py",
     "air_routes.json",
+    "demo_candidate.py",
 ]
 
 

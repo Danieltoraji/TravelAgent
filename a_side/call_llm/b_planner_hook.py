@@ -179,10 +179,12 @@ class BPlannerHook:
 
         self._live_data_error = LiveDataError
         self._use_live = bool(tool_provider) and use_live_data()
+        # 工具门面无条件保存：live 分支用 USE_LIVE_DATA 门控；固定 Demo 候选链路
+        # （锦州→上海 fixture，断网可复现）与开关无关，也经 _tool_provider 取工具。
+        self._tool_provider = tool_provider
         self._live_spots_provider: Optional[Callable[[str], Any]] = None
         self._travel_time_provider: Optional[LiveTravelTimeProvider] = None
         if self._use_live:
-            self._tool_provider = tool_provider
             live_source = make_live_spots_provider(tool_provider)
             ask = self._ask_user_on_conflict
 
@@ -298,8 +300,20 @@ class BPlannerHook:
                 origin=(content.get("origin") or "").strip(),
                 destination=(content.get("destination") or "").strip(),
             )
+        # 固定 Demo 场景（锦州→上海）优先走候选链路：有限模板 + 铁路先查 + Top-K
+        # + 换乘校验 → 与 build_trip_segments 同构的输出段（fixture，断网可复现）。
+        demo_segments: List[Dict[str, Any]] = []
         try:
-            segments = build_trip_segments(
+            from data_transmission.demo_candidate import build_demo_trip_segments
+            demo_segments = build_demo_trip_segments(
+                plan, self.requirement,
+                tool_provider=getattr(self, "_tool_provider", None),
+            )
+        except Exception as exc:  # noqa: BLE001  Demo 链路失败 → 回退原链
+            logger.warning("demo chain segments failed: %s", exc)
+            demo_segments = []
+        try:
+            segments = demo_segments if demo_segments else build_trip_segments(
                 plan, self.requirement, travel_provider=provider
             )
         except Exception as exc:  # noqa: BLE001  城际段失败不阻断规划

@@ -16,3 +16,7 @@ output/
 
 # 日志文件
 logs/
+
+# pytest 缓存与沙箱只读残留（0o700 TemporaryDirectory，git 无法遍历）
+.pytest_cache/
+.pytest_tmp/
