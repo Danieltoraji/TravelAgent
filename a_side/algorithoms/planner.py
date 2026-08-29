@@ -673,7 +673,8 @@ def plan_one_day(
     selected_keys = {_spot_key(spot) for spot in selected}
 
     raw_events, schedule_warnings = _build_schedule_events(
-        ordered, travel_matrix, day_start_minutes, meal_windows, restaurants
+        ordered, travel_matrix, day_start_minutes, meal_windows, restaurants,
+        complete_day=True,
     )
     warnings.extend(schedule_warnings)
     route_details = []

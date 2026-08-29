@@ -22,6 +22,15 @@ MAX_MEAL_WAIT = 45
 # 例如午餐 11:00–13:00，宽限期 60 → 最晚 14:00 仍正常吃午饭。
 MEAL_GRACE_MINUTES = 60
 
+# A3 修复（8.29，晚餐调度死锁）：
+# - 「完整一天」最少行程分钟数：行程实际时长 ≥ 该值且已过午饭固定时段 → 视为整天，
+#   末景点后追加剩余餐（晚餐），与晚间（如酒店入住 20:00）衔接——不再依赖游览
+#   自然推进到晚餐窗口（6h 预算的行程永远到不了 17:30，此前晚餐永不触发）。
+MEAL_TAIL_MIN_FULL_DAY = 300
+# 收尾补餐只对「午后固定窗口」的餐（晚餐 17:30 ≥ 13:00）生效，避免把午餐滥补；
+# 与 meal_windows 的“最后一餐”语义解耦（防御：自定义窗口仅含午餐时不触发）。
+MEAL_TAIL_LUNCH_END = 13 * 60
+
 
 def _scheduled_elapsed_minutes(
     ordered: Sequence[Spot],
@@ -48,6 +57,7 @@ def _build_schedule_events(
     day_start_minutes: int,
     meal_windows: Sequence[MealWindow],
     restaurants=None,
+    complete_day: bool = False,
 ):
     """Build raw timeline events including travel, opening waits and meals.
 
@@ -56,6 +66,11 @@ def _build_schedule_events(
     (nearest, or cuisine-matching when food preferences exist), and the two
     transport legs to/from the restaurant are emitted and counted as transport
     time. Without it, meals stay abstract with no extra transport.
+
+    ``complete_day``（A3 修复，仅**最终展示**路径传 True；预算评估/候选枚举传 False）：
+    行程收尾时若已构成「完整一天」（时长 ≥ MEAL_TAIL_MIN_FULL_DAY 且已过午饭时段），
+    把剩余餐（晚餐）追加到其窗口开始时刻，与晚间衔接——此前 6h 预算行程永远到不了
+    晚餐窗口（17:30）导致晚餐永不触发；追加不会延长预算评估（elapsed 计算不经此路径）。
     """
     events = []
     warnings = []
@@ -100,15 +115,20 @@ def _build_schedule_events(
             return
 
         if start_minutes > current_minutes:
-            events.append(
-                {
-                    "type": "waiting",
-                    "name": f"等待{meal.name}时间",
-                    "start_minutes": current_minutes,
-                    "end_minutes": start_minutes,
-                    "details": {"reason": "meal_window"},
-                }
-            )
+            gap = start_minutes - current_minutes
+            if gap <= MAX_MEAL_WAIT:
+                events.append(
+                    {
+                        "type": "waiting",
+                        "name": f"等待{meal.name}时间",
+                        "start_minutes": current_minutes,
+                        "end_minutes": start_minutes,
+                        "details": {"reason": "meal_window"},
+                    }
+                )
+            # A3（8.29）：短等待（≤MAX_MEAL_WAIT）才生成 waiting 事件；行程早结束、
+            # 晚餐窗口未到时的大 gap（如 14:36 结束等 17:30 晚餐）**不生成**大段干等
+            # 事件，时间轴直接锚到窗口开始时刻（间隔为隐式自由时间/休息，不渲染）。
             current_minutes = start_minutes
 
         # 去餐厅
@@ -252,7 +272,20 @@ def _build_schedule_events(
         ):
             add_meal(remaining_meals.pop(0))
 
-    # A meal is needed only if the sightseeing day reaches its window.
-    while remaining_meals and remaining_meals[0].window_start_minutes <= current_minutes:
+    # 收尾（A3 修复放宽）：已开窗 **或 临窗（≤MAX_MEAL_WAIT，如 17:00 结束等 17:30 晚餐）**
+    # 的剩余餐也补上——此前只有「游览自然推进到窗口开始之后」才安排。
+    while remaining_meals and remaining_meals[0].window_start_minutes <= current_minutes + MAX_MEAL_WAIT:
+        add_meal(remaining_meals.pop(0))
+
+    # A3 修复（8.29）：**完整一天**（实际行程 ≥ MEAL_TAIL_MIN_FULL_DAY 且已过午饭固定时段）
+    # 时，末景点后追加剩余餐（晚餐）——6h 预算行程 09:00–14:36 就结束、永远到不了
+    # 17:30 晚餐窗口，但当天还有晚间安排（如酒店入住 20:00），晚餐应照样安排；
+    # 仅最终展示路径（complete_day=True）生效，预算评估/候选枚举路径不变。
+    if (
+        complete_day
+        and remaining_meals
+        and current_minutes - day_start_minutes >= MEAL_TAIL_MIN_FULL_DAY
+        and remaining_meals[0].window_start_minutes >= MEAL_TAIL_LUNCH_END
+    ):
         add_meal(remaining_meals.pop(0))
     return events, warnings

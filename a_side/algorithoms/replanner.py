@@ -511,7 +511,8 @@ def _build_day_output(
 ) -> Dict[str, Any]:
     """把修复后的景点序列重建为与 plan 输出一致的 day dict。"""
     raw_events, schedule_warnings = _build_schedule_events(
-        ordered, matrix, day_start_minutes, meal_windows, restaurants
+        ordered, matrix, day_start_minutes, meal_windows, restaurants,
+        complete_day=True,
     )
     route_details = []
     for event in raw_events:
