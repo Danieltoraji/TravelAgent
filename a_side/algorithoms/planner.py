@@ -65,6 +65,18 @@ def _resolve_restaurants(requirement, travel_time_provider, graph_dir):
     return resolver if resolver.restaurants else None
 
 
+def _planned_restaurant_ids(daily_result: Dict[str, Any]) -> List[str]:
+    """单日结果里最终选定的餐厅 id（route_details 的 meal 段去重保序）。"""
+    ids: List[str] = []
+    for node in daily_result.get("route_details", []) or []:
+        if node.get("type") != "meal":
+            continue
+        restaurant_id = str(node.get("details", {}).get("restaurant_id", "") or "")
+        if restaurant_id and restaurant_id not in ids:
+            ids.append(restaurant_id)
+    return ids
+
+
 def _repair_day_variant(
     selected: Sequence[Spot],
     must_keys: set,
@@ -376,6 +388,13 @@ def _plan_multi_day_with_prealloc(
         content["destination"], graph_dir
     )
 
+    # 跨天去重（8.31 P0）：每个多日种子开始时重置「之前各天最终选定」记录，
+    # 保证结果与种子/试算顺序无关；每天完成后只记当天最终选定的餐厅。
+    reset_planned = getattr(restaurants, "reset_planned", None)
+    if callable(reset_planned):
+        reset_planned()
+    note_planned = getattr(restaurants, "note_planned", None)
+
     planned_days = []
     for day_index, (mandatory_route, optional_prealloc) in enumerate(
         zip(mandatory_routes, prealloc), start=1
@@ -408,6 +427,9 @@ def _plan_multi_day_with_prealloc(
                 "daily_result": daily_result,
             }
         planned_days.append({"day": day_index, **daily_result})
+        # 跨天去重：记当天**最终**选定的餐厅（候选试算里的选择不进排除集）。
+        if callable(note_planned):
+            note_planned(_planned_restaurant_ids(daily_result))
 
     estimated_ticket_cost = sum(day["estimated_ticket_cost"] for day in planned_days)
     estimated_guide_cost = sum(day["estimated_guide_cost"] for day in planned_days)

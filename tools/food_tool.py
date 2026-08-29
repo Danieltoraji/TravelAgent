@@ -25,7 +25,9 @@ class FoodTool(BaseTool):
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "关键词，如菜系"},
-            "near": {"type": "string", "description": "附近地点"},
+            "near": {"type": "string", "description": "附近地点（文字地名，需地理编码）"},
+            "location": {"type": "string", "description": "锚点坐标 \"lng,lat\"（直连周边搜索，免地理编码；优先于 near）"},
+            "radius": {"type": "integer", "description": "周边搜索半径（米），默认 2000"},
             "city": {"type": "string", "description": "搜索城市（无 near 时按城市搜索）"},
             "limit": {"type": "integer", "description": "返回数量上限"},
         },
@@ -51,8 +53,9 @@ class FoodToolLive(FoodTool):
     """高德 POI 搜索 API 实现版。
 
     调用链路：
+      - 有 location 参数：search_poi_around(coord, types="050000", radius)（坐标直连，免 geocode）
       - 有 near 参数：geocode(near) → search_poi_around(coord, types="050000", radius=1000)
-      - 无 near 参数：search_poi(query or "餐厅", city="北京")
+      - 无位置参数：search_poi(query or "餐厅", city="北京")
 
     从 POI biz_ext 提取：
       - rating: 评分
@@ -64,10 +67,15 @@ class FoodToolLive(FoodTool):
       - 排队时间无公开 API，固定 0
       - cuisine 从 POI type 字段推断（如"中式快餐"→"快餐"）
 
+    8.31 P0（锚点附近搜索）：新增 ``location``（"lng,lat" 坐标串，A 侧
+    附近餐厅池用）与 ``radius``（米，默认 2000）参数——与 ``near``（文字地名，
+    需 geocode）互斥；location 优先。返回结构不变，调用方零改动。
+
     返回与 Mock 版完全相同的 list[dict] 结构，调用方零改动。
     """
 
     source = "live"
+    DEFAULT_RADIUS = 2000
 
     def __init__(self, client: Any) -> None:
         """初始化 Live 版餐饮 Tool。
@@ -78,8 +86,28 @@ class FoodToolLive(FoodTool):
         super().__init__()
         self._client = client
 
-    def _run(self, query: str = "", near: str = "", city: str = "", limit: int = 5) -> List[Dict[str, Any]]:
-        if near:
+    def _run(
+        self,
+        query: str = "",
+        near: str = "",
+        city: str = "",
+        limit: int = 5,
+        location: str = "",
+        radius: int = 0,
+    ) -> List[Dict[str, Any]]:
+        if location:
+            # 8.31：坐标直连周边搜索（A 侧 nearby_pool 用；免 geocode）。
+            coord = self._parse_location(location)
+            if coord is None:
+                raise ValueError(f"location 坐标格式非法: {location}")
+            pois = self._client.search_poi_around(
+                coord,
+                types="050000",
+                radius=radius or self.DEFAULT_RADIUS,
+                keywords=query or "",
+                limit=limit,
+            )
+        elif near:
             # 有位置参数：先地理编码，再周边搜索餐饮
             coord = self._client.geocode(near)
             if coord is None:
@@ -137,6 +165,20 @@ class FoodToolLive(FoodTool):
             query, near, len(results), results[0].get("opentime_today", "") if results else "",
         )
         return results
+
+    @staticmethod
+    def _parse_location(location: str) -> Optional[Tuple[float, float]]:
+        """解析 "lng,lat" 坐标串 → (lat, lng)；非法 → None。"""
+        parts = str(location or "").split(",")
+        if len(parts) != 2:
+            return None
+        try:
+            lng, lat = float(parts[0]), float(parts[1])
+        except ValueError:
+            return None
+        if not lng and not lat:
+            return None
+        return (lat, lng)
 
     @staticmethod
     def _extract_cuisine(type_str: str) -> str:

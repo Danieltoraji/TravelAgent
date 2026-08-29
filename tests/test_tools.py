@@ -2016,3 +2016,68 @@ class TestMapIntercity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFoodLiveLocation(unittest.TestCase):
+    """8.31 P0：FoodToolLive 的 location（坐标直连）/ radius 参数。"""
+
+    def make_mock_amap_client(self):
+        client = MagicMock(spec=AmapClient)
+        return client
+
+    def test_location_direct_around_search(self):
+        """location="lng,lat" → 坐标直连 search_poi_around（免 geocode），radius 透传。"""
+        client = self.make_mock_amap_client()
+        client.search_poi_around.return_value = [
+            {
+                "name": "附近餐厅A", "lat": 39.918, "lng": 116.400,
+                "address": "某地址", "tel": "010-12345678",
+                "type": "餐饮服务;中餐厅", "rating": 4.5, "cost": 120.0,
+                "tag": "", "distance": 300, "opentime_today": "10:00-22:00",
+                "opentime_week": "周一至周日:10:00-22:00",
+            },
+        ]
+
+        tool = FoodToolLive(client)
+        result = tool._run(query="餐厅", location="116.397,39.916", radius=2000, limit=10)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "附近餐厅A")
+        self.assertEqual(result[0]["distance_km"], 0.3)
+        # 坐标直连：search_poi_around 收到 (lat, lng) 元组与 radius
+        client.search_poi_around.assert_called_once()
+        args, kwargs = client.search_poi_around.call_args
+        self.assertEqual(args[0], (39.916, 116.397))  # "lng,lat" → (lat, lng)
+        self.assertEqual(kwargs.get("radius"), 2000)
+        # 未走 geocode（location 直连免编码）
+        client.geocode.assert_not_called()
+
+    def test_location_default_radius(self):
+        """location 无 radius → 默认 2000 米。"""
+        client = self.make_mock_amap_client()
+        client.search_poi_around.return_value = []
+
+        tool = FoodToolLive(client)
+        tool._run(location="116.397,39.916")
+
+        _, kwargs = client.search_poi_around.call_args
+        self.assertEqual(kwargs.get("radius"), FoodToolLive.DEFAULT_RADIUS)
+
+    def test_invalid_location_raises(self):
+        """location 格式非法 → ValueError（业务错误不重试）。"""
+        tool = FoodToolLive(self.make_mock_amap_client())
+        with self.assertRaises(ValueError):
+            tool._run(location="不是坐标")
+        with self.assertRaises(ValueError):
+            tool._run(location="116.397")
+
+    def test_location_takes_priority_over_near(self):
+        """location 与 near 同时给 → location 优先（坐标直连）。"""
+        client = self.make_mock_amap_client()
+        client.search_poi_around.return_value = []
+
+        tool = FoodToolLive(client)
+        tool._run(location="116.397,39.916", near="故宫")
+
+        client.geocode.assert_not_called()
+        client.search_poi_around.assert_called_once()

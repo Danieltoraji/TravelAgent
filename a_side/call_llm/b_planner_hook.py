@@ -494,19 +494,36 @@ class BPlannerHook:
         """
         if not _collect_meal_anchors(plan1):
             return plan1  # 无已安排的用餐 → 不需要真源餐厅
-        resolver = self._build_live_restaurants()
+        resolver = self._build_live_restaurants(name_to_coord)
         if resolver is None:
             return plan1
         from data_transmission.live_data import _coord_str, make_live_matrix_fn
 
+        # 8.31 P0 附近搜索：对**全部候选景点**预查附近候选（不只 plan1 锚点）——
+        # 带餐厅重排可能换候选池内的景点，新锚点的附近餐厅须已就绪，否则重排
+        # 中途追加查询会产生矩阵缺行。矩阵终点 = 附近候选 ∪ 全池（按 id 去重）；
+        # 附近候选优先，全池兜底覆盖「锚点查询失败/空」的顿次。
+        hotel_names = {hotel.name for hotel in live_hotels}
+        candidate_anchor_names = [
+            name
+            for name in name_to_coord
+            if name not in hotel_names
+        ]
+        matrix_restaurants = list(resolver.restaurants)
+        seen_ids = {restaurant.id for restaurant in matrix_restaurants}
+        for anchor_name in candidate_anchor_names:
+            for restaurant in resolver.nearby(anchor_name):
+                if restaurant.id not in seen_ids:
+                    seen_ids.add(restaurant.id)
+                    matrix_restaurants.append(restaurant)
+
         rest_coords: Dict[str, str] = {}
-        for restaurant in resolver.restaurants:
+        for restaurant in matrix_restaurants:
             coord = _coord_str(
                 {"lat": restaurant.location[0], "lng": restaurant.location[1]}
             )
-            if coord:
+            if coord and restaurant.name not in rest_coords:
                 rest_coords[restaurant.name] = coord
-        hotel_names = {hotel.name for hotel in live_hotels}
         # 全部候选景点作起点（排除酒店与餐厅；酒店↔餐厅无需边，酒店↔景点在矩阵1）
         origin_names = [
             name
@@ -533,7 +550,7 @@ class BPlannerHook:
         merged_n2c.update(rest_coords)
         self._travel_time_provider.set_matrix(merged, name_to_coord=merged_n2c)
         self._travel_time_provider.set_name_map(
-            {restaurant.id: restaurant.name for restaurant in resolver.restaurants}
+            {restaurant.id: restaurant.name for restaurant in matrix_restaurants}
         )
         try:
             return self._planner(
@@ -546,25 +563,60 @@ class BPlannerHook:
             logger.warning("带餐厅重排失败，降级为无餐厅计划（阶段 1）：%s", exc)
             return plan1
 
-    def _build_live_restaurants(self) -> Optional[Any]:
+    def _build_live_restaurants(
+        self, name_to_coord: Optional[Dict[str, str]] = None
+    ) -> Optional[Any]:
         """B 端 FoodToolLive（真源餐厅）→ ``RestaurantResolver``；任何失败 → None。
 
         餐厅真源失败（工具缺失 / 搜索无结果 / 无坐标）只降级为「无真源餐厅」，
         不触发整链回退假源（scenic 真源照常）；矩阵内不并入餐厅坐标。
+        8.31 P0：注入 ``nearby_pool``（锚点附近搜索，坐标直连）+ 锚点坐标映射
+        （附近搜索与矩阵缺边时的 haversine 兜底都要用）；锚点信息缺失时
+        nearby_pool 不注入（退化为 8.28 城市级全池口径）。
         """
         if self._tool_provider is None:
             return None
         try:
             from algorithoms._common import _food_preferences
-            from data_transmission.live_data import make_live_restaurants_provider
+            from data_transmission.live_data import (
+                make_live_nearby_restaurants_pool,
+                make_live_restaurants_provider,
+            )
             from transport.restaurants import RestaurantResolver
 
+            nearby_pool = None
+            anchor_locations = {}
+            if name_to_coord:
+                # 坐标串 "lng,lat" → (lat, lng)，锚点 id 与景点同名（timeline 的
+                # current_node[0] 即景点 id，live 模式下 id=scenic_N、name 为地名）。
+                for name, coord in name_to_coord.items():
+                    parts = str(coord).split(",")
+                    if len(parts) == 2:
+                        try:
+                            anchor_locations[name] = (
+                                float(parts[1]),
+                                float(parts[0]),
+                            )
+                        except ValueError:
+                            continue
+                if anchor_locations:
+                    nearby_pool = make_live_nearby_restaurants_pool(
+                        self._tool_provider, city=self.city, k=10, radius=2000
+                    )
             resolver = RestaurantResolver(
                 self.city,
                 food_preferences=_food_preferences(self.requirement),
                 travel_time_provider=self._travel_time_provider,
                 restaurant_provider=make_live_restaurants_provider(self._tool_provider),
+                nearby_pool=nearby_pool,
             )
+            if anchor_locations:
+                resolver.set_anchor_locations(anchor_locations)
+                # live 锚点是 scenic id：注入 id→景点名映射，附近搜索/缺边估算
+                # 经「id → 名 → 坐标」链取锚点坐标（LiveSpotsSource.names）。
+                spot_names = dict(getattr(self._live_spots_source, "names", {}) or {})
+                if spot_names:
+                    resolver.set_anchor_names(spot_names)
         except Exception as exc:  # noqa: BLE001
             logger.warning("真源餐厅解析失败，跳过餐厅真源化：%s", exc)
             return None

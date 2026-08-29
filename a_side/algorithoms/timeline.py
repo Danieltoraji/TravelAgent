@@ -79,6 +79,10 @@ def _build_schedule_events(
     # restaurant id once a meal has been taken.
     current_node = None
     remaining_meals = list(sorted(meal_windows, key=lambda meal: meal.window_start_minutes))
+    # 本条时间轴（一天）内已排定的餐厅 id：同天跨顿去重（8.31 P0）。
+    # 只在单次构建的局部作用域累积——resolver 会被规划器反复试算，
+    # 去重状态放实例上会跨试算泄漏。
+    chosen_restaurant_ids = []
 
     def edge_between(from_id, to_id):
         if from_id is None or from_id == to_id:
@@ -94,7 +98,11 @@ def _build_schedule_events(
         anchor_id = current_node[0] if current_node is not None else None
         restaurant = None
         if restaurants is not None and anchor_id is not None:
-            restaurant = restaurants.select(anchor_id)
+            restaurant = restaurants.select(
+                anchor_id, exclude_ids=chosen_restaurant_ids
+            )
+        if restaurant is not None:
+            chosen_restaurant_ids.append(restaurant.id)
 
         start_minutes = current_minutes
         if start_minutes < meal.window_start_minutes:

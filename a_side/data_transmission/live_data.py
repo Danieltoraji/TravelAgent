@@ -620,6 +620,18 @@ def _split_tags(text: Any) -> Tuple[str, ...]:
     return tuple(tags)
 
 
+# 池质量过滤（8.31 P0）：高德 POI 类型里非「正餐」的类别——实测城市级搜索会把
+# 酒吧（The Captain，type=娱乐场所）、主食铺（宫门口馒头铺）混进餐厅池，被
+# 时间轴选中后观感极差（「午餐=酒吧」）。
+_NON_RESTAURANT_TYPE_KEYWORDS = ("娱乐场所", "宾馆", "酒店", "旅馆", "住宿")
+
+
+def _is_non_restaurant(item: Dict[str, Any]) -> bool:
+    """POI 类型含非正餐类别（娱乐场所/住宿等）→ True（从池中过滤）。"""
+    type_text = _as_str(item.get("type") or item.get("cuisine"))
+    return any(keyword in type_text for keyword in _NON_RESTAURANT_TYPE_KEYWORDS)
+
+
 def _normalize_live_restaurant(raw: Any) -> Optional[Restaurant]:
     """B 端 FoodToolLive 返回的餐厅 dict → A 的 ``Restaurant``；无坐标丢弃。
 
@@ -659,21 +671,11 @@ def make_live_restaurants_provider(
     消费 B 端 ``FoodToolLive``（高德 POI 搜索真源餐厅，8.28 规划期接入）；
     工具调用失败 / 返回不可解析 → ``LiveDataError``（调用方决定是否回退假池）；
     餐厅无坐标会被 ``_normalize_live_restaurant`` 丢弃（无法参与通勤）。
+    8.31 P0：池质量过滤——类型含「娱乐场所/宾馆/酒店/旅馆/住宿」的 POI 丢弃。
     """
 
     def restaurant_provider(city: str) -> List[Restaurant]:
-        try:
-            result = tool_provider.call("food", city=city, limit=20)
-        except Exception as exc:  # noqa: BLE001
-            raise LiveDataError(f"food 工具调用失败（city={city}）：{exc}") from exc
-        payload = _tool_payload(result)
-        items = (
-            payload
-            if isinstance(payload, list)
-            else (payload.get("restaurants") if isinstance(payload, dict) else None)
-        )
-        if not isinstance(items, list):
-            raise LiveDataError(f"food 工具未返回列表：{type(payload).__name__}")
+        items = _fetch_food_items(tool_provider, city=city, limit=20)
         return [
             restaurant
             for restaurant in (_normalize_live_restaurant(item) for item in items)
@@ -681,6 +683,79 @@ def make_live_restaurants_provider(
         ]
 
     return restaurant_provider
+
+
+def make_live_nearby_restaurants_pool(
+    tool_provider: Any,
+    city: str = "",
+    k: int = 10,
+    radius: int = 2000,
+) -> Callable[[Tuple[float, float], int], List[Restaurant]]:
+    """返回 ``nearby_pool(anchor_coord, k) -> List[Restaurant]``（锚点附近搜索）。
+
+    8.31 P0 附近搜索模式：以锚点坐标调 B 端 ``food`` 工具的 ``location``
+    参数（坐标直连免 geocode，radius 默认 2km）→ 锚点附近真源餐厅。
+    失败/无结果时**返回空列表**（不抛）——由 ``RestaurantResolver`` 降级用
+    全池（make_live_restaurants_provider 已拉的城市级池），附近模式不阻断主链路。
+    """
+    # B 侧 page_size 上限 25；k 超出时钳到 25。
+    max_k = min(int(k) or 10, 25)
+
+    def nearby_pool(
+        anchor_coord: Tuple[float, float], count: int = 10
+    ) -> List[Restaurant]:
+        location = f"{anchor_coord[1]},{anchor_coord[0]}"  # 高德 "lng,lat"
+        try:
+            items = _fetch_food_items(
+                tool_provider,
+                city=city,
+                limit=min(int(count) or max_k, 25),
+                location=location,
+                radius=radius,
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        return [
+            restaurant
+            for restaurant in (_normalize_live_restaurant(item) for item in items)
+            if restaurant
+        ]
+
+    return nearby_pool
+
+
+def _fetch_food_items(
+    tool_provider: Any,
+    city: str,
+    limit: int,
+    location: str = "",
+    radius: int = 0,
+) -> List[Any]:
+    """调 B 端 food 工具并取业务列表；过滤非正餐 POI 后返回。
+
+    location 非空 → 附近搜索（B 侧 FoodToolLive 的 location/radius 参数）；
+    空 → 城市级搜索（8.28 原口径）。失败 → ``LiveDataError``。
+    """
+    kwargs: Dict[str, Any] = {"city": city, "limit": limit}
+    if location:
+        kwargs["location"] = location
+        if radius:
+            kwargs["radius"] = int(radius)
+    try:
+        result = tool_provider.call("food", **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        raise LiveDataError(
+            f"food 工具调用失败（city={city}, location={location or '-'}）：{exc}"
+        ) from exc
+    payload = _tool_payload(result)
+    items = (
+        payload
+        if isinstance(payload, list)
+        else (payload.get("restaurants") if isinstance(payload, dict) else None)
+    )
+    if not isinstance(items, list):
+        raise LiveDataError(f"food 工具未返回列表：{type(payload).__name__}")
+    return [item for item in items if not _is_non_restaurant(item)]
 
 
 # ---------------------------------------------------------------------------
