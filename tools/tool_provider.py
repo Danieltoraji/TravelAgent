@@ -72,6 +72,26 @@ class ToolProvider:
         """C 端文档/调用白名单（当前与 readonly allowlist 同义，P0 显式命名）。"""
         return self.list_tools()
 
+    def to_openai_tools(self) -> List[Dict[str, Any]]:
+        """``list_for_llm()`` → OpenAI function calling tools 格式（P4）。
+
+        供 ``LLMClient.generate(tools=...)`` 直接消费；executor 由调用方以
+        ``tool_executor(name, arguments)`` 形式注入（推荐 ``call_json``）。
+        """
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.input_schema or {
+                        "type": "object", "properties": {},
+                    },
+                },
+            }
+            for spec in self.list_for_llm()
+        ]
+
     def get_tool(self, name: str) -> ToolSpec:
         """获取单个工具元数据；不在白名单内则抛 KeyError。"""
         self._check_allowed(name)

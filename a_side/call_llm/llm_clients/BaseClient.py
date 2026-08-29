@@ -1,7 +1,10 @@
 import json
+import logging
 import os
 import re
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger("call_llm.llm_client")
 
 # 默认系统指令：旅行需求解析。其它用途（例如路线筛选）可通过
 # ``system_instruction`` 覆盖，避免复用需求解析的措辞。
@@ -204,12 +207,25 @@ class LLMClient:
         response_schema=None,
         tools=None,
         max_retries: int = 2,
+        tool_executor=None,
+        max_tool_rounds: int = 3,
     ) -> Dict[str, Any]:
+        """P4：支持 function calling 的生成入口。
+
+        ``tools`` 为 OpenAI tools 格式；``tool_executor(name, arguments) -> JSON
+        可序列化结果`` 由调用方注入（B 侧为 ``ToolProvider.call_json``，白名单
+        已在 ``list_for_llm`` 收口）。模型返回 ``finish_reason=="tool_calls"``
+        时逐个执行并回填 ``role=tool`` 消息后续问，最多 ``max_tool_rounds`` 轮；
+        轮次超限或请求表明不支持 tools 时降级为纯文本 JSON 模式。
+        """
         conversation = list(messages)
         last_message = None
         choice = None
         clarification_count = 0
         retries = 0
+        tool_rounds = 0
+        tools_degraded = False
+        missing_fields: List[Dict[str, Any]] = []
 
         while True:
             try:
@@ -217,6 +233,16 @@ class LLMClient:
                     self._build_request_params(conversation, response_schema, tools)
                 )
             except Exception as exc:
+                # 降级：模型/网关不支持 tools（首次且尚未降级时）→ 去掉工具重试一次
+                if tools and tool_executor is not None and not tools_degraded \
+                        and "tool" in str(exc).lower():
+                    tools_degraded = True
+                    tools = None
+                    tool_executor = None
+                    logger.warning(
+                        "LLM 不支持 tools，已降级为纯文本 JSON 模式: %s", exc,
+                    )
+                    continue
                 raise RuntimeError(
                     f"LLM request failed: model={self.model_name}, base_url={self.base_url}, detail={exc}"
                 ) from exc
@@ -225,6 +251,44 @@ class LLMClient:
             choice = response.choices[0]
             last_message = choice.message
             raw_content = getattr(last_message, "content", None)
+
+            # P4：tool_calls 回路
+            tool_calls = getattr(last_message, "tool_calls", None) or []
+            if tool_calls and tool_executor is not None:
+                if tool_rounds >= max_tool_rounds:
+                    raise ValueError(
+                        f"工具调用轮次超过上限 {max_tool_rounds}，已降级拒绝继续"
+                    )
+                tool_rounds += 1
+                conversation.append({
+                    "role": "assistant",
+                    "content": raw_content or "",
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.function.name,
+                                "arguments": call.function.arguments,
+                            },
+                        }
+                        for call in tool_calls
+                    ],
+                })
+                for call in tool_calls:
+                    try:
+                        arguments = json.loads(call.function.arguments or "{}")
+                    except ValueError:
+                        arguments = {}
+                    result = tool_executor(call.function.name, arguments)
+                    conversation.append({
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps(
+                            result, ensure_ascii=False, default=str,
+                        )[:8000],
+                    })
+                continue
 
             parsed = self._extract_json_payload(raw_content)
             if parsed is None:
@@ -273,5 +337,7 @@ class LLMClient:
             "clarification_count": clarification_count,
             "tool_calls": getattr(last_message, "tool_calls", None),
             "finish_reason": getattr(choice, "finish_reason", None),
+            "tool_rounds": tool_rounds,
+            "tools_degraded": tools_degraded,
             "raw": {"model_output": getattr(last_message, "content", None)},
         }

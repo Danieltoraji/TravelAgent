@@ -143,6 +143,7 @@ class BDecisionHook:
             api_key=self._api_key,
             base_url=self._base_url,
             threshold=threshold,
+            tool_provider=self.tool_provider,   # P4：USE_LLM_TOOLS 开启时供决策 LLM 查工具
         )
 
     def _replan(
