@@ -22,8 +22,21 @@ class TestHotelToolMock(unittest.TestCase):
     def test_detail_returns_rooms(self) -> None:
         tool = HotelTool()
         result = tool._run(action="detail", hotelId="H001")
-        self.assertIn("roomRatePlans", result)
-        self.assertTrue(result["roomRatePlans"])
+        # C1：Mock 与 Live(_normalize_detail_result) 完全同构——rooms/snake_case
+        self.assertIn("rooms", result)
+        self.assertTrue(result["rooms"])
+        room = result["rooms"][0]
+        self.assertIn("room_name", room)
+        self.assertIn("average_price", room)
+        self.assertIn("cancelable", room)
+        self.assertIn("has_wifi", room["room_info"])
+        self.assertIn("raw", result)
+
+    def test_detail_unknown_hotel_same_shape(self) -> None:
+        tool = HotelTool()
+        result = tool._run(action="detail", hotelId="NOPE")
+        self.assertEqual(result["rooms"], [])
+        self.assertIn("raw", result)
 
     def test_tags_returns_tags(self) -> None:
         tool = HotelTool()

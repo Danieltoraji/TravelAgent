@@ -18,7 +18,7 @@
 |---|---|
 | `hotels` | 酒店列表 |
 | `count` | 酒店数量 |
-| `raw` | RollingGo 原始返回（保留） |
+| `raw` | RollingGo 原始返回（**仅 Live 版**有此键；Mock 版搜索无 `raw`） |
 
 每个酒店包含：
 
@@ -41,7 +41,7 @@
 
 ### 2. 酒店房型明细（`action=detail`）
 
-对应 RollingGo `getHotelDetail`，返回：
+对应 RollingGo `getHotelDetail`，返回（Mock 与 Live 完全同构，C1 修复后口径）：
 
 | 字段 | 说明 |
 |---|---|
@@ -50,23 +50,27 @@
 | `starRating` | 星级 |
 | `checkIn` / `checkOut` | 入离日期 |
 | `bookingUrl` | 预订落地页 |
-| `roomRatePlans` | 房型/价格计划列表 |
+| `rooms` | 房型/价格计划列表（snake_case） |
+| `raw` | RollingGo 原始返回（Live 版；Mock 版为等效的原始形状数据） |
 
-每个 `roomRatePlans` 包含：
+每个 `rooms` 元素包含：
 
 | 字段 | 说明 |
 |---|---|
-| `roomName` | 房型名 |
-| `ratePlanId` | 价格计划 ID |
-| `ratePlanName` | 价格计划名 |
-| `averagePrice` | 平均每晚价格 |
+| `room_name` | 房型名 |
+| `rate_plan_id` | 价格计划 ID |
+| `rate_plan_name` | 价格计划名 |
+| `average_price` | 平均每晚价格 |
 | `currency` | 币种 |
-| `mealAmount` | 早餐份数 |
-| `mealTypeStr` | 餐食说明 |
-| `isOnRequest` | 是否需二次确认 |
-| `cancelPolicy` | 取消政策 |
+| `meal_amount` | 早餐份数 |
+| `meal_type` | 餐食说明 |
+| `on_request` | 是否需二次确认 |
+| `cancel_policy` | 取消政策 |
 | `cancelable` | 是否可免费取消 |
-| `roomInfo` | 房型信息（WiFi/窗户/面积/楼层/吸烟/图片等） |
+| `room_info` | 房型信息：`has_wifi` / `has_window` / `max_occupancy` / `size` / `floor` / `smoking` / `images` |
+
+> 历史注：2026-08-28（C1）之前 Mock 版返回 `roomRatePlans`（camelCase），与 Live
+> 不一致；现已统一为上表的 `rooms`（snake_case）口径。
 
 ### 3. 搜索标签（`action=tags`）
 

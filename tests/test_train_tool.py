@@ -434,8 +434,11 @@ class TestTrainToolsLive(unittest.TestCase):
         self.assertEqual(r.status, ToolStatus.OK)
         train = r.data[0]
         self.assertEqual(train["code"], "G39")
+        # C3：中文名与电报码并存
         self.assertEqual(train["from_station"], "北京南")
+        self.assertEqual(train["from_station_code"], "VNP")
         self.assertEqual(train["to_station"], "上海虹桥")
+        self.assertEqual(train["to_station_code"], "AOH")
         self.assertEqual(train["seats"]["business"], "3")
         client.query_tickets.assert_called_once_with("VNP", "AOH", _future_date(),
                                                      purpose_codes="ADULT")

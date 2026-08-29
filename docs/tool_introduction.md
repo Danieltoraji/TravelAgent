@@ -135,7 +135,7 @@ result = tool.execute(city="北京")
 |----|------|
 | `OK` | 调用成功，`data` 中有有效数据 |
 | `ERROR` | 调用失败，`error` 中有错误信息 |
-| `NO_DATA` | 调用成功但无数据 |
+| `NO_DATA` | **预留位，当前代码不会产出**——查询成功但无数据时返回 `OK` + 空列表/空结构（启用需先适配 A 侧 `_tool_payload` 的降级语义，见 `docs/code_defects_and_fixes_20260828.md` C7） |
 
 ---
 
