@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 DEFAULT_CITY_TRAVEL_PATH = (
     Path(__file__).resolve().parent.parent / "fake_spots" / "city_travel.json"
@@ -52,6 +52,14 @@ class CityTravelEdge:
     from_station: str = ""           # 出发站（train/air；driving 无站点为空）
     to_station: str = ""             # 到达站（train/air）
     source: str = ""                 # "estimate"（估算表）| "live"（真源）| ""（假表旧边）
+    candidates: Tuple[Dict[str, Any], ...] = ()  # 真源候选列表（多条车次/航班 × 时刻 × 票价）；估算边恒为空
+
+
+# 候选列表单条结构约定（真源 provider 填充，供展示/未来班次级优化用）：
+#   train: {"code", "depart_time", "arrive_time", "duration", "price",
+#           "seats": {...}, "from_station", "to_station"}
+#   air:   {"flight_no", "airline", "depart_time", "arrive_time",
+#           "duration_min", "price", "from_airport", "to_airport", "status"}
 
 
 def _load_raw_edges(path: Optional[Any] = None) -> list:
@@ -373,7 +381,11 @@ def find_intercity_route_template(
     options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
     priority: Optional[str] = None,
 ) -> Optional[IntercityRoute]:
-    """区域模板候选枚举（不查直达，供直达失败/超时后调用）：
+    """区域模板候选枚举（批次 2.5 实现；**8.29 起主入口已改 BFS 全图**，
+    本函数与 ``load_regions``/``find_region_of`` 一并保留兼容，不再被调用）。
+
+    只枚举「出发区枢纽 × 目标区枢纽（含直飞特例）」≤2 跳链——依赖 regions 表、
+    非枢纽成员中转/跨区小众链会漏，故被 BFS+剪枝 取代。行为见旧文档记录：
 
     出发区枢纽 × 目标区枢纽（含「本区枢纽 → 目标区成员直飞」特例），枚举全部
     ≤2 跳链，取总时长（含 air 缓冲）最短且 ≤ ``max_total_minutes``；无候选 → None。
@@ -443,37 +455,180 @@ def find_intercity_route_template(
     return min(candidates, key=lambda r: r.total_minutes)
 
 
+# ---------------------------------------------------------------------------
+# BFS + 剪枝 全图搜索（8.29 起，替代区域模板候选枚举；template 函数保留兼容）
+# ---------------------------------------------------------------------------
+
+DEFAULT_MAX_HOPS = 3  # 中转链最大跳数：3 段覆盖空铁联运全组合；4 段会明显绕路且被剪
+
+INF = 10**9
+
+
+def _segment_candidates(
+    a: str,
+    b: str,
+    options: Dict[Tuple[str, str], Dict[str, CityTravelEdge]],
+    priority: Optional[str],
+) -> List[CityTravelEdge]:
+    """a→b 在 ``priority`` 语义下的候选边集（BFS 扩展用，可多条）。
+
+    段内决策**复用旧模板 ``_pick_segment`` 语义**（保证 2.5 金标准不变）：
+    - ``rail`` / ``air``：链式命中（对应优先链首个可用模式）；
+    - ``None``：**偏好链内取最短**（如 昆明→成都 air 80m 而非 train 300m）；
+    - ``cost`` / ``speed`` / ``earliest``：**全展开** —— BFS 升级点：不止段内贪心，
+      更在**整条链上求全局最优**（全局最低价 / 含 air 缓冲的最短总时长）。
+    """
+    if priority in ("speed", "earliest"):
+        return list((options.get((a, b)) or {}).values())
+    if priority == "cost":
+        by_mode = options.get((a, b)) or {}
+        priced = [
+            e for e in by_mode.values() if e.cost_per_person and e.cost_per_person > 0
+        ]
+        if priced:
+            return priced  # 全局最低价链（多边竞争）
+        # 全无价 → 偏好链兜底（与 _pick_segment cost 回落一致）
+        edge = _pick_segment(a, b, options, "rail", priority)
+        return [edge] if edge is not None else []
+    edge = _pick_segment(a, b, options, "rail", priority)
+    return [edge] if edge is not None else []
+
+
+def _edge_weight(edge: CityTravelEdge) -> int:
+    """单段的「真实到达时长」：净时长 + air 值机缓冲（与 ``_route_minutes`` 口径一致）。"""
+    return edge.transport_minutes + (AIR_BUFFER_MIN if edge.mode == "air" else 0)
+
+
+def find_intercity_route_bfs(
+    origin: str,
+    destination: str,
+    max_total_minutes: int = DEFAULT_MAX_TOTAL_MINUTES,
+    options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
+    priority: Optional[str] = None,
+    max_hops: int = DEFAULT_MAX_HOPS,
+) -> Optional[IntercityRoute]:
+    """多式联运全图 BFS + 剪枝（软直达优先）。
+
+    邻接按 ``priority`` 决定每边的候选集（``_segment_candidates``：rail/air 链式 1 条、
+    speed/cost 全候选展开），uniform-cost 搜索（heapq 按累计目标值升序）＝广度优先传播
+    ＋ Dijkstra 最优性：**首达 destination 的路径即全局最优**，不会像区域模板那样
+    只看「本区枢纽 × 目标区枢纽」漏掉小众中转链。
+
+    剪枝（防搜索爆炸，17 城 58 边规模下状态量极小）：
+    1. 跳数 > ``max_hops``（默认 3）→ 剪；
+    2. 累计目标值 ≥ 当前最优（**分支限界**）→ 剪；
+    3. 累计真实到达时长（含 air 缓冲）> ``max_total_minutes``（720 硬约束）→ 剪；
+    4. 路径内城市已访问（**无环**）→ 剪；
+    5. 到达某城市的目标值劣于已记录（**Dijkstra 节点去重**）→ 剪（爆炸的根剪枝）。
+
+    软直达优先（8.29 决策）：直达（≤12h）存在 → 作为初始最优；BFS 只在发现
+    「目标值更优」的多跳链时替换——有直达不绕路，但真正更优的小众链不遗漏。
+
+    ``priority``：目标值口径——``cost`` 为人均费用累计，其余（rail/air/speed/earliest/
+    None）为总到达时长（含 air 缓冲）；两种口径下 720 时长硬约束都照常生效。
+    """
+    if not origin or not destination or origin == destination:
+        return None
+    options = options if options is not None else load_city_travel_options()
+    from heapq import heappop, heappush
+
+    goal_cost = priority == "cost"
+
+    # 软直达优先：直达存在且 ≤ max_total → 初始最优（多跳必须更优才替换）
+    best_edges: Optional[Tuple[CityTravelEdge, ...]] = None
+    best_value = None  # 目标值（费用 / 含缓冲时长）
+    direct = find_city_travel_preferred(
+        origin, destination, options=options, priority=priority
+    )
+    if direct is not None and _edge_weight(direct) <= max_total_minutes:
+        best_value = (
+            direct.cost_per_person if goal_cost else _edge_weight(direct)
+        )
+        best_edges = (direct,)
+
+    # 邻接：每个 (a, b) 按 priority 展开候选边（邻接表，只构建一次）
+    out: Dict[str, List[Tuple[str, CityTravelEdge]]] = {}
+    for (a, b), by_mode in options.items():
+        if not by_mode:
+            continue
+        for edge in _segment_candidates(a, b, options, priority):
+            out.setdefault(a, []).append((b, edge))
+
+    # heap: (目标值, 跳数, 当前城市, 路径边, 累计真实到达时长)
+    heap: List[Tuple[int, int, str, Tuple[CityTravelEdge, ...], int]] = []
+    best_to_city: Dict[str, int] = {}
+    heappush(heap, (0, 0, origin, (), 0))
+
+    while heap:
+        value, hops, city, path, full_minutes = heappop(heap)
+        if best_value is not None and value >= best_value:
+            break  # 分支限界：堆顶已不优于当前最优 → 后面只会更差
+        if city == destination and path:
+            best_value, best_edges = value, path
+            continue  # 可能还有同值/更优分支；堆序保证不会再差
+        if hops >= max_hops:
+            continue
+        visited = {e.origin for e in path} | {city}
+        for nxt, edge in out.get(city, ()):
+            if nxt == destination and city == origin:
+                continue  # 起点→终点 直达已由基准（软直达优先）决策，BFS 只搜中转链
+            if nxt in visited:
+                continue  # 无环
+            n_full = full_minutes + _edge_weight(edge)
+            if n_full > max_total_minutes:
+                continue  # 720 硬约束（含 air 缓冲）
+            n_value = value + (edge.cost_per_person if goal_cost else _edge_weight(edge))
+            if best_value is not None and n_value >= best_value:
+                continue  # 分支限界（到终点只会更差）
+            new_path = path + (edge,)
+            if nxt == destination:
+                best_value, best_edges = n_value, new_path
+                continue
+            if n_value >= best_to_city.get(nxt, INF):
+                continue  # Dijkstra 节点去重：已存在更优路径到该城
+            best_to_city[nxt] = n_value
+            heappush(heap, (n_value, hops + 1, nxt, new_path, n_full))
+
+    if best_edges is None:
+        return None
+    return IntercityRoute(best_edges, _route_minutes(best_edges),
+                          sum(e.cost_per_person for e in best_edges))
+
+
 def find_intercity_route(
     origin: str,
     destination: str,
     max_total_minutes: int = DEFAULT_MAX_TOTAL_MINUTES,
     options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
     priority: Optional[str] = None,
+    max_hops: int = DEFAULT_MAX_HOPS,
 ) -> Optional[IntercityRoute]:
-    """多式联运总入口：本地直达（≤12h）优先 → 区域模板 → None。
+    """多式联运总入口：全图 BFS + 剪枝（8.29 起，替代区域模板候选枚举）。
 
-    ``priority``（rail/air/speed/earliest/cost/None）：直达与模板各段的方式选择偏好，
-    见 ``find_city_travel_preferred`` / ``_pick_segment``。
+    ``priority``（rail/air/speed/earliest/cost/None）：直达与各段的模式/目标偏好，
+    见 ``find_city_travel_preferred`` / ``find_intercity_route_bfs``。
+
+    软直达优先：直达（≤12h）→ 初始最优，BFS 只在发现更优链时替换——有直达不绕路，
+    更优的小众中转链不遗漏（解决方案：BFS 全图，不再依赖 regions 表）。
 
     注意：provider（live）场景直达由调用方先行权衡（表外 driving 兜底超 12h 时
     才回落本函数），本函数只消费本地表。
     """
+    if not origin or not destination or origin == destination:
+        return None
     options = options if options is not None else load_city_travel_options()
+    route = find_intercity_route_bfs(
+        origin, destination, max_total_minutes=max_total_minutes,
+        options=options, priority=priority, max_hops=max_hops,
+    )
+    if route is not None:
+        return route
+    # 兜底（与旧行为一致）：直达存在但超 12h（罕见）→ 仍如实给出
     direct = find_city_travel_preferred(
         origin, destination, options=options, priority=priority
     )
-    if direct is not None and direct.transport_minutes <= max_total_minutes:
-        return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
-    template = find_intercity_route_template(
-        origin,
-        destination,
-        max_total_minutes=max_total_minutes,
-        options=options,
-        priority=priority,
-    )
-    if template is not None:
-        return template
     if direct is not None:
-        # 直达超 12h（罕见）：仍如实给出（source 标注后由外层兜底语义处理）
-        return IntercityRoute((direct,), direct.transport_minutes, direct.cost_per_person)
+        return IntercityRoute(
+            (direct,), direct.transport_minutes, direct.cost_per_person
+        )
     return None

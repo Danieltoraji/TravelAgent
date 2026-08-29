@@ -745,6 +745,224 @@ def make_live_city_travel_provider(
     return city_travel_provider
 
 
+# ---------------------------------------------------------------------------
+# 城际真源：火车（B 侧 train 工具）与航班（B 侧 flight 工具）→ CityTravelEdge
+# ---------------------------------------------------------------------------
+
+
+def _hhmm_to_minutes(text: Any) -> Optional[int]:
+    """"05:24" / "5:24" → 分钟；无法解析返回 None。"""
+    t = str(text or "").strip()
+    if not t:
+        return None
+    parts = t.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]) * 60 + int(parts[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_representative(
+    rows: List[Dict[str, Any]],
+    minutes_key: str,
+    price_key: str,
+    mode: str,
+    origin: str,
+    destination: str,
+) -> Optional[CityTravelEdge]:
+    """从真源候选行里选代表边 + 透传全量 candidates。
+
+    代表策略（无 priority 上下文，取折中口径）：
+    - 时长 = 候选里**最短**（BFS speed/earliest 决策口径）；
+    - 价格 = 候选里**最低**（cost 决策与预算口径都想要最低价）；
+    - candidates 全量透传（展示 + 未来班次级 earliest 优化用）。
+    行字段缺失（时长不可解析 / 无航班号）逐条跳过。
+    """
+    if not rows:
+        return None
+    parsed: List[Tuple[float, float, Dict[str, Any]]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        minutes = _minutes_from_flight_row(row, minutes_key, price_key)
+        if minutes is None:
+            continue
+        price = _as_float(row.get(price_key))
+        parsed.append((minutes, price, row))
+    if not parsed:
+        return None
+    shortest = min(parsed, key=lambda item: item[0])
+    cheapest = min(parsed, key=lambda item: (item[1], item[0]))
+    best_minutes = int(shortest[0])
+    best_price = cheapest[1] if cheapest[1] > 0 else shortest[1]
+    best_row = shortest[2]
+    candidates: List[Dict[str, Any]] = []
+    for minutes, price, row in parsed:
+        candidate = dict(row)
+        candidate.setdefault("transport_minutes", int(minutes))
+        candidate.setdefault("cost_per_person", price)
+        candidates.append(candidate)
+    return CityTravelEdge(
+        origin=origin,
+        destination=destination,
+        transport_minutes=best_minutes,
+        mode=mode,
+        cost_per_person=best_price or _as_float(best_row.get(price_key)),
+        from_station=_as_str(best_row.get("from_station") or best_row.get("from_airport")),
+        to_station=_as_str(best_row.get("to_station") or best_row.get("to_airport")),
+        source="live",
+        candidates=tuple(candidates),
+    )
+
+
+def _minutes_from_flight_row(row: Dict[str, Any], minutes_key: str, price_key: str) -> Optional[int]:
+    """候选行 → 分钟（train 的 duration"05:24" 或 flight 的 duration_min 整数）。"""
+    if minutes_key == "duration_min":
+        minutes = _as_int(row.get("duration_min"))
+        if minutes and minutes > 0:
+            return minutes
+        return None
+    return _hhmm_to_minutes(row.get(minutes_key))
+
+
+def make_live_train_provider(
+    tool_provider: Any,
+    date: str,
+) -> Callable[..., Optional[CityTravelEdge]]:
+    """返回 ``provider(origin, dest, *, mode=None) -> Optional[CityTravelEdge]``（12306 火车真源）。
+
+    调 B 侧 ``train_ticket``（余票/时刻）+ ``train_price``（票价）双工具：
+    - 车次候选全量 → ``Edge.candidates``（code/时刻/历时/座位/票价）；
+    - 代表边：最短历时（BFS speed/earliest 口径），价格取全候选最低
+      （cost 与预算口径；真源价缺失时由上层回落本地估算价兜底）；
+    - 无车次（表外/全部停运）→ None（不假装，走本地估算/联运降级）；
+    - 工具失败 → LiveDataError（由 BPlannerHook 捕获回退假源）。
+
+    注意：城市对入参为 A 侧城市名；B 侧 train 工具要求站名/电报码，
+    城市名→主站映射由工具层（stations）处理，入参直接传城市名即可。
+    """
+
+    def train_provider(
+        origin: str, destination: str, *, mode: Optional[str] = None
+    ) -> Optional[CityTravelEdge]:
+        if mode not in (None, "train", "rail"):
+            return None  # 只服务火车方式；其它 mode 交还给上游决策
+        try:
+            tickets = _tool_payload(tool_provider.call(
+                "train_ticket", from_station=origin, to_station=destination,
+                date=date,
+            ))
+        except LiveDataError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise LiveDataError(
+                f"城际火车查询失败：{origin} → {destination}：{exc}"
+            ) from exc
+        if tickets is None:
+            return None
+        return _pick_representative(
+            tickets, "duration", "price", "train", origin, destination,
+        )
+
+    return train_provider
+
+
+def make_live_flight_provider(
+    tool_provider: Any,
+    date: str,
+) -> Callable[..., Optional[CityTravelEdge]]:
+    """返回 ``provider(origin, dest, *, mode=None) -> Optional[CityTravelEdge]``（航班真源）。
+
+    调 B 侧 ``flight_search``（juhe 聚合数据-航班查询 1962）：
+    - 航班候选全量 → ``Edge.candidates``（flight_no/航司/时刻/历时/票价）；
+    - 代表边：最短历时航班（BFS speed/earliest 口径），价格取全候选最低；
+    - ``flightInfo`` 为空（无直达）→ None（不假装，走本地估算/联运降级）；
+    - 工具失败 / juhe 业务错误 → LiveDataError（由 BPlannerHook 捕获回退假源）。
+
+    mode 契约为 ``"air"``（绝不返 ``rail``；见交接文档 §3.5 踩坑）。
+    """
+
+    def flight_provider(
+        origin: str, destination: str, *, mode: Optional[str] = None
+    ) -> Optional[CityTravelEdge]:
+        if mode not in (None, "air"):
+            return None
+        try:
+            flights = _tool_payload(tool_provider.call(
+                "flight_search", from_city=origin, to_city=destination,
+                date=date,
+            ))
+        except LiveDataError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise LiveDataError(
+                f"城际航班查询失败：{origin} → {destination}：{exc}"
+            ) from exc
+        if flights is None:
+            return None
+        return _pick_representative(
+            flights, "duration_min", "price", "air", origin, destination,
+        )
+
+    return flight_provider
+
+
+def make_live_intercity_provider(
+    tool_provider: Any,
+    schedule: Dict[str, Any],
+    origin: str = "",
+    destination: str = "",
+) -> Callable[..., Optional[CityTravelEdge]]:
+    """返回组合城际真源 provider：train 真源 → flight 真源 → map 估算兜底。
+
+    ``origin`` / ``destination`` 为行程主方向（去程 origin→destination、
+    返程 destination→origin），用于按方向自动选查询日期：
+    - 去程用 ``travel_schedule.departure_date``；
+    - 返程用 ``return_date``；
+    - 方向无法判断或缺日期 → 该模式不查真源（返回 None，走估算）。
+    任何真源失败（工具缺 / 无直达 / 网络）都落回 map 估算 provider——
+    ``find_city_travel_preferred`` 的真源-None-回落链已兜底，不炸规划。
+    """
+
+    def _direction_date(o: str, d: str) -> str:
+        if o == origin and d == destination:
+            return (schedule.get("departure_date") or "").strip()
+        if d == origin and o == destination:
+            return (schedule.get("return_date") or "").strip()
+        return ""
+
+    map_provider = make_live_city_travel_provider(tool_provider, mode="train")
+
+    def intercity_provider(
+        o: str, d: str, *, mode: Optional[str] = None
+    ) -> Optional[CityTravelEdge]:
+        date_str = _direction_date(o, d)
+        if date_str:
+            if mode in (None, "train", "rail"):
+                # P2b（PR#5）：train_trip 技能优先——站名解析更健壮（估算表城市对
+                # → 站名）+ 二等座真票价；无班次/未收录城市对返回 None → 回落本地
+                # train_ticket 候选版（多车次 + candidates 全量透传）。
+                edge = make_live_train_trip_provider(tool_provider, date_str)(
+                    o, d, mode="train"
+                )
+                if edge is None:
+                    edge = make_live_train_provider(tool_provider, date_str)(
+                        o, d, mode="train"
+                    )
+                if edge is not None:
+                    return edge
+            if mode in (None, "air"):
+                flight_provider = make_live_flight_provider(tool_provider, date_str)
+                edge = flight_provider(o, d, mode="air")
+                if edge is not None:
+                    return edge
+        return map_provider(o, d, mode=mode or "train")
+
+    return intercity_provider
+
+
 def make_live_train_trip_provider(tool_provider: Any, date: str = ""):
     """train_trip 技能 → CityTravelEdge provider（P2b 城际真源化，0829）。
 

@@ -155,6 +155,7 @@ def _build_route_legs(route: Any) -> List[Dict[str, Any]]:
             "cost_per_person": float(e.cost_per_person),
             "source": e.source,
             "note": "城际主段（方式已定）",
+            "candidates": list(e.candidates),  # 真源候选列表（多条车次/航班），估算边为空
         }
 
     def local_leg(a: str, b: str, note: str) -> Dict[str, Any]:
