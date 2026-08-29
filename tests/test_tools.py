@@ -69,6 +69,27 @@ class TestTools(unittest.TestCase):
         self.assertEqual(r.status, ToolStatus.OK)
         self.assertTrue(any(p["name"] == "故宫" for p in r.data))
 
+    def test_food_mock_has_location(self) -> None:
+        # C2：Mock 餐厅必须带 "lng,lat" 坐标（A 侧 normalize 无坐标即丢弃）
+        from tools.food_tool import FoodTool
+        for restaurant in FoodTool()._run():
+            self.assertIn("location", restaurant)
+            lng, _, lat = restaurant["location"].partition(",")
+            self.assertTrue(lng and lat, restaurant["location"])
+
+    def test_schema_validation_errors(self) -> None:
+        # C5：schema 校验（required 空/缺、类型不符）→ ERROR 且不重试
+        from tools.base_tool import ToolRegistry
+        from tools.weather_tool import WeatherTool
+        reg = ToolRegistry()
+        reg.register(WeatherTool())
+        r = reg.call("weather", city="")
+        self.assertEqual(r.status, ToolStatus.ERROR)
+        self.assertIn("city", r.error)
+        r = reg.call("weather", city=123)
+        self.assertEqual(r.status, ToolStatus.ERROR)
+        self.assertIn("string", r.error)
+
     def test_scenic_queue_reflects_world(self) -> None:
         from tools.mock_data import MockWorld
         from tools.scenic_tool import ScenicTool
@@ -1456,9 +1477,13 @@ class TestMapBatchRoute(unittest.TestCase):
         self.assertEqual(len(rows), 4)
         row = rows[0]
         self.assertEqual(set(row), {"origin", "destination", "distance_km",
-                                    "transport_minutes", "mode", "fare"})
+                                    "transport_minutes", "mode", "transit_text",
+                                    "fare"})
         self.assertEqual(row["origin"], "故宫")
         self.assertEqual(row["transport_minutes"], 25)  # Mock 固定值
+        # C4：mode 统一英文模式名（transit 默认解析为 driving 近似），中文描述在 transit_text
+        self.assertEqual(row["mode"], "driving")
+        self.assertIn("地铁1号线", row["transit_text"])
         self.assertEqual(rows[3]["destination"], "王府井")
 
     def test_mock_route_has_transport_minutes(self) -> None:

@@ -97,7 +97,8 @@ class TestExecutionAgentToolContext(unittest.TestCase):
         tool_names = [s["name"] for s in agent.tool_provider.list_tools_json()]
         self.assertIn("weather", tool_names)
 
-        # 直接检查 DecisionRequest.context 是否包含 tool_specs
+        # A1（2026-08-28）：context 不再携带 tool_specs（A 侧从未消费）；
+        # 这里验证 provider 白名单本身 + context 仅含 threshold
         from core.schemas import DecisionRequest, MonitorEvent, EventType
         from datetime import datetime
         event = MonitorEvent(
@@ -113,10 +114,8 @@ class TestExecutionAgentToolContext(unittest.TestCase):
         asyncio.run(agent.handle_event(event))
         req = seen["req"]
         self.assertIsInstance(req, DecisionRequest)
-        self.assertIn("tool_specs", req.context)
-        names = [s["name"] for s in req.context["tool_specs"]]
-        self.assertIn("weather", names)
-        self.assertNotIn("booking", names)
+        self.assertNotIn("tool_specs", req.context)
+        self.assertEqual(req.context["impact_threshold"], agent.impact_threshold)
 
 
 if __name__ == "__main__":

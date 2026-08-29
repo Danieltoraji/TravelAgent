@@ -180,7 +180,9 @@ class ExecutionAgent:
             current_timeline=self.timeline,
             context={
                 "impact_threshold": self.impact_threshold,
-                "tool_specs": self.tool_provider.list_tools_json(),
+                # A1（2026-08-28）：移除 tool_specs——A 侧 hook 只读 impact_threshold，
+                # 工具清单从未进入 prompt；未来 LLM function calling 走
+                # ToolProvider.list_for_llm()（见 docs/tool_encapsulation_design_20260828.md §6）
             },
         )
         if self.decision_hook is not None:
@@ -306,6 +308,14 @@ class ExecutionAgent:
             # 将 booking_id 附加到事件数据，供下游感知
             if isinstance(event.data, dict):
                 event.data["auto_booking_id"] = record.booking_id
+            # E6：回填时间轴上的 Place，C 端可展示预约状态
+            for day in self.timeline.days:
+                if day.date.isoformat() != target_date:
+                    continue
+                for item in day.items:
+                    if item.name == rule.place:
+                        item.booking_id = record.booking_id
+                        item.booking_status = record.status.value
             logger.info("自动预约: %s (type=%s, id=%s)", rule.place, booking_type, record.booking_id)
         except Exception:  # noqa: BLE001
             logger.exception("自动预约失败: %s", rule.place)

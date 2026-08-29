@@ -91,8 +91,9 @@ class TrainTicketToolLive(TrainTicketTool):
             parsed = parse_ticket_row(row)
             if parsed is None:
                 continue
-            parsed["from_station"] = station_name(parsed.pop("from_station_code"))
-            parsed["to_station"] = station_name(parsed.pop("to_station_code"))
+            # C3：中文名与电报码并存（与 Mock 同构），电报码供经停/票价联动使用
+            parsed["from_station"] = station_name(parsed["from_station_code"])
+            parsed["to_station"] = station_name(parsed["to_station_code"])
             trains.append(parsed)
 
         logger.info("Train tickets: %s(%s)→%s(%s) %s → %d 车次",

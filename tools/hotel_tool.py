@@ -109,44 +109,96 @@ class HotelTool(BaseTool):
         if action == "detail":
             hotel_id = kwargs.get("hotelId")
             name = kwargs.get("name", "")
+            if hotel_id is None and not name:
+                # C6：对齐 Live 版校验（hotel_tool.py `_call_detail`）
+                raise ValueError("hotel detail requires 'hotelId' or 'name'")
             for hotel in _MOCK_HOTELS:
                 if (hotel_id is not None and str(hotel["id"]) == str(hotel_id)) or (
                     name and name in hotel["name"]
                 ):
-                    return {
-                        "hotelId": hotel["id"],
-                        "name": hotel["name"],
-                        "starRating": hotel["star"],
-                        "checkIn": kwargs.get("checkInDate", ""),
-                        "checkOut": kwargs.get("checkOutDate", ""),
-                        "bookingUrl": hotel["booking_url"],
-                        "roomRatePlans": [
-                            {
-                                "roomName": "标准间",
-                                "ratePlanId": "R001",
-                                "ratePlanName": "标准间",
-                                "averagePrice": hotel["price_per_night"],
-                                "currency": "CNY",
-                                "mealAmount": 0,
-                                "mealTypeStr": "不含早餐",
-                                "isOnRequest": False,
-                                "cancelPolicy": "免费取消",
-                                "cancelable": True,
-                                "roomInfo": {
-                                    "hasWifi": True,
-                                    "hasWindow": True,
-                                    "maxOccupancy": 2,
-                                    "size": "25-30",
-                                    "floor": "1-5",
-                                    "smoking": "不可吸烟",
-                                    "images": "",
-                                },
-                            }
-                        ],
-                    }
-            return {"hotelId": hotel_id, "name": name, "roomRatePlans": []}
+                    return self._mock_detail(hotel, kwargs)
+            # 未匹配：与 Live 归一化输出同构（rooms 为空）
+            return {
+                "hotelId": hotel_id,
+                "name": name,
+                "starRating": None,
+                "checkIn": kwargs.get("checkInDate", ""),
+                "checkOut": kwargs.get("checkOutDate", ""),
+                "bookingUrl": "",
+                "rooms": [],
+                "raw": {},
+            }
         # search
         return {"hotels": _MOCK_HOTELS, "count": len(_MOCK_HOTELS)}
+
+    @staticmethod
+    def _mock_detail(hotel: Dict[str, Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """构造与 HotelToolLive._normalize_detail_result 完全同构的 detail 输出。
+
+        先拼 RollingGo 原始形状（roomRatePlans/camelCase）作为 raw，
+        再按 Live 同款映射规则产出 rooms/snake_case——保证 Mock/Live 消费方零差异。
+        """
+        raw_plan = {
+            "roomName": "标准间",
+            "ratePlanId": "R001",
+            "ratePlanName": "标准间",
+            "averagePrice": hotel["price_per_night"],
+            "currency": "CNY",
+            "mealAmount": 0,
+            "mealTypeStr": "不含早餐",
+            "isOnRequest": False,
+            "cancelPolicy": "免费取消",
+            "cancelable": True,
+            "roomInfo": {
+                "hasWifi": True,
+                "hasWindow": True,
+                "maxOccupancy": 2,
+                "size": "25-30",
+                "floor": "1-5",
+                "smoking": "不可吸烟",
+                "images": "",
+            },
+        }
+        raw = {
+            "hotelId": hotel["id"],
+            "name": hotel["name"],
+            "starRating": hotel["star"],
+            "checkIn": kwargs.get("checkInDate", ""),
+            "checkOut": kwargs.get("checkOutDate", ""),
+            "bookingUrl": hotel["booking_url"],
+            "roomRatePlans": [raw_plan],
+        }
+        info = raw_plan["roomInfo"]
+        return {
+            "hotelId": raw["hotelId"],
+            "name": raw["name"],
+            "starRating": raw["starRating"],
+            "checkIn": raw["checkIn"],
+            "checkOut": raw["checkOut"],
+            "bookingUrl": raw["bookingUrl"],
+            "rooms": [{
+                "room_name": raw_plan["roomName"],
+                "rate_plan_id": raw_plan["ratePlanId"],
+                "rate_plan_name": raw_plan["ratePlanName"],
+                "average_price": raw_plan["averagePrice"],
+                "currency": raw_plan["currency"],
+                "meal_amount": raw_plan["mealAmount"],
+                "meal_type": raw_plan["mealTypeStr"],
+                "on_request": raw_plan["isOnRequest"],
+                "cancel_policy": raw_plan["cancelPolicy"],
+                "cancelable": raw_plan["cancelable"],
+                "room_info": {
+                    "has_wifi": info["hasWifi"],
+                    "has_window": info["hasWindow"],
+                    "max_occupancy": info["maxOccupancy"],
+                    "size": info["size"],
+                    "floor": info["floor"],
+                    "smoking": info["smoking"],
+                    "images": info["images"],
+                },
+            }],
+            "raw": raw,
+        }
 
 
 class HotelToolLive(HotelTool):

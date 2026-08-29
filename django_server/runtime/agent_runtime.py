@@ -80,8 +80,11 @@ class AgentRuntime:
     def __init__(self) -> None:
         self.registry: ToolRegistry = build_registry()
         self.tool_provider = ToolProvider(self.registry)
+        # E5：动作/预约持久化（BOOKING_PERSIST_PATH 开启，默认关闭避免测试/本地污染）
+        from config.settings import settings as _settings
         self.booking_manager = BookingManager(
-            self.registry, on_booking_failed=self._on_booking_failed
+            self.registry, on_booking_failed=self._on_booking_failed,
+            persist_path=_settings.booking_persist_path or None,
         )
         self.requirement: Optional[Dict[str, Any]] = None   # A 侧结构化需求（/api/plan/ 提交时存）
         self.timeline: Optional[TripTimeline] = None
@@ -284,7 +287,9 @@ class AgentRuntime:
         self.hotel_details = {}
         self.hotel_tags = None
         self.booking_manager = BookingManager(
-            self.registry, on_booking_failed=self._on_booking_failed
+            self.registry, on_booking_failed=self._on_booking_failed,
+            persist_path=_settings.booking_persist_path or None,
+            restore=False,   # 新计划 = 新会话：清空旧动作，覆写持久化文件
         )
         planner_hook = build_planner_hook(
             requirement=requirement, tool_provider=self.tool_provider
