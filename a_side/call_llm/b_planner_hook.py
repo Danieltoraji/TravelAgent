@@ -285,10 +285,17 @@ class BPlannerHook:
         self._ensure_default_travel_schedule()
         provider = None
         if self._use_live and getattr(self, "_tool_provider", None) is not None:
-            from data_transmission.live_data import make_live_city_travel_provider
+            # P2b（0829）：城际真源化——train_trip 技能按真实出行日期查 12306 班次。
+            # 失败/未收录城市对返回 None，find_city_travel_preferred 回退本地估算表
+            #（make_live_city_travel_provider 保留为兼容，已不在主链使用）。
+            from data_transmission.live_data import make_live_train_trip_provider
 
-            provider = make_live_city_travel_provider(
-                self._tool_provider, mode="train"
+            departure_date = (
+                (self.requirement.get("content", {}).get("travel_schedule") or {})
+                .get("departure_date", "")
+            )
+            provider = make_live_train_trip_provider(
+                self._tool_provider, date=departure_date
             )
         try:
             segments = build_trip_segments(

@@ -743,3 +743,47 @@ def make_live_city_travel_provider(
         )
 
     return city_travel_provider
+
+
+def make_live_train_trip_provider(tool_provider: Any, date: str = ""):
+    """train_trip 技能 → CityTravelEdge provider（P2b 城际真源化，0829）。
+
+    契约与 ``make_live_city_travel_provider`` 相同：f(origin, destination,
+    mode=None) → Optional[CityTravelEdge]。差异：
+    - ``date`` 为出行日期（12306 查询必填，来自 requirement.travel_schedule，
+      由 b_planner_hook 传入）；
+    - 仅支持 train 方式（mode 非 train/None → None，A 侧回退本地估算表）；
+    - 工具失败 / 无班次 / 未收录城市对 → None（回退估算），不再整链抛错。
+    """
+
+    def provider(origin, destination, mode=None):
+        if mode not in (None, "train"):
+            return None
+        try:
+            result = tool_provider.call(
+                "train_trip", from_city=origin, to_city=destination, date=date,
+            )
+        except Exception as exc:  # noqa: BLE001  工具缺失/参数错 → 回退估算
+            logger.warning("train_trip 调用失败（%s→%s）：%s", origin, destination, exc)
+            return None
+        payload = _tool_payload(result)
+        if not isinstance(payload, dict):
+            return None
+        try:
+            minutes = int(payload.get("transport_minutes"))
+        except (TypeError, ValueError):
+            return None
+        if minutes <= 0:
+            return None
+        return CityTravelEdge(
+            origin=origin,
+            destination=destination,
+            transport_minutes=minutes,
+            mode="train",
+            cost_per_person=_as_float(payload.get("cost_per_person")),
+            from_station=payload.get("from_station", ""),
+            to_station=payload.get("to_station", ""),
+            source=payload.get("source", "live"),
+        )
+
+    return provider
