@@ -63,6 +63,8 @@ def _open_range_to_fields(open_range: str) -> Dict[str, str]:
 
 class ScenicTool(BaseTool):
     name = "scenic"
+    domain = "scenic"
+    internal_actions = ["search"]         # 内部管道：A 侧候选池
     description = (
         "景点实时状态：是否开放、预计排队分钟数、是否需要预约、营业时间、票价；"
         "或按城市搜索景点候选池（action=search）。"
@@ -77,6 +79,8 @@ class ScenicTool(BaseTool):
             },
             "place": {"type": "string", "description": "景点名称，或 search 时为目标城市"},
             "limit": {"type": "integer", "description": "search 返回数量上限（默认 10）"},
+            # C6：schema 与实现同步（Live _status 用 city 做地理编码限定）
+            "city": {"type": "string", "description": "地理编码限定城市（status 时用，默认北京）"},
         },
         "required": ["place"],
     }

@@ -23,6 +23,9 @@
   - [6.3 food — 餐饮推荐（Mock/Live 双版本）](#63-food--餐饮推荐)
   - [6.4 booking — 预约服务](#64-booking--预约服务)
   - [6.5 火车票查询组（Mock/Live 双版本）](#65-火车票查询组mocklive-双版本)
+  - [6.6 hotel — 酒店查询（Mock/Live 双版本）](#66-hotel--酒店查询mocklive-双版本)
+  - [6.7 web_fetch / web_search — 网页抓取与搜索（Mock/Live 双版本）](#67-web_fetch--web_search--网页抓取与搜索mocklive-双版本)
+  - [6.8 技能（Skill）—— 面向意图的组合工具（0829 起）](#68-技能skill--面向意图的组合工具0829-起)
 - [7. Mock/Live 切换机制](#7-mocklive-切换机制)
 - [8. 和风天气 API 端点汇总](#8-和风天气-api-端点汇总)
 - [9. 高德地图 API 端点汇总](#9-高德地图-api-端点汇总)
@@ -38,10 +41,13 @@
 │         register() / get() / call() / names()           │
 ├─────────────────────────────────────────────────────────┤
 │  map    weather   weather_warning   air_quality         │
-│         weather_forecast   scenic   traffic   food   booking │
+│  weather_forecast   scenic   traffic   food   booking   │
+│  hotel   train_ticket/train_transfer/train_route/       │
+│  train_price   web_fetch   web_search                   │
 ├──────────────┬──────────────────────────────────────────┤
 │   Mock 版     │              Live 版                      │
-│ (MockWorld)   │  (QWeatherClient / AmapClient / 真实 API)  │
+│ (MockWorld)   │ (QWeatherClient / AmapClient / RollingGo  │
+│               │  / TrainClient / 真实 API)                 │
 └──────────────┴──────────────────────────────────────────┘
 ```
 
@@ -50,9 +56,9 @@
 | 原则 | 说明 |
 |------|------|
 | **统一契约** | 所有工具继承 `BaseTool`，通过 `execute(**kwargs) → ToolResult` 统一调用 |
-| **Mock/Live 双版本** | 天气(4)、地图(1)、交通(1)、景点(1)、餐饮(1) 工具有 Mock 和 Live 两个实现类，签名一致，调用方零改动 |
-| **零依赖** | Live 版仅使用 Python 标准库 `urllib.request` + `gzip` + `json`，不依赖 `requests` |
-| **共享客户端** | 4 个 Live 天气工具共用 `QWeatherClient`；5 个 Live 地图工具用 `AmapClient`，各自缓存 |
+| **Mock/Live 双版本** | 天气(4)、地图(1)、交通(1)、景点(1)、餐饮(1)、酒店(1)、火车票(4)、网页(2) 工具有 Mock 和 Live 两个实现类，签名一致，调用方零改动（booking 仅有 Mock） |
+| **零依赖（核心）** | 工具层 Live 版仅用 Python 标准库 `urllib.request` + `gzip` + `json`，不依赖 `requests`；例外：web_fetch/web_search 的 Live 版依赖 BeautifulSoup（requirements.txt 已声明），hotel Live 走 `mcp` SDK |
+| **共享客户端** | 4 个 Live 天气工具共用 `QWeatherClient`；5 个 Live 地图工具用 `AmapClient`；4 个 Live 火车工具用 `TrainClient`；hotel Live 用 `RollingGoClient`，各自缓存 |
 
 ### 文件结构
 
@@ -60,15 +66,21 @@
 tools/
 ├── __init__.py            # build_registry() 工厂 + default_registry
 ├── base_tool.py           # BaseTool 抽象基类 + ToolRegistry 注册表
+├── tool_provider.py       # ToolProvider 门面：白名单（readonly）/ list_tools_json
 ├── qweather_client.py    # QWeatherClient 共享 API 客户端（天气）
 ├── amap_client.py         # AmapClient 共享 API 客户端（地图，v5 POI 搜索）
+├── rollinggo_client.py    # RollingGoClient 共享 MCP 客户端（酒店，Streamable HTTP）
 ├── weather_tool.py        # 4 个天气工具 × 2 版本 = 8 个类
 ├── map_tool.py            # 地图工具 × 2 版本 = 2 个类
 ├── scenic_tool.py         # 景点工具 × 2 版本 = 2 个类
 ├── traffic_tool.py        # 交通工具 × 2 版本 = 2 个类
 ├── food_tool.py           # 餐饮工具 × 2 版本 = 2 个类
+├── hotel_tool.py          # 酒店工具 × 2 版本 = 2 个类（详见 docs/hotel_tool.md）
 ├── booking_tool.py        # 预约工具
 ├── mock_data.py           # MockWorld + 模拟数据
+├── web_client.py          # WebClient：网页抓取 + Bing 搜索（web 两工具共用）
+├── web_fetch_tool.py      # 网页抓取工具 × 2 版本 = 2 个类
+├── web_search_tool.py     # 网页搜索工具 × 2 版本 = 2 个类
 └── train/                 # 火车票查询组（12306 直连，无需 API Key）
     ├── __init__.py        # 工具组导出
     ├── client.py          # TrainClient 共享客户端 + 响应解析 + 日期校验
@@ -135,7 +147,7 @@ result = tool.execute(city="北京")
 |----|------|
 | `OK` | 调用成功，`data` 中有有效数据 |
 | `ERROR` | 调用失败，`error` 中有错误信息 |
-| `NO_DATA` | 调用成功但无数据 |
+| `NO_DATA` | **预留位，当前代码不会产出**——查询成功但无数据时返回 `OK` + 空列表/空结构（启用需先适配 A 侧 `_tool_payload` 的降级语义，见 `docs/code_defects_and_fixes_20260828.md` C7） |
 
 ---
 
@@ -524,11 +536,12 @@ v5 API 通过 `show_fields` 参数返回深度信息，嵌套在 `business` 对�
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `action` | enum | ✅ | `search_poi`（搜索地点）或 `route`（计算路线） |
+| `action` | enum | ✅ | `search_poi`（搜索地点）/ `route`（计算路线）/ `batch_route`（批量矩阵，内部管道） |
 | `query` | string | ❌ | 搜索关键词（action=search_poi 时） |
-| `origin` | string | ❌ | 起点（action=route 时） |
-| `destination` | string | ❌ | 终点（action=route 时） |
-| `mode` | enum | ❌ | `transit`/`driving`/`riding`/`walk`（默认 transit） |
+| `origin` / `destination` | string | ❌ | 起点/终点（action=route 时） |
+| `origins` / `destinations` | array<string> | ❌ | 起点/终点数组（action=batch_route 时，A 侧交通矩阵用） |
+| `mode` | enum | ❌ | `transit`/`driving`/`riding`/`walk`（默认 transit）；`train`/`air` 为城际估算（仅 route，查 `fake_spots/city_travel.json`，缺失回退 driving） |
+| `city` | string | ❌ | 地理编码限定城市（默认北京） |
 
 #### 返回数据
 
@@ -549,10 +562,24 @@ v5 API 通过 `show_fields` 参数返回深度信息，嵌套在 `business` 对�
 |------|------|------|-----------|---------------|
 | `from` | str | 起点 | 入参 | 入参 |
 | `to` | str | 终点 | 入参 | 入参 |
+| `mode` | str | 模式（含 train/air 城际） | 入参 | 入参 |
 | `distance_km` | float | 距离（km） | 固定 3.5 | `route.distance / 1000` |
-| `duration_min` | int | 预计耗时（分钟） | 固定 25 | `route.duration / 60` |
+| `duration_min` / `transport_minutes` | int | 预计耗时（分钟，两键同值，`transport_minutes` 为 A 侧规范字段） | 固定 25 | `route.duration / 60` |
 | `transit` | str | 交通方式描述 | 固定描述 | mode → 中文（公交/驾车/骑行/步行） |
 | `fare` | float | 费用（元） | 固定 4.0 | 固定 `0.0`（高德无此字段） |
+| `source` | str | 数据来源 | `mock` | `amap`（城际估算时 `estimate`） |
+| 城际附加 | — | `from_station`/`to_station`/`cost_per_person`/`transit_text`/`legs` | 估算表 | — |
+
+**action=batch_route** → `list[dict]`（每对 origin×destination 一行）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `origin` / `destination` | str | 该行起终点 |
+| `distance_km` | float | 距离（km） |
+| `transport_minutes` | int | 预计耗时（分钟） |
+| `mode` | str | 英文模式名（batch 仅支持 driving/walk，transit 默认解析为 driving 近似；**C4 修复后 Mock/Live 同构**） |
+| `transit_text` | str | 交通方式中文描述（C4 新增，Mock 原先误填在 mode 里） |
+| `fare` | float | 费用（元） |
 
 #### Live 版调用链路
 
@@ -582,7 +609,7 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 | 属性 | 值 |
 |------|-----|
 | **工具名** | `scenic` |
-| **说明** | 景点实时状态：是否开放、预计排队分钟数、是否需要预约、营业时间、票价 |
+| **说明** | 景点实时状态（是否开放/排队/预约/票价），或按城市搜索景点候选池（A 侧规划真源用） |
 | **Mock 类** | `ScenicTool` |
 | **Live 类** | `ScenicToolLive` |
 | **文件** | `tools/scenic_tool.py` |
@@ -591,10 +618,21 @@ MapToolLive._run(action="route", origin="故宫", destination="天坛", mode="tr
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `place` | string | ✅ | 景点名称 |
+| `place` | string | ✅ | action=status 时为景点名；action=search 时为城市名 |
+| `action` | enum | ❌ | `status`（默认，单点状态）/ `search`（城市候选池，内部管道，A 侧 LiveSpotsSource 消费） |
+| `limit` | int | ❌ | search 返回数量上限（默认 10） |
+| `city` | string | ❌ | 地理编码限定城市（Live status 用；C6 补入 schema） |
 
 #### 返回字段
 
+- `action=status` → `dict`：见下表
+- `action=search` → `list[dict]` 候选池：`id`/`name`/`alias`/`location{"lat","lng"}`/
+  `opening_time`/`closing_time`/`suggest_duration`/`price`/`tags`（Live 另含
+  `address`/`open_hours_week`）
+
+#### 返回字段（status）
+
+| 字段 | 类型 | 说明 | Mock 来源 | Live API 来源 |
 | 字段 | 类型 | 说明 | Mock 来源 | Live API 来源 |
 |------|------|------|-----------|---------------|
 | `place` | str | 景点名称 | 入参 | 入参 |
@@ -731,15 +769,18 @@ TrafficToolLive._run(origin="故宫", destination="天坛", mode="taxi")
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `query` | string | ❌ | 关键词，如菜系 |
-| `near` | string | ❌ | 附近地点 |
+| `near` | string | ❌ | 附近地点（有 near → 周边 1km 搜索；无 → 城市内搜索） |
+| `city` | string | ❌ | 搜索城市（无 near 时生效，默认北京） |
+| `limit` | int | ❌ | 返回数量上限 |
 
 #### 返回数据 → `list[dict]`
 
 | 字段 | 类型 | 说明 | Mock 来源 | Live API 来源 |
 |------|------|------|-----------|---------------|
 | `name` | str | 餐厅名称 | 固定列表 | `pois[].name` |
+| `location` | str | 坐标 `"lng,lat"`（**A 侧必需**：无坐标餐厅不参与通勤；C2 修复后 Mock 也有） | 固定坐标 | `pois[].location` 或顶层 lat/lng |
 | `rating` | float | 评分 | 固定值 | `business.rating` |
-| `price_per_person` | int | 人均价格 | 固定值 | `business.cost` |
+| `price_per_person` | float | 人均价格 | 固定值 | `business.cost` |
 | `open` | bool | 是否营业 | 固定 `True` | 固定 `True`（无公开 API） |
 | `distance_km` | float | 距离 | 固定值 | `pois[].distance / 1000`（周边搜索） |
 | `cuisine` | str | 菜系 | 固定值 | POI `type` 字段第二段（如"餐饮服务;中餐厅"→"中餐厅"） |
@@ -916,6 +957,93 @@ TrainTicketToolLive._run(from_station="北京南", to_station="上海虹桥", da
        GET /otn/leftTicket/queryI?leftTicketDTO.train_date=...&leftTicketDTO.from_station=VNP&...
        → data.result[]（"|" 分隔字符串）→ parse_ticket_row() 按列索引解析
 ```
+
+---
+
+### 6.6 hotel — 酒店查询（Mock/Live 双版本）
+
+> 详细文档：`docs/hotel_tool.md`（工具契约）、`docs/A_hotel_tool_adapter.md`
+> （A 侧适配）、`docs/C_hotel_data.md`（C 端消费数据）。本节为速览。
+
+| 属性 | 值 |
+|------|-----|
+| **工具名** | `hotel` |
+| **说明** | 酒店信息查询：按城市/日期/人数/星级/价格搜索，或查单个酒店房型价格明细、搜索标签 |
+| **Mock 类** | `HotelTool`（两家北京示例酒店） |
+| **Live 类** | `HotelToolLive`（RollingGo MCP：`searchHotels` / `getHotelDetail` / `getHotelSearchTags`） |
+| **文件** | `tools/hotel_tool.py`、`tools/rollinggo_client.py` |
+| **开关** | `settings.use_real_hotel_api`（需 `ROLLINGGO_API_KEY`） |
+
+#### 输入参数（action=search/detail/tags 三动作共用 schema）
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `action` | enum | `search` 搜索（需 `place` 或 `city`）/ `detail` 房型（需 `hotelId` 或 `name`）/ `tags` 搜索标签 |
+| `place` / `city` | string | 目标地（city 等价于按城市搜，兼容 A 侧调用） |
+| `checkInDate` / `checkOutDate` | string | 入离日期 |
+| `stayNights` / `adultCount` / `roomCount` / `childCount` | int | 住宿人数/间数 |
+| `starRatings` / `maxPricePerNight` / `requiredTags` | array/number | 过滤条件（search） |
+| `hotelId` / `name` | string/int | detail 定位（两者至少其一） |
+
+#### 返回数据
+
+- `search` → `{"hotels": [hotel...], "count": n}`（Live 另带 `raw`）；每条 hotel：
+  `id/name/name_en/brand/location{lat,lng}/star/rating/price_per_night/address/
+  tags/booking_url/image_url/open`
+- `detail` → `{hotelId, name, starRating, checkIn, checkOut, bookingUrl, rooms[...],
+  raw}`；rooms 元素 snake_case：`room_name/rate_plan_id/average_price/currency/
+  meal_amount/meal_type/on_request/cancel_policy/cancelable/room_info{...}`
+  （**C1 修复后 Mock 与 Live 同构**，详见 `docs/C_hotel_data.md` §一.2）
+- `tags` → RollingGo 标签原样返回（Live，带 1h TTL 缓存）
+
+#### 边界
+
+hotel_tool **只读查询**，不负责预订/下单/支付（`docs/hotel_tool.md` §1）；
+`booking_url` 仅为预订落地页透传。
+
+---
+
+### 6.7 web_fetch / web_search — 网页抓取与搜索（Mock/Live 双版本）
+
+| 属性 | 值 |
+|------|-----|
+| **工具名** | `web_fetch` / `web_search` |
+| **说明** | 抓取指定 URL 网页正文（支持 CSS 选择器）/ 关键词搜索网页列表 |
+| **Mock 类** | `WebFetchTool` / `WebSearchTool`（故宫示例内容） |
+| **Live 类** | 对应 `*Live` 版本，共享 `WebClient`（urllib 直抓 + Bing 搜索，BeautifulSoup 解析） |
+| **文件** | `tools/web_fetch_tool.py`、`tools/web_search_tool.py`、`tools/web_client.py` |
+| **开关** | `settings.use_real_web`（无需 API Key，非 Demo 即 Live） |
+
+#### web_fetch
+
+输入：`url`（必填）、`selector`（CSS 选择器，可选）、`max_length`（正文截断，默认 5000）。
+返回：`{url, final_url, title, text, links[{text,url}], fetch_time}`。
+链路：`WebClient.fetch(url)`（gzip + charset 检测）→ BeautifulSoup 提取正文/链接。
+
+#### web_search
+
+输入：`query`（必填）、`max_results`（默认 5）。
+返回：`{query, results[{title,url,snippet}], count}`。
+链路：`WebClient.search(query)` → **Bing 搜索**（`www.bing.com/search`）→
+解析 `li.b_algo` 结果块。
+
+---
+
+### 6.8 技能（Skill）—— 面向意图的组合工具（0829 起）
+
+技能 = `Skill(BaseTool)` 子类，构造注入原子工具/共享 client 并组合调用；
+输出为意图级结构（`output_schema` 声明），自动进入 `ToolProvider.list_for_llm()`
+白名单。设计详见 `docs/tool_encapsulation_design_20260828.md` §3。
+
+| 工具名 | 组合 | 输出要点 |
+|--------|------|----------|
+| `weather_brief` | weather + forecast + air_quality + warning | `{city, current, forecast_hours, air_quality, warnings, summary}`；单段失败降级空段 |
+| `train_trip` | train_ticket（选班次）+ train_price（二等座价） | 单一班次 `{code, from_station, to_station, depart_time, arrive_time, transport_minutes, cost_per_person, source}`——与 A 侧城际交通契约对齐 |
+
+train_trip 站名解析顺序：①估算表城市对（"北京"按城市展开为北京南等，避免按
+北京站直查漏站）→ ②站名/电报码直查 → ③ValueError（v1 城市对覆盖范围 =
+估算表城市对）。选班次：`earliest` 历时最短（默认）/ `cheapest` 二等座最低；
+12306 返回同城其他车站车次时，以实际班次到发站为准。
 
 ---
 

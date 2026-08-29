@@ -19,6 +19,8 @@ from tools.base_tool import BaseTool
 
 class BookingTool(BaseTool):
     name = "booking"
+    domain = "booking"
+    safety = "action"           # 副作用工具：不进 LLM/只读白名单
     description = "预约服务：为景点/酒店准备预约（填写信息），不涉及付款。"
     source = "mock"
     readonly = False
@@ -35,7 +37,8 @@ class BookingTool(BaseTool):
             "party_size": {"type": "integer"},
             "booking_type": {
                 "type": "string",
-                "enum": ["scenic", "hotel", "transport"],
+                # E3：补 "food"——BookingManager 动词表/自动填充本就支持 4 种
+                "enum": ["scenic", "hotel", "transport", "food"],
                 "description": "预约类型（默认 scenic）",
             },
             "price": {"type": "number", "description": "票价/房费（由 BookingManager 自动填充）"},

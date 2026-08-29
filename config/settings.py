@@ -57,6 +57,11 @@ class Settings:
 
     calendar_tz: str = "Asia/Shanghai"
 
+    # E5：预约/动作持久化文件（空 = 关闭持久化，测试与本地 Demo 默认关）。
+    # 生产在 .env / deploy 注入 BOOKING_PERSIST_PATH=logs/actions.json 开启。
+    booking_persist_path: str = field(default_factory=lambda: os.environ.get(
+        "BOOKING_PERSIST_PATH", ""))
+
     # ── M5 生产化配置 ──────────────────────────────────────────────
     api_timeout: float = 10.0              # API 请求超时（秒）
     max_retries: int = 3                  # 最大重试次数（首次 + 重试）
@@ -124,6 +129,7 @@ class Settings:
         self.amap_api_key = os.environ.get("AMAP_API_KEY", "")
         self.qweather_api_key = os.environ.get("QWEATHER_API_KEY", "")
         self.qweather_api_host = os.environ.get("QWEATHER_API_HOST", "")
+        self.booking_persist_path = os.environ.get("BOOKING_PERSIST_PATH", "")
         self.rollinggo_mcp_url = os.environ.get(
             "ROLLINGGO_MCP_URL", "https://mcp.rollinggo.cn/mcp")
         self.rollinggo_api_key = os.environ.get("ROLLINGGO_API_KEY", "")

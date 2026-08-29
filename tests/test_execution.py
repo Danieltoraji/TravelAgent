@@ -194,6 +194,10 @@ class TestAutoBooking(unittest.IsolatedAsyncioTestCase):
         # ActionItem 应已产出
         actions = bm.actions()
         self.assertTrue(any("故宫" in a.title for a in actions))
+        # E6：预约状态回填到时间轴 Place
+        gugong = agent.timeline.days[0].items[0]
+        self.assertEqual(gugong.booking_id, records[0].booking_id)
+        self.assertEqual(gugong.booking_status, "pending_confirm")
 
     async def test_auto_book_scenic_without_ticket(self) -> None:
         """ticket_required=False 的景点 → 不预约。"""

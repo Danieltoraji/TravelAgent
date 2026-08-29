@@ -124,12 +124,27 @@ class ToolSpec:
 
     - ``input_schema`` 直接复用各 Tool 的 JSON Schema 风格入参说明；
     - ``readonly`` 标记该工具是否只读；有副作用工具（如 booking）默认不应让 LLM 直调。
+
+    P0 三轴分类（0829，见 docs/tool_encapsulation_design_20260828.md §2）：
+    - ``domain``  领域轴：weather / map / traffic / scenic / food / hotel /
+      booking / train / web（代码组织与配置开关归属）；
+    - ``kind``    层次轴：atomic（原子工具）/ skill（意图级组合）/ internal（管道）；
+    - ``safety``  安全轴：query（只读，可进 LLM 白名单）/ action（副作用，必须过
+      权限闸）——readonly 为其推导属性（safety=="query"）；
+    - ``output_schema`` 出参契约（意图级单位：分钟/元/布尔，别名链收敛依据）；
+    - ``internal_actions`` 多动作工具中的内部管道动作名（如 map.batch_route）——
+      含此项的工具不进 LLM 白名单。
     """
     name: str
     description: str
     input_schema: Dict[str, Any] = field(default_factory=dict)
     readonly: bool = True
     source: str = "mock"            # mock / live
+    domain: str = "general"
+    kind: str = "atomic"            # atomic / skill / internal
+    safety: str = "query"           # query / action
+    output_schema: Dict[str, Any] = field(default_factory=dict)
+    internal_actions: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return to_dict(self)
@@ -179,6 +194,10 @@ class Place:
     # to_station / cost_per_person / source / legs 市内衔接预留）——非 transport
     # 段保持默认空 dict，旧消费方（asdict 自动透出、逆向转换忽略）向后兼容。
     details: Dict[str, Any] = field(default_factory=dict)
+    # E6（0828）：预约关联——自动/人工预约成功后回填，C 端时间轴可表达
+    # "已预约/已确认"。默认空 = 未预约，旧数据完全向后兼容。
+    booking_id: str = ""            # 关联 BookingRecord（如 "A1B2C3D4"）
+    booking_status: str = ""        # pending_confirm / submitted / confirmed…（BookingStatus.value）
 
 
 @dataclass
@@ -268,12 +287,10 @@ class ActionItem:
     type: str = ""                 # 动作类型，如 "BOOK_TICKET"
     date: str = ""                 # 目标日期 YYYY-MM-DD
     quantity: int = 0              # 数量（如购票张数）
+    # 审计（E5）：动作被 approve/reject 的时间与操作方（单用户 Demo 固定 "c_end_user"）
+    decided_at: str = ""
+    decided_by: str = ""
 
 
-@dataclass
-class BookingRequest:
-    """预约请求（只准备，不付款）。"""
-    place: str
-    target_date: str                # YYYY-MM-DD
-    party_size: int = 1
-    note: str = ""
+# E8（2026-08-28）：删除无引用的 BookingRequest 占位——真实需求由
+# BookingManager.prepare + 两段式动作承载（见 docs/tool_encapsulation_design_20260828.md）

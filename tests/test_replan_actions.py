@@ -190,5 +190,38 @@ class TestReplanActionsQueue(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("预订海淀园林商务酒店", PermissionLevel.CONFIRM), titles)
 
 
+class TestInitFromRequirement(unittest.TestCase):
+    """回归（0828 热修）：init_from_requirement 重建 BookingManager 时引用了
+    未导入的 ``_settings``，POST /api/plan/ 500——部署冒烟首次触发，此前
+    本地无用例覆盖该路径。"""
+
+    def test_init_from_requirement_rebuilds_runtime(self) -> None:
+        requirement = {
+            "content": {
+                "destination": "北京",
+                "start_date": "2026-09-05",
+                "days": 2,
+                "visitor_number": 1,
+                "constraints": {
+                    "budget": 2000,
+                    "must_visit": ["故宫"],
+                    "required_tags": [],
+                    "dismissed_tags": [],
+                    "daily_travel_time": 480,
+                    "include_meal_time_in_daily_limit": False,
+                },
+                "preferences": {"preferred_tags": ["历史文化"], "avoid_tags": []},
+            }
+        }
+        rt = AgentRuntime()
+        timeline = rt.init_from_requirement(requirement)
+        self.assertIsNotNone(rt.timeline)
+        self.assertIsNotNone(rt.booking_manager)
+        # 假数据管线应产出非空时间轴（失败时 BPlannerHook 会记 last_error）
+        self.assertTrue(timeline.days, f"规划不应为空: {rt._last_planner_error}")
+        # 新会话语义：动作队列清空
+        self.assertEqual(len(rt.booking_manager.actions()), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

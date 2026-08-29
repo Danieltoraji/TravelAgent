@@ -352,5 +352,144 @@ class TestBookingManagerFullFlow(unittest.TestCase):
         self.assertEqual(rec.price, 60.0)
 
 
+class TestBookingPersistence(unittest.TestCase):
+    """E5：persist_path 开启时动作/预约落盘并可恢复；不传保持纯内存。"""
+
+    def test_persist_and_restore(self) -> None:
+        import json
+        import os
+        import tempfile
+
+        from booking.booking_manager import BookingManager
+        from core.schemas import ActionStatus, PermissionLevel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "actions.json")
+            bm = BookingManager(persist_path=path)
+            rec = bm.prepare("故宫", target_date="2026-08-01", party_size=2)
+            self.assertTrue(os.path.exists(path))
+
+            # 新实例（同一文件）恢复未决动作与预约记录
+            bm2 = BookingManager(persist_path=path)
+            self.assertIn(rec.booking_id, bm2._records)
+            actions = bm2.actions()
+            self.assertEqual(len(actions), 1)
+            self.assertEqual(actions[0].status, ActionStatus.PENDING)
+            self.assertEqual(actions[0].permission, PermissionLevel.CONFIRM)
+
+            # 文件结构合法（json 且含 records/actions 两组）
+            with open(path, encoding="utf-8") as f:
+                snapshot = json.load(f)
+            self.assertIn("records", snapshot)
+            self.assertIn("actions", snapshot)
+
+    def test_no_persist_path_keeps_memory_only(self) -> None:
+        from booking.booking_manager import BookingManager
+
+        bm = BookingManager()  # 不传 persist_path → 纯内存（默认分支）
+        bm.prepare("故宫", target_date="2026-08-01", party_size=1)
+        self.assertEqual(len(bm.actions()), 1)
+
+
+class TestHotelTransportAutofillAndExecutor(unittest.TestCase):
+    """E7：hotel/transport 类型 prepare 自动填充；E1：hotel: 动作执行器。"""
+
+    def _build_full_registry(self) -> ToolRegistry:
+        from tools.food_tool import FoodTool
+        from tools.hotel_tool import HotelTool
+        from tools.train import TrainPriceTool, TrainTicketTool
+        reg = ToolRegistry()
+        reg.register(BookingTool())
+        reg.register(ScenicTool(MockWorld()))
+        reg.register(HotelTool())
+        reg.register(FoodTool())
+        reg.register(TrainTicketTool())
+        reg.register(TrainPriceTool())
+        return reg
+
+    def _future_date(self) -> str:
+        from datetime import date, timedelta
+        return (date.today() + timedelta(days=3)).strftime("%Y-%m-%d")
+
+    def test_hotel_autofill_fills_price_and_address(self) -> None:
+        bm = BookingManager(registry=self._build_full_registry())
+        rec = bm.prepare("北京王府井酒店", target_date=self._future_date(),
+                         party_size=1, booking_type="hotel")
+        # Mock 酒店库按名命中 → 房价/地址有值
+        self.assertGreater(rec.price, 0.0)
+        self.assertNotEqual(rec.address, "")
+
+    def test_hotel_autofill_unknown_hotel_leaves_empty(self) -> None:
+        bm = BookingManager(registry=self._build_full_registry())
+        rec = bm.prepare("不存在酒店XYZ", target_date=self._future_date(),
+                         party_size=1, booking_type="hotel")
+        self.assertEqual(rec.price, 0.0)   # 查不到 → 留空不阻断
+        self.assertEqual(rec.status, BookingStatus.PENDING_CONFIRM)
+
+    def test_transport_autofill_fills_price_and_train_note(self) -> None:
+        bm = BookingManager(registry=self._build_full_registry())
+        rec = bm.prepare("北京南→上海虹桥", target_date=self._future_date(),
+                         party_size=1, booking_type="transport")
+        self.assertEqual(rec.price, 662.0)          # Mock 二等座价
+        self.assertIn("G39", rec.note)              # 最快直达班次进 note
+
+    def test_execute_hotel_booking_action(self) -> None:
+        # E1：HOTEL_BOOK（hotel: 前缀）动作执行 → EXECUTED + 真实 BookingRecord
+        from core.schemas import ActionItem
+
+        bm = BookingManager(registry=self._build_full_registry())
+        action = ActionItem(
+            action_id="hotel-TEST1", title="预订 北京王府井酒店",
+            target="hotel:北京王府井酒店", type="HOTEL_BOOK",
+            permission=PermissionLevel.CONFIRM, date=self._future_date(),
+            quantity=1,
+        )
+        bm.enqueue_actions([action])
+        rec = bm.execute_action(action)
+        self.assertEqual(action.status, ActionStatus.EXECUTED)
+        self.assertIn(rec.booking_id, action.description)
+        self.assertEqual(rec.booking_type, "hotel")
+        self.assertGreater(rec.price, 0.0)
+        self.assertEqual(rec.status, BookingStatus.PENDING_CONFIRM)
+
+    def test_execute_action_non_hotel_returns_none(self) -> None:
+        # E2 范围：booking: 前缀保持既有语义（approve 仅标记，不在此执行）
+        from core.schemas import ActionItem
+
+        bm = BookingManager(registry=self._build_full_registry())
+        action = ActionItem(action_id="a1", title="x", target="calendar:update")
+        self.assertIsNone(bm.execute_action(action))
+        self.assertEqual(action.status, ActionStatus.PENDING)
+
+    def test_executor_registry_register_and_dispatch(self) -> None:
+        # P1：注册表泛化——新 kind 经 register_executor 接入，无需改 execute_action
+        from core.schemas import ActionItem
+
+        bm = BookingManager(registry=self._build_full_registry())
+
+        def _fake_executor(value: str, target_date: str = "",
+                           party_size: int = 1) -> BookingRecord:
+            return bm.prepare(place=f"演示-{value}", target_date=target_date or "2026-09-01",
+                              party_size=party_size, booking_type="scenic")
+
+        type(bm).register_executor("demo", "_fake_demo_executor")
+        bm._fake_demo_executor = _fake_executor  # 实例属性挂方法（避免污染类）
+        try:
+            action = ActionItem(action_id="demo-1", title="演示动作",
+                                target="demo:测试", type="DEMO", quantity=1)
+            rec = bm.execute_action(action)
+            self.assertEqual(action.status, ActionStatus.EXECUTED)
+            self.assertEqual(rec.place, "演示-测试")
+        finally:
+            type(bm).EXECUTORS.pop("demo", None)
+
+    def test_executor_registry_no_colon_returns_none(self) -> None:
+        from core.schemas import ActionItem
+
+        bm = BookingManager(registry=self._build_full_registry())
+        action = ActionItem(action_id="a2", title="x", target="malformed")
+        self.assertIsNone(bm.execute_action(action))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -90,7 +90,10 @@ class AppState:
 
     def __init__(self) -> None:
         self.registry: ToolRegistry = default_registry
-        self.booking_manager: BookingManager = BookingManager(self.registry)
+        # E5：动作/预约持久化（BOOKING_PERSIST_PATH 开启，默认关闭）
+        self.booking_manager: BookingManager = BookingManager(
+            self.registry, persist_path=settings.booking_persist_path or None
+        )
         self.execution_agent: Optional[ExecutionAgent] = None
         self.timeline: Optional[TripTimeline] = None
         self.events: List[MonitorEvent] = []
@@ -202,6 +205,9 @@ def create_app() -> Any:
 
     @app.post("/tools/{name}/invoke")
     def invoke_tool(name: str, payload: Dict[str, Any] = {}) -> Dict[str, Any]:
+        # WARNING（R1）：本端点无 readonly 过滤——booking 等写工具可被直调。
+        # 只读白名单入口是 POST /tools/invoke；收紧前需与 C 确认依赖
+        # （docs/code_defects_and_fixes_20260828.md R1，2026-08-28 决策暂不动）。
         try:
             return state.registry.call(name, **payload).to_dict()
         except KeyError as exc:
@@ -392,10 +398,23 @@ def create_app() -> Any:
 
     @app.post("/actions/{action_id}/approve")
     def approve_action(action_id: str) -> Dict[str, Any]:
-        """C 用户确认 ActionItem → 标记为 APPROVED。"""
+        """C 用户确认 ActionItem → 标记为 APPROVED。
+
+        E1：hotel: 前缀动作批准即执行真实预订（此前为死信）；
+        booking:/payment: 等 target 保持仅标记（E2 语义变更待 C 确认）。
+        """
         for a in state.booking_manager.actions():
             if a.action_id == action_id:
                 a.status = ActionStatus.APPROVED
+                a.decided_at = datetime.now().isoformat(timespec="seconds")
+                a.decided_by = "c_end_user"
+                if a.target.startswith("hotel:"):
+                    try:
+                        state.booking_manager.execute_action(a)
+                    except Exception as exc:  # noqa: BLE001
+                        a.status = ActionStatus.BLOCKED
+                        a.description = (a.description + "；" if a.description else "") + str(exc)
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
                 return to_dict(a)
         raise HTTPException(status_code=404, detail=f"Action not found: {action_id}")
 
@@ -405,8 +424,21 @@ def create_app() -> Any:
         for a in state.booking_manager.actions():
             if a.action_id == action_id:
                 a.status = ActionStatus.REJECTED
+                a.decided_at = datetime.now().isoformat(timespec="seconds")
+                a.decided_by = "c_end_user"
                 return to_dict(a)
         raise HTTPException(status_code=404, detail=f"Action not found: {action_id}")
+
+    @app.post("/booking/{booking_id}/mark-confirmed")
+    def booking_mark_confirmed(booking_id: str) -> Dict[str, Any]:
+        """E4：服务方确认回调（SUBMITTED → CONFIRMED；Demo 期人工/脚本触发）。"""
+        try:
+            rec = state.booking_manager.mark_confirmed(booking_id)
+            return to_dict(rec)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # ── 监控事件 ────────────────────────────────────────────────────
 

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import abc
+import inspect
 import logging
 import time
 from typing import Any, ClassVar
@@ -20,6 +21,24 @@ logger = logging.getLogger("tools.base")
 
 # 这些异常被视为网络错误，值得重试；其他异常（如 ValueError）是业务错误，不重试
 _RETRYABLE_ERRORS = (URLError, TimeoutError, ConnectionError, OSError)
+
+
+def _type_matches(value: Any, expected: Any) -> bool:
+    """JSON Schema 基本类型 → Python 类型判定（支持类型数组，如 ["string","integer"]）。"""
+    for t in (expected if isinstance(expected, (list, tuple)) else [expected]):
+        if t == "string" and isinstance(value, str):
+            return True
+        if t == "integer" and isinstance(value, int) and not isinstance(value, bool):
+            return True
+        if t == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            return True
+        if t == "boolean" and isinstance(value, bool):
+            return True
+        if t == "array" and isinstance(value, (list, tuple)):
+            return True
+        if t == "object" and isinstance(value, dict):
+            return True
+    return False
 
 
 class BaseTool(abc.ABC):
@@ -37,6 +56,12 @@ class BaseTool(abc.ABC):
     source: str = "mock"
     readonly: bool = True           # 是否只读；有副作用工具应设为 False
     input_schema: ClassVar[dict] = {}
+    # P0 三轴分类（0829）：领域 / 层次 / 安全（readonly 为 safety 的推导属性）
+    domain: str = "general"         # weather / map / traffic / scenic / food / hotel / booking / train / web
+    kind: str = "atomic"            # atomic / skill / internal
+    safety: str = "query"           # query（可进 LLM 白名单）/ action（必须过权限闸）
+    output_schema: ClassVar[dict] = {}      # 出参契约（意图级单位）
+    internal_actions: ClassVar[list] = []   # 多动作工具中的内部管道动作名
 
     def __init__(self) -> None:
         self._registry_ref: ToolRegistry | None = None
@@ -49,6 +74,11 @@ class BaseTool(abc.ABC):
             input_schema=dict(self.input_schema),
             readonly=self.readonly,
             source=self.source,
+            domain=self.domain,
+            kind=self.kind,
+            safety=self.safety,
+            output_schema=dict(self.output_schema),
+            internal_actions=list(self.internal_actions),
         )
 
 
@@ -64,6 +94,18 @@ class BaseTool(abc.ABC):
         backoff_base = settings.retry_backoff_base
 
         start = time.perf_counter()
+
+        # C5：轻量 schema 校验（required + 基本类型，不引入 jsonschema）。
+        # 校验失败属业务错误，直接返回 ERROR 不重试。
+        try:
+            self._validate_kwargs(kwargs)
+        except ValueError as exc:
+            logger.warning("%s 参数校验失败: %s", self.name, exc)
+            return ToolResult(
+                tool=self.name, status=ToolStatus.ERROR, data=None,
+                error=str(exc), source=self.source, elapsed_ms=0.0,
+            )
+
         last_exc: Exception | None = None
 
         for attempt in range(max_retries + 1):
@@ -108,6 +150,41 @@ class BaseTool(abc.ABC):
     def _run(self, **kwargs: Any) -> Any:
         """子类实现真实逻辑。"""
         raise NotImplementedError
+
+    def _validate_kwargs(self, kwargs: dict) -> None:
+        """C5：按 input_schema 做 required + 基本类型校验（Mock/Live 同受约束）。
+
+        - required 缺失：若 `_run` 实现侧对该参数有默认值，则允许省略
+          （如 hotel/scenic 的 `action` 缺省即 search，live_data/booking_manager
+          均依赖此缺省）；否则报错。
+        - 类型：仅校验 schema 中声明了的入参；未声明的多余参数不拦
+          （保持 **kwargs 直传兼容）。
+        """
+        schema = self.input_schema
+        if not schema:
+            return
+        props = schema.get("properties") or {}
+        params = inspect.signature(self._run).parameters
+
+        for key in schema.get("required") or []:
+            if key in kwargs:
+                if kwargs[key] is None or kwargs[key] == "":
+                    raise ValueError(f"必填参数为空: {key}")
+                continue
+            param = params.get(key)
+            if param is not None and param.default is not inspect.Parameter.empty:
+                continue
+            raise ValueError(f"缺少必填参数: {key}")
+
+        for key, value in kwargs.items():
+            spec = props.get(key)
+            if spec is None:
+                continue
+            expected = spec.get("type")
+            if expected and value is not None and not _type_matches(value, expected):
+                raise ValueError(
+                    f"参数 {key} 类型应为 {expected}，实际为 {type(value).__name__}"
+                )
 
 
 class ToolRegistry:

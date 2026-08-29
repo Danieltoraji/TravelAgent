@@ -18,6 +18,7 @@ logger = logging.getLogger("tools.food")
 
 class FoodTool(BaseTool):
     name = "food"
+    domain = "food"
     description = "餐厅推荐：评分、人均价格、营业状态、距离。"
     source = "mock"
     input_schema = {
@@ -32,11 +33,15 @@ class FoodTool(BaseTool):
 
     def _run(self, query: str = "", near: str = "", city: str = "", limit: int = 5) -> List[Dict[str, Any]]:
         # Mock：固定餐厅列表；真实接入点评/美团后替换
+        # location 为 "lng,lat" 串（与 FoodToolLive 输出同构，C2）——
+        # A 侧 live_data normalize 无坐标即丢弃餐厅，Mock 必须带坐标才能参与通勤
         return [
             {"name": "全聚德(前门店)", "rating": 4.6, "price_per_person": 180,
+             "location": "116.397,39.899",
              "open": True, "distance_km": 0.8, "cuisine": "京菜", "queue_min": 40,
              "open_hours": "10:00-22:00", "specialty": "烤鸭", "address": "前门大街", "tel": "010-65112418"},
             {"name": "护国寺小吃", "rating": 4.3, "price_per_person": 45,
+             "location": "116.383,39.933",
              "open": True, "distance_km": 0.5, "cuisine": "小吃", "queue_min": 10,
              "open_hours": "06:00-20:00", "specialty": "", "address": "护国寺大街", "tel": ""},
         ]

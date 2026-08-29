@@ -80,6 +80,8 @@ jobs:
             # RollingGo 酒店 MCP（hotel_tool live 模式；8.30 酒店真源）
             ROLLINGGO_MCP_URL=${{ secrets.ROLLINGGO_MCP_URL || 'https://mcp.rollinggo.cn/mcp' }}
             ROLLINGGO_API_KEY=${{ secrets.ROLLINGGO_API_KEY }}
+            # E5：预约/动作持久化（生产开启；本地/测试默认关）
+            BOOKING_PERSIST_PATH=${{ secrets.BOOKING_PERSIST_PATH || 'logs/actions.json' }}
             # 航班真源（8.29 接入；juhe 1962 主源 550 次/月，aviationstack 备选）
             JUHE_FLIGHT_KEY=${{ secrets.JUHE_FLIGHT_KEY }}
             AVIATIONSTACK_KEY=${{ secrets.AVIATIONSTACK_KEY }}

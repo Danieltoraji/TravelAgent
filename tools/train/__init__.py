@@ -23,6 +23,7 @@ from tools.train.client import (
     validate_depart_date,
 )
 from tools.train.stations import resolve_station, station_name
+from tools.train.trip import TrainTripSkill, TrainTripSkillLive
 from tools.train.tools import (
     TrainPriceTool,
     TrainPriceToolLive,
@@ -43,6 +44,8 @@ __all__ = [
     "TrainTicketTool",
     "TrainTicketToolLive",
     "TrainTransferTool",
+    "TrainTripSkill",
+    "TrainTripSkillLive",
     "TrainTransferToolLive",
     "parse_price_row",
     "parse_route_station",

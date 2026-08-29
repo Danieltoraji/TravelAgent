@@ -347,7 +347,8 @@ POST /tools/{name}/invoke     # 调用工具，body 为参数 dict
 ## 八、运行方式
 
 ```bash
-# 单元测试（核心零依赖，标准库即可）
+# 单元测试（核心零依赖，标准库即可；a_side 相关用例需先装可选依赖）
+pip install -r requirements.txt   # 否则 test_a_interface / test_replan_actions 被跳过
 python -m pytest tests/ -v
 
 # Demo 剧情脚本（完整闭环演示）

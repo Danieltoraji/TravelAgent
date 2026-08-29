@@ -117,7 +117,10 @@ def _tool_payload(result: Any) -> Any:
 
 # -- 单对 ETA 容错：瞬时/配额类错误退避重试（A 档，8.25） ----------------------
 
+import logging  # noqa: E402
 import time  # noqa: E402
+
+logger = logging.getLogger("data_transmission.live_data")
 
 _ETA_RETRIES = 2          # 首次 + 1 次重试
 _ETA_RETRY_SLEEP = 0.3    # 退避秒数（压 QPS 突刺）
@@ -209,15 +212,35 @@ def _distance_from_payload(payload: Any) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _pick(raw: dict, primary: str, *aliases: str) -> Any:
+    """A3：按主字段取值（真值语义与 ``or`` 链一致）；命中别名时打 debug。
+
+    用途：收集"工具输出漂移到别名"的频率，为 output_schema 强契约（见
+    docs/tool_encapsulation_design_20260828.md §2）的收敛提供依据。
+    """
+    value = raw.get(primary)
+    if value:
+        return value
+    for alias in aliases:
+        value = raw.get(alias)
+        if value:
+            logger.debug("live_data 别名命中: 主字段 %s 缺失，使用别名 %s", primary, alias)
+            return value
+    return None
+
+
 def normalize_live_spot(raw: Any, city: str, index: int = 0) -> Optional[Dict[str, Any]]:
     """B 的 scenic/POI 返回 → A 的 spot dict（对齐 ``fake_spots/{city}/spots.json``）。
 
     字段缺省兜底：无名 POI 丢弃（返回 None）；位置/价格/时长/营业时间缺失
     用默认值，保证下游 ``select_spots`` / 排程不炸。
+
+    主字段声明（A3，别名命中会打 debug）：
+    name / location{"lat","lng"} / id / price / duration / opening_time / closing_time / tags
     """
     if not isinstance(raw, dict):
         return None
-    name = _as_str(raw.get("name") or raw.get("title") or raw.get("poi_name"))
+    name = _as_str(_pick(raw, "name", "title", "poi_name"))
     if not name:
         return None
 
@@ -235,15 +258,15 @@ def normalize_live_spot(raw: Any, city: str, index: int = 0) -> Optional[Dict[st
     tags = _str_list(raw.get("tags"))
     content_tags = _str_list(raw.get("content_tags")) or tags
     return {
-        "id": _as_str(raw.get("id") or raw.get("poi_id") or f"live_{index}"),
+        "id": _as_str(_pick(raw, "id", "poi_id") or f"live_{index}"),
         "name": name,
         "alias": _str_list(raw.get("alias") or raw.get("aliases")),
         "city": city,
         "location": {"lat": lat, "lng": lng},
-        "price": _as_float(raw.get("price") or raw.get("ticket_price")),
+        "price": _as_float(_pick(raw, "price", "ticket_price")),
         "guide_price": _as_float(raw.get("guide_price")),
         "duration": _as_int(
-            raw.get("duration") or raw.get("suggest_duration") or raw.get("stay_minutes"),
+            _pick(raw, "duration", "suggest_duration", "stay_minutes"),
             default=120,
         ),
         "opening_time": _sanitize_time(
@@ -500,9 +523,10 @@ def make_live_matrix_fn(
 
 
 def _normalize_live_hotel(raw: Any) -> Optional[Hotel]:
+    """主字段声明（A3）：id / name / location{"lat","lng"} / rooms[].price / price_per_night / rating / star / tags。"""
     if not isinstance(raw, dict):
         return None
-    hotel_id = _as_str(raw.get("id") or raw.get("hotel_id"))
+    hotel_id = _as_str(_pick(raw, "id", "hotel_id"))
     name = _as_str(raw.get("name") or hotel_id)
     if not name:
         return None
@@ -514,6 +538,9 @@ def _normalize_live_hotel(raw: Any) -> Optional[Hotel]:
         if isinstance(room, dict) and room.get("price") is not None
     ]
     night_price = min(prices) if prices else _as_float(raw.get("price_per_night"))
+    if not prices:
+        # 别名兜底：rooms 无价 → 用顶层 price_per_night
+        logger.debug("live_data hotel: rooms 缺价格，回退 price_per_night（id=%s）", hotel_id)
     rating = _as_float(raw.get("rating"))
     star = _as_int(raw.get("star")) or (
         5 if rating >= 4.7 else 4 if rating >= 4.4 else 3
@@ -598,6 +625,9 @@ def _normalize_live_restaurant(raw: Any) -> Optional[Restaurant]:
 
     坐标兼容三种形状（B 侧 ``_normalize_poi`` 真实输出为**顶层 lat/lng 两字段**，
     无 location 键；个别来源带 ``location`` 的 ``"lng,lat"`` 串或 dict）。
+
+    主字段声明（A3）：name / 顶层 lat+lng（B 侧真实形状）/ id / cuisine /
+    specialty / price_per_person；location 串与 average_cost 为别名兜底。
     """
     if not isinstance(raw, dict):
         return None
@@ -605,16 +635,18 @@ def _normalize_live_restaurant(raw: Any) -> Optional[Restaurant]:
     coord = _coord_from_text(raw.get("location"))
     if coord is None:
         coord = _coord_from_text({"lat": raw.get("lat"), "lng": raw.get("lng")})
+    elif raw.get("lat") or raw.get("lng"):
+        logger.debug("live_data restaurant: 命中 location 别名（真实输出应为顶层 lat/lng）")
     if not name or coord is None:
         return None
-    rid = _as_str(raw.get("id") or raw.get("poiid")) or f"live_food_{id(raw)}"
+    rid = _as_str(_pick(raw, "id", "poiid")) or f"live_food_{id(raw)}"
     return Restaurant(
         id=rid,
         name=name,
         location=coord,
-        cuisine_tags=_split_tags(raw.get("cuisine") or raw.get("cuisine_tags")),
-        signature_tags=_split_tags(raw.get("specialty") or raw.get("signature_tags")),
-        average_cost=_as_float(raw.get("price_per_person") or raw.get("average_cost")),
+        cuisine_tags=_split_tags(_pick(raw, "cuisine", "cuisine_tags")),
+        signature_tags=_split_tags(_pick(raw, "specialty", "signature_tags")),
+        average_cost=_as_float(_pick(raw, "price_per_person", "average_cost")),
         nearby_spot_ids=tuple(_str_list(raw.get("nearby_spot_ids"))),
     )
 
@@ -909,8 +941,16 @@ def make_live_intercity_provider(
         date_str = _direction_date(o, d)
         if date_str:
             if mode in (None, "train", "rail"):
-                train_provider = make_live_train_provider(tool_provider, date_str)
-                edge = train_provider(o, d, mode="train")
+                # P2b（PR#5）：train_trip 技能优先——站名解析更健壮（估算表城市对
+                # → 站名）+ 二等座真票价；无班次/未收录城市对返回 None → 回落本地
+                # train_ticket 候选版（多车次 + candidates 全量透传）。
+                edge = make_live_train_trip_provider(tool_provider, date_str)(
+                    o, d, mode="train"
+                )
+                if edge is None:
+                    edge = make_live_train_provider(tool_provider, date_str)(
+                        o, d, mode="train"
+                    )
                 if edge is not None:
                     return edge
             if mode in (None, "air"):
@@ -921,3 +961,47 @@ def make_live_intercity_provider(
         return map_provider(o, d, mode=mode or "train")
 
     return intercity_provider
+
+
+def make_live_train_trip_provider(tool_provider: Any, date: str = ""):
+    """train_trip 技能 → CityTravelEdge provider（P2b 城际真源化，0829）。
+
+    契约与 ``make_live_city_travel_provider`` 相同：f(origin, destination,
+    mode=None) → Optional[CityTravelEdge]。差异：
+    - ``date`` 为出行日期（12306 查询必填，来自 requirement.travel_schedule，
+      由 b_planner_hook 传入）；
+    - 仅支持 train 方式（mode 非 train/None → None，A 侧回退本地估算表）；
+    - 工具失败 / 无班次 / 未收录城市对 → None（回退估算），不再整链抛错。
+    """
+
+    def provider(origin, destination, mode=None):
+        if mode not in (None, "train"):
+            return None
+        try:
+            result = tool_provider.call(
+                "train_trip", from_city=origin, to_city=destination, date=date,
+            )
+        except Exception as exc:  # noqa: BLE001  工具缺失/参数错 → 回退估算
+            logger.warning("train_trip 调用失败（%s→%s）：%s", origin, destination, exc)
+            return None
+        payload = _tool_payload(result)
+        if not isinstance(payload, dict):
+            return None
+        try:
+            minutes = int(payload.get("transport_minutes"))
+        except (TypeError, ValueError):
+            return None
+        if minutes <= 0:
+            return None
+        return CityTravelEdge(
+            origin=origin,
+            destination=destination,
+            transport_minutes=minutes,
+            mode="train",
+            cost_per_person=_as_float(payload.get("cost_per_person")),
+            from_station=payload.get("from_station", ""),
+            to_station=payload.get("to_station", ""),
+            source=payload.get("source", "live"),
+        )
+
+    return provider
