@@ -40,7 +40,7 @@ import logging
 import sys
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
@@ -73,6 +73,48 @@ def _collect_plan_spot_names(plan: Dict[str, Any]) -> List[str]:
                 seen.add(name)
                 names.append(name)
     return names
+
+
+# ---------------------------------------------------------------------------
+# 8.30 矩阵瘦身（归属制连边）常量与工具
+# ---------------------------------------------------------------------------
+
+# 每个用餐锚点进真源矩阵的附近餐厅数：top1 进时间轴 + 去重换选的余量。
+_NEARBY_MATRIX_K = 3
+# haversine 估算系数（直线 km → 驾车分钟；与 transport/restaurants.py 同口径，
+# 圈层外餐厅边/矩阵失败兜底用——真源边只给归属圈层）。
+_ESTIMATED_MINUTES_PER_KM = 3.4
+
+
+def _haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    """两坐标 (lat, lng) 的球面直线距离（km）。"""
+    import math
+
+    lat1, lng1 = a
+    lat2, lng2 = b
+    radius = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    h = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(d_lng / 2) ** 2
+    )
+    return 2 * radius * math.asin(math.sqrt(h))
+
+
+def _coord_tuple(coord: Optional[str]) -> Optional[Tuple[float, float]]:
+    """坐标串 ``"lng,lat"`` → ``(lat, lng)``；非法 → None。"""
+    if not coord:
+        return None
+    parts = str(coord).split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        lng, lat = float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+    return (lat, lng)
 
 
 def _collect_meal_anchors(plan: Dict[str, Any]) -> List[str]:
@@ -191,10 +233,15 @@ class BPlannerHook:
             def _live_loader(_city: str) -> Any:
                 from algorithoms.select_spots import select_spots
 
+                # select_spots 的 spots_provider 是 fn(city) 单参：这里用闭包
+                # 注入天数联动的 limit（LiveSpotsSource.__call__ 支持 limit=）。
+                def _source_with_limit(city: str):
+                    return live_source(city, limit=self._pool_days_limit())
+
                 return select_spots(
                     self.requirement,
                     ask_user_on_conflict=ask,
-                    spots_provider=live_source,
+                    spots_provider=_source_with_limit,
                 )
 
             self._live_spots_provider = _live_loader
@@ -203,6 +250,18 @@ class BPlannerHook:
                 make_live_eta_fn(tool_provider, city=self.city),
                 name_by_id={},
             )
+
+    def _pool_days_limit(self) -> int:
+        """候选池宽度（8.30 扩容）：随行程天数联动 ``max(10, days×5)``。
+
+        2 天行程 10 家（历史行为不变），4 天 20，7 天 35（翻页取整）。
+        天数解析失败回退 10——池子宁窄不炸。
+        """
+        try:
+            days = int((self.requirement.get("content") or {}).get("days") or 2)
+        except (TypeError, ValueError):
+            days = 2
+        return max(10, days * 5)
 
     # -- 内部 --------------------------------------------------------------
 
@@ -407,7 +466,7 @@ class BPlannerHook:
                 # 坐标直连（B 侧跳过地理编码）：消灭 QPS 突刺（10021）与怪名 POI
                 # 编码失败（30001）；矩阵构建失败与规划失败同走回退假源。
                 source_spots = self._live_spots_source.spots or self._live_spots_source(
-                    self.city
+                    self.city, limit=max(10, self._pool_days_limit())
                 )
                 name_to_coord = {
                     spot["name"]: coord
@@ -499,26 +558,39 @@ class BPlannerHook:
             return plan1
         from data_transmission.live_data import _coord_str, make_live_matrix_fn
 
-        # 8.31 P0 附近搜索：对**全部候选景点**预查附近候选（不只 plan1 锚点）——
-        # 带餐厅重排可能换候选池内的景点，新锚点的附近餐厅须已就绪，否则重排
-        # 中途追加查询会产生矩阵缺行。矩阵终点 = 附近候选 ∪ 全池（按 id 去重）；
-        # 附近候选优先，全池兜底覆盖「锚点查询失败/空」的顿次。
+        # 8.30 归属制连边（矩阵瘦身）：对**全部候选景点**预查附近候选（保重排
+        # 换景点后新锚点的附近餐厅已就绪），但矩阵只建「锚点 × 自己的 top-K
+        # 附近餐厅」——一家餐厅只和它附近的锚点连真源边，远处锚点走 haversine
+        # 估算（P0 已有兜底；距离上就赢不了，真源边是浪费）。
+        # K=3：top1 进时间轴 + 去重换选的余量。660 对全连接 → 每锚点 3 条。
         hotel_names = {hotel.name for hotel in live_hotels}
         candidate_anchor_names = [
             name
             for name in name_to_coord
             if name not in hotel_names
         ]
-        matrix_restaurants = list(resolver.restaurants)
-        seen_ids = {restaurant.id for restaurant in matrix_restaurants}
+        nearby_by_anchor: Dict[str, List[Any]] = {}
         for anchor_name in candidate_anchor_names:
-            for restaurant in resolver.nearby(anchor_name):
+            nearby_by_anchor[anchor_name] = resolver.nearby(anchor_name)
+
+        # 真源矩阵终点：全部候选锚点的 top-K 附近餐厅（按锚点→餐厅距离圈层）。
+        matrix_restaurant_ids: List[str] = []
+        seen_ids = set()
+        for anchor_name in candidate_anchor_names:
+            for restaurant in nearby_by_anchor.get(anchor_name, [])[:_NEARBY_MATRIX_K]:
                 if restaurant.id not in seen_ids:
                     seen_ids.add(restaurant.id)
-                    matrix_restaurants.append(restaurant)
+                    matrix_restaurant_ids.append(restaurant.id)
+        all_restaurants = {
+            restaurant.id: restaurant for restaurant in resolver.restaurants
+        }
+        for restaurants in nearby_by_anchor.values():
+            for restaurant in restaurants:
+                all_restaurants.setdefault(restaurant.id, restaurant)
 
         rest_coords: Dict[str, str] = {}
-        for restaurant in matrix_restaurants:
+        for rid in matrix_restaurant_ids:
+            restaurant = all_restaurants[rid]
             coord = _coord_str(
                 {"lat": restaurant.location[0], "lng": restaurant.location[1]}
             )
@@ -530,27 +602,55 @@ class BPlannerHook:
             for name in name_to_coord
             if name not in hotel_names and name not in rest_coords
         ]
-        if not origin_names or not rest_coords:
-            return plan1
-        try:
-            matrix2 = make_live_matrix_fn(self._tool_provider, city=self.city)(
-                {**name_to_coord, **rest_coords},
-                origins=origin_names,
-                destinations=list(rest_coords),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("真源餐厅增量矩阵失败，保留无餐厅计划：%s", exc)
-            return plan1
-        # 合并两阶段矩阵（坐标对为键；增量矩阵补双向），换入后重排
+        matrix2: Dict[Tuple[str, str], Tuple[float, int]] = {}
+        if origin_names and rest_coords:
+            try:
+                matrix2 = make_live_matrix_fn(self._tool_provider, city=self.city)(
+                    {**name_to_coord, **rest_coords},
+                    origins=origin_names,
+                    destinations=list(rest_coords),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("真源餐厅增量矩阵失败，用估算边继续（不阻断）：%s", exc)
+                matrix2 = {}
+        # 合并两阶段矩阵 + **估算边兜底**：锚点→餐厅的真源边缺失时（圈层外/
+        # 矩阵失败），按 haversine 预填——规划器查任何餐厅边都有值，不会触发
+        # provider 缺边降级计数（连续超限会整链回退假源，P0 的教训）。
         merged = dict(base_matrix)
         for (origin_coord, dest_coord), value in matrix2.items():
             merged[(origin_coord, dest_coord)] = value
             merged[(dest_coord, origin_coord)] = value
         merged_n2c = dict(name_to_coord)
         merged_n2c.update(rest_coords)
+        # 全部已知餐厅（全池 ∪ 各锚点附近）的坐标都进 n2c 映射：矩阵名单内
+        # 用真源边，圈层外餐厅用估算边——两者都要能被 provider 查到坐标。
+        for restaurant in all_restaurants.values():
+            coord = _coord_str(
+                {"lat": restaurant.location[0], "lng": restaurant.location[1]}
+            )
+            if coord and restaurant.name not in merged_n2c:
+                merged_n2c[restaurant.name] = coord
+        for anchor_name in candidate_anchor_names:
+            anchor_coord = merged_n2c.get(anchor_name)
+            if not anchor_coord:
+                continue
+            anchor_location = _coord_tuple(anchor_coord)
+            if anchor_location is None:
+                continue
+            for restaurant in all_restaurants.values():
+                coord = merged_n2c.get(restaurant.name)
+                if not coord:
+                    continue
+                key = (anchor_coord, coord)
+                if key in merged:
+                    continue
+                km = _haversine_km(anchor_location, restaurant.location)
+                minutes = int(round(km * _ESTIMATED_MINUTES_PER_KM))
+                merged[key] = (round(km, 2), minutes)
+                merged[(coord, anchor_coord)] = (round(km, 2), minutes)
         self._travel_time_provider.set_matrix(merged, name_to_coord=merged_n2c)
         self._travel_time_provider.set_name_map(
-            {restaurant.id: restaurant.name for restaurant in matrix_restaurants}
+            {rid: all_restaurants[rid].name for rid in all_restaurants}
         )
         try:
             return self._planner(
@@ -620,7 +720,11 @@ class BPlannerHook:
         except Exception as exc:  # noqa: BLE001
             logger.warning("真源餐厅解析失败，跳过餐厅真源化：%s", exc)
             return None
-        return resolver if resolver.restaurants else None
+        # 全池空但 nearby_pool 已注入时仍保留 resolver——附近查询独立于全池
+        # （8.30 归属制连边：候选餐厅主要来自锚点附近，全池只是兜底数据源）。
+        if resolver.restaurants:
+            return resolver
+        return resolver if getattr(resolver, "_nearby_pool", None) else None
 
     def _live_hotel_pool(self) -> List[Any]:
         """真源酒店候选（B4 HotelTool / RollingGo MCP），失败回退假池。

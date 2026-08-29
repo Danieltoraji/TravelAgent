@@ -204,23 +204,40 @@ class ScenicToolLive(ScenicTool):
         """Live 城市候选池（B5）：搜索「城市+景点」→ 返回 A 侧 spot dict 列表。
 
         - 首次按 ``f"{place} 景点"`` 搜索；空结果回落按城市名搜索；
+        - ``limit`` 直透 ``search_poi``（>25 时 amap_client 自动翻页，页间 0.3s
+          防 QPS）——候选池宽度可随行程天数联动（A 侧传 ``days×5``）；
+        - **同名去重**（8.30）：翻页时高德可能返回同名 POI（不同入口/别名），
+          按名称去重；``scenic_N`` 的 N 取去重后的全局序号；
         - 字段映射：name / location / suggest_duration / opening_time /
           closing_time / price（cost，人均近似）/ tags（type 大类 + tag）/
           rating / alias / address；
         - 高德无建议停留时长，统一给 ``_DEFAULT_DURATION``（A 侧亦有兜底）。
         """
         city = place or ""
+        limit = max(int(limit or 10), 1)
         pois = self._client.search_poi(f"{city} 景点", city=city, limit=limit)
         if not pois:
             pois = self._client.search_poi(city, city=city, limit=limit)
 
         spots: List[Dict[str, Any]] = []
-        for index, poi in enumerate(pois):
+        seen_keys: set = set()
+        index = 0
+        for poi in pois:
+            name = (poi.get("name") or "").strip() or city
+            # 翻页/粒度去重（8.30）：同名完全重复 + 同地标变体（「天安门-城楼」
+            # /「故宫博物院-午门」是「天安门」/「故宫博物院」的入口/子 POI——
+            # 取「-」前的主干名作 key，主干已见过则丢弃，避免同一地标排两站。
+            base_key = name.split("-")[0].strip()
+            if name in seen_keys or (len(base_key) >= 2 and base_key in seen_keys):
+                continue
+            seen_keys.add(name)
+            if len(base_key) >= 2:
+                seen_keys.add(base_key)
             open_hours = poi.get("opentime_today", "")
             spots.append(
                 {
                     "id": f"scenic_{index}",
-                    "name": poi.get("name", city),
+                    "name": name,
                     "alias": _split_alias(poi.get("alias", "")),
                     "location": {
                         "lat": poi.get("lat", 0.0),
@@ -235,4 +252,5 @@ class ScenicToolLive(ScenicTool):
                     "open_hours_week": poi.get("opentime_week", ""),
                 }
             )
+            index += 1
         return spots

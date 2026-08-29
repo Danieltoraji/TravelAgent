@@ -313,11 +313,15 @@ def _sanitize_time(value: Any, default: str) -> str:
 
 
 class LiveSpotsSource:
-    """包裹 ``tool_provider`` 的景点候选提供器：``fn(city) -> List[spot dict]``。
+    """包裹 ``tool_provider`` 的景点候选提供器：``fn(city, limit=None) -> List[spot dict]``。
 
-    - 调用 ``tool_provider.call("scenic", place=city)`` 拉候选并逐条规范化；
+    - 调用 ``tool_provider.call("scenic", place=city, limit=...)`` 拉候选并逐条规范化；
     - 一个可用景点都没有 → ``LiveDataError``（由调用方回退假源）；
     - ``names`` 属性：{spot_id/name: spot_name}，供交通 provider 建 id→名称映射。
+
+    候选池宽度（8.30 扩容）：``limit`` 缺省 10（历史行为）；调用方可传
+    ``max(10, days×5)`` 让池子随行程天数联动——B 侧 scenic 工具 / amap_client
+    支持翻页（>25 自动分页，页间 0.3s 防 QPS）。
     """
 
     def __init__(self, tool_provider: Any):
@@ -326,11 +330,12 @@ class LiveSpotsSource:
         # B 档（8.25）：缓存最近一次拉取的候选池（含 location），供矩阵构建读坐标
         self.spots: List[Dict[str, Any]] = []
 
-    def __call__(self, city: str) -> List[Dict[str, Any]]:
+    def __call__(self, city: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        kwargs: Dict[str, Any] = {"action": "search", "place": city}
+        if limit:
+            kwargs["limit"] = int(limit)
         try:
-            result = self.tool_provider.call(
-                "scenic", action="search", place=city
-            )
+            result = self.tool_provider.call("scenic", **kwargs)
         except Exception as exc:  # noqa: BLE001  工具层网络/参数错误统一转 LiveDataError
             raise LiveDataError(f"scenic 工具调用失败：{exc}") from exc
         payload = _tool_payload(result)
@@ -748,11 +753,17 @@ def _fetch_food_items(
             f"food 工具调用失败（city={city}, location={location or '-'}）：{exc}"
         ) from exc
     payload = _tool_payload(result)
-    items = (
-        payload
-        if isinstance(payload, list)
-        else (payload.get("restaurants") if isinstance(payload, dict) else None)
-    )
+    # ``{"data": []}``（空列表，falsy）会被 _tool_payload 回退成整个 dict——
+    # 空列表是合法结果（该城市/锚点无餐厅），不能当形状错误（8.30 修复：
+    # 全池空 + 附近有店的场景曾因此整链丢弃餐厅真源）。
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        items = payload["data"]
+    else:
+        items = (
+            payload
+            if isinstance(payload, list)
+            else (payload.get("restaurants") if isinstance(payload, dict) else None)
+        )
     if not isinstance(items, list):
         raise LiveDataError(f"food 工具未返回列表：{type(payload).__name__}")
     return [item for item in items if not _is_non_restaurant(item)]

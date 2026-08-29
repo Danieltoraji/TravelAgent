@@ -132,6 +132,9 @@ class AmapClient:
     # v5 show_fields 固定参数：请求营业时间、评分、人均消费、特色菜等深度信息
     _SHOW_FIELDS = "business,opentime_today,opentime_week,rating,cost,tag,alias"
 
+    # 翻页页间隔（秒）：免费 key QPS≈2-3/s，连续翻页必触发 10021 限流
+    _PAGE_DELAY = 0.3
+
     def search_poi(
         self,
         query: str,
@@ -139,25 +142,43 @@ class AmapClient:
         types: str = "",
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """关键词搜索 POI。
+        """关键词搜索 POI（支持翻页，突破单页 25 上限）。
 
         调用 ``/v5/place/text``（v5 API），返回标准化 POI 列表。
         v5 通过 ``show_fields`` 参数返回营业时间、评分等深度信息。
-        """
-        params: Dict[str, str] = {
-            "keywords": query,
-            "page_size": str(min(limit, 25)),
-            "show_fields": self._SHOW_FIELDS,
-        }
-        if city:
-            params["region"] = city
-            params["city_limit"] = "true"
-        if types:
-            params["types"] = types
 
-        resp = self._get("/v5/place/text", params)
-        pois = resp.get("pois", [])
-        return [self._normalize_poi(p) for p in pois[:limit]]
+        翻页规则（8.30 候选池扩容）：``limit > 25`` 时按 ``page_size=25``
+        逐页拉取（``page_num`` 1 基），页间 ``_PAGE_DELAY`` 秒防 QPS；
+        某页结果不足一页（尾页）即停。全程经 ``_get_with_transient_retry``
+        （QPS 类瞬时错误退避重试），非瞬时错误原样抛出。
+        """
+        collected: List[Dict[str, Any]] = []
+        remaining = int(limit)
+        page_num = 1
+        while remaining > 0:
+            page_size = min(remaining, 25)
+            params: Dict[str, str] = {
+                "keywords": query,
+                "page_num": str(page_num),
+                "page_size": str(page_size),
+                "show_fields": self._SHOW_FIELDS,
+            }
+            if city:
+                params["region"] = city
+                params["city_limit"] = "true"
+            if types:
+                params["types"] = types
+
+            if page_num > 1:
+                time.sleep(self._PAGE_DELAY)
+            resp = self._get_with_transient_retry("/v5/place/text", params)
+            pois = resp.get("pois", []) or []
+            collected.extend(self._normalize_poi(p) for p in pois[:remaining])
+            if len(pois) < page_size:
+                break  # 尾页：再翻也是空，避免多余请求
+            remaining -= len(pois)
+            page_num += 1
+        return collected[:limit]
 
     def search_poi_around(
         self,

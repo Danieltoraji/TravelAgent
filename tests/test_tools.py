@@ -2081,3 +2081,79 @@ class TestFoodLiveLocation(unittest.TestCase):
 
         client.geocode.assert_not_called()
         client.search_poi_around.assert_called_once()
+
+
+class TestSearchPoiPagination(unittest.TestCase):
+    """8.30 候选池扩容：search_poi 翻页（突破单页 25 上限）+ scenic 同名去重。"""
+
+    def make_paged_client(self, pages: list):
+        """真 AmapClient + 仅 mock _get_with_transient_retry（按 page_num 分页）。"""
+        client = AmapClient(api_key="test-key")
+
+        def fake_get(path, params=None):
+            if path != "/v5/place/text":
+                return {"pois": []}
+            page = int((params or {}).get("page_num", 1)) - 1
+            pois = pages[page] if page < len(pages) else []
+            return {"pois": pois}
+
+        client._get_with_transient_retry = fake_get
+        return client
+
+    def poi(self, name, idx):
+        # 对齐 _normalize_poi 期望的 v5 原始形状：location "lng,lat" + business 深度字段
+        return {"name": name,
+                "location": f"116.{400 + idx:03d},{39.9 + idx * 0.001:.6f}",
+                "address": f"地址{idx}", "tel": "", "type": "风景名胜;公园",
+                "business": {"rating": "4.5", "cost": "0", "tag": "",
+                             "opentime_today": "06:00-18:00", "opentime_week": ""}}
+
+    def test_pagination_collects_multiple_pages(self):
+        """limit=50 → 两页（25+25）聚合；page_num 递增；尾页不足即停。"""
+        pages = [[self.poi(f"景点{i}", i) for i in range(25)],
+                 [self.poi(f"景点{i}", i) for i in range(25, 40)]]  # 尾页 15 条
+        client = self.make_paged_client(pages)
+
+        result = client.search_poi("北京 景点", city="北京", limit=50)
+
+        self.assertEqual(len(result), 40, "两页应聚合 40 条")
+        self.assertEqual(result[0]["name"], "景点0")
+        self.assertEqual(result[39]["name"], "景点39")
+
+    def test_single_page_when_limit_under_25(self):
+        """limit=10 → 单页（一页装下即停，无多余请求）。"""
+        calls = []
+
+        client = AmapClient(api_key="test-key")
+
+        def fake_get(path, params=None):
+            calls.append(dict(params or {}))
+            return {"pois": [self.poi(f"景点{i}", i) for i in range(10)]}
+
+        client._get_with_transient_retry = fake_get
+        result = client.search_poi("北京 景点", city="北京", limit=10)
+
+        self.assertEqual(len(result), 10)
+        self.assertEqual(len(calls), 1, "limit≤25 且一页装下时不应翻页")
+
+    def test_scenic_tool_dedupes_same_name(self):
+        """scenic 工具：翻页同名 POI（同地标不同入口）按名称去重，id 连续。"""
+        pages = [[self.poi("天安门", 0), self.poi("故宫", 1)],
+                 [self.poi("天安门", 2), self.poi("景山公园", 3)]]  # 天安门重复
+        client = self.make_paged_client(pages)
+
+        from tools.scenic_tool import ScenicToolLive
+        tool = ScenicToolLive(client)
+        # limit=30 > 25 → 翻页；第一页只有 2 条 < page_size(25) 会判尾页……
+        # 所以用满页 25 条才能触发第二页——这里直接构造第一页满 25 条。
+        pages[0] = [self.poi(f"填充景点{i}", i + 10) for i in range(23)] + pages[0]
+        spots = tool._run(place="北京", action="search", limit=50)
+
+        names = [s["name"] for s in spots]
+        # 第一页 25 条全保留；第二页的「天安门」（重复）被去掉，景山公园保留。
+        self.assertEqual(len(names), 26, "第一页 25 + 第二页 2 条 - 1 重复(天安门) = 26")
+        self.assertEqual(names.count("天安门"), 1, "翻页同名 POI 应去重")
+        self.assertIn("景山公园", names)
+        ids = [s["id"] for s in spots]
+        self.assertEqual(ids, [f"scenic_{i}" for i in range(len(names))],
+                         "id 应为去重后的连续序号")
