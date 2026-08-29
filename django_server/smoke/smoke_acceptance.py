@@ -21,7 +21,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # 容器内路径：脚本位于 /app/django_server/smoke/，需把 B 仓库根(/app)、
@@ -95,6 +95,25 @@ def main() -> None:
     code, status = get("/api/status/")
     assert status.get("timeline_set") is True, status
     print("[1] /api/status -> timeline_set=True")
+
+    # ── 清单 1.5：train / web 工具可调（R3：新增覆盖）─────────────
+    train_date = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+    code, resp = post("/api/tools/train_ticket/invoke/", {
+        "from_station": "北京南", "to_station": "上海虹桥",
+        "date": train_date,
+    })
+    # 结构性错误（工具缺失/路由错）必须失败；Live 模式下 12306 反爬/预售期
+    # 属环境性失败，报告但不阻断部署（Mock 模式恒 ok）
+    assert code == 200, f"train_ticket route broken: {code} {resp}"
+    if resp.get("status") == "ok":
+        print(f"[1.5] train_ticket invoke -> ok ({len(resp.get('data') or [])} trains)")
+    else:
+        assert "12306" in str(resp.get("error", "")), f"train_ticket failed: {resp}"
+        print(f"[1.5] train_ticket invoke -> 环境性失败（容忍）: {resp.get('error')}")
+
+    code, resp = post("/api/tools/web_search/invoke/", {"query": "故宫 门票"})
+    assert code == 200 and resp.get("status") == "ok", f"web_search failed: {code} {resp}"
+    print("[1.5] web_search invoke -> ok")
 
     # ── 清单 3：booking 满房 → 事件 → A 换酒店 ────────────────────
     with open(HOTEL_JSON, encoding="utf-8") as f:
