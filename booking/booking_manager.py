@@ -62,7 +62,10 @@ class BookingManager:
     未来动作技能（hotel_book/ticket_book）经 ``register_executor`` 接入。
     """
 
-    EXECUTORS: Dict[str, str] = {"hotel": "execute_hotel_booking"}
+    EXECUTORS: Dict[str, str] = {
+        "hotel": "execute_hotel_booking",
+        "ticket": "execute_ticket_booking",   # P3：车票意图执行器
+    }
 
     @classmethod
     def register_executor(cls, kind: str, method_name: str) -> None:
@@ -388,6 +391,18 @@ class BookingManager:
         return self.prepare(
             place=name, target_date=target_date,
             party_size=party_size, booking_type="hotel",
+        )
+
+    def execute_ticket_booking(self, route: str, target_date: str = "",
+                               party_size: int = 1) -> BookingRecord:
+        """P3：TICKET（``target=ticket:{出发→到达}``）动作的执行器。
+
+        route 形如 ``北京南→上海虹桥``；车次/票价经 transport 自动填充
+        （_autofill_transport）落到 BookingRecord。
+        """
+        return self.prepare(
+            place=route, target_date=target_date,
+            party_size=party_size, booking_type="transport",
         )
 
     def execute_action(self, action: ActionItem) -> Optional[BookingRecord]:

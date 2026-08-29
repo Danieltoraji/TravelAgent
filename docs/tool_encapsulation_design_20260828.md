@@ -1,10 +1,12 @@
 # 工具封装设计优化方案（2026-08-28）
 
-> **实施状态（0829）**：P0 分类框架、P1 执行器注册表、P2 技能固化
-> （train_trip / weather_brief）已实施并合入；lodging/dining 上提因 a_side
-> 耦合缓行；P3 预定接入、P4 function calling 待办。train_trip 接线按修正
-> 方案执行：A 侧 provider 直调技能并传出行日期（原"map 内部适配"方案因
-> 12306 日期必填而弃用），估算表保留为回退。
+> **实施状态（0829 二轮）**：P0/P1/P2 已实施合入；**P3/P4 亦已实施**——
+> P3：RollingGo 探测确认服务端仅 3 个只读工具（无下单通道），hotel_book
+> commit 取回退终态（意图 + booking_url 落地页 + MANUAL 付款），
+> ticket_book 意图 + 官方候补/人工；ticket 执行器已注册。
+> P4：function calling 闭环已就绪，经 `USE_LLM_TOOLS` 门控**默认关闭**
+> （A review 后开启）。lodging/dining 上提因 a_side 耦合缓行。
+> train_trip 接线为修正方案：A 侧 provider 直调技能并传出行日期，估算表保留回退。
 >
 > **本文档定位**：工具体系的**抽象与泛化设计**——三轴分类框架、技能层、两段式
 > 动作模式、LLM function calling 打通、未来预定功能落位。

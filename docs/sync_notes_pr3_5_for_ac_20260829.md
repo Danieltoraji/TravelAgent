@@ -119,3 +119,37 @@ C 端用户操作。
 | P3 预定接入 | C 为主 | Action Queue 将出现 `ticket:` 等新 kind；hotel_book 的 commit 是否接 RollingGo 真实下单，取决于 `list_tools()` 探测结果，届时单独同步 |
 | P4 function calling | A 为主 | 会改 `a_side/call_llm/BaseClient.py`（tool_calls 回路）与 `decision_engine.py`——**属 A 侧代码，开工前会先出设计并与 A 确认**；LLM 白名单首批拟为 weather_brief / train_trip / web_search |
 | lodging/dining 上提 | A | 因输入契约深嵌 requirement/plan 结构暂缓，待接口设计定稿再排 |
+
+
+---
+
+## 5. 追加（0829 二轮，P3 预定接入 + P4 function calling）
+
+### 5.1 RollingGo 探测结论（重要）
+
+`list_tools()` 实测：RollingGo MCP **仅暴露 3 个只读工具**（searchHotels /
+getHotelDetail / getHotelSearchTags），**无任何下单/预订工具**。因此
+hotel_book 的 commit 取设计文档回退终态：**意图组装 + booking_url 落地页 +
+MANUAL 付款**；若未来 RollingGo 上线 order 工具再评估接入（需产品与 C 确认）。
+
+### 5.2 A 侧回同步清单（⚠️ 在 §1.1 基础上新增 3 个文件）
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `a_side/call_llm/llm_clients/BaseClient.py` | generate 增 `tool_executor`/`max_tool_rounds` 与 tool_calls 回路、不支持 tools 时的一次性降级 | **P4 核心，需 A review** |
+| `a_side/call_llm/decision_engine.py` | decide_replan 增 `tool_provider` 参数 + `USE_LLM_TOOLS` 门控（默认 false） | 关闭时行为与既往完全一致 |
+| `a_side/call_llm/b_decision_hook.py` | _decide 透传 tool_provider | 一行 |
+
+### 5.3 C 侧新增（全部增量）
+
+- `/api/tools/` 新增 `hotel_book` / `ticket_book` 两个动作技能
+  （readonly=false → 只读白名单 invoke 端点不可调，仅展示）；
+  每工具新增 `domain/kind/safety` 等标注字段
+- 未来 Action Queue 可能出现 `ticket:` 前缀动作（批准即创建车票预约单）
+
+### 5.4 新增环境开关
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `USE_LLM_TOOLS` | false | 开启后决策 LLM 可查询白名单工具佐证（weather_brief/train_trip/web_search 等）；需 A review 后开启 |
+| `BOOKING_PERSIST_PATH` | 空（关） | 生产 deploy.yml 已注入 logs/actions.json |

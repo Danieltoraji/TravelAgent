@@ -1045,6 +1045,16 @@ train_trip 站名解析顺序：①估算表城市对（"北京"按城市展开�
 估算表城市对）。选班次：`earliest` 历时最短（默认）/ `cheapest` 二等座最低；
 12306 返回同城其他车站车次时，以实际班次到发站为准。
 
+**动作技能（safety=action，不进 LLM/只读白名单）**：
+
+| 工具名 | prepare（幂等组装意图） | commit（仅批准链路） |
+|--------|------------------------|---------------------|
+| `hotel_book` | 查询并组装酒店预订意图（房价/地址/booking_url） | 拒绝直调——RollingGo 当前无下单工具（0829 探测），预订/支付走人工 |
+| `ticket_book` | 经 train_trip 组装车票意图（班次/二等座价） | 拒绝直调——12306 无公开购票 API，出票走官方候补/人工 |
+
+`ActionSkill(Skill)` 基类约定两段式：LLM/自动化可发起 prepare（产生待确认
+意图），commit 仅经 ActionQueue approve → 执行器注册表触发；支付恒 MANUAL。
+
 ---
 
 ## 7. Mock/Live 切换机制

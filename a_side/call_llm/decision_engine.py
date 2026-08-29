@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -96,6 +97,11 @@ def hard_rule_decision(events: Sequence[Dict[str, Any]]) -> Optional[Dict[str, A
     return None
 
 
+def _use_llm_tools() -> bool:
+    """P4：function calling 开关（默认关，A review 后经 env 开启）。"""
+    return os.environ.get("USE_LLM_TOOLS", "").strip().lower() in ("1", "true", "yes")
+
+
 def decide_replan(
     requirement: Dict[str, Any],
     events: Sequence[Dict[str, Any]],
@@ -104,6 +110,7 @@ def decide_replan(
     base_url: Optional[str] = None,
     timeout: int = 60,
     threshold: Optional[int] = None,
+    tool_provider: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """判断变化事件是否值得触发重规划，返回结构化决策结果。
 
@@ -137,7 +144,22 @@ def decide_replan(
         max_tokens=800,
     )
     messages = build_decision_messages(requirement, events)
-    result = client.generate(messages=messages, response_schema=decision_score_schema)
+
+    # P4（0829）：function calling 最小闭环——env USE_LLM_TOOLS 开启且注入
+    # tool_provider 时，决策 LLM 可查询白名单工具佐证判断（如 weather_brief/
+    # train_trip）；默认关闭，行为与既往完全一致。
+    tools = None
+    tool_executor = None
+    if tool_provider is not None and _use_llm_tools():
+        tools = tool_provider.to_openai_tools()
+        tool_executor = tool_provider.call_json
+
+    result = client.generate(
+        messages=messages,
+        response_schema=decision_score_schema,
+        tools=tools,
+        tool_executor=tool_executor,
+    )
     content = result["content"]
 
     score = content.get("score")

@@ -30,12 +30,13 @@ def make_mock_client(geo_id="101010100"):
 
 
 class TestToolRegistry(unittest.TestCase):
-    def test_registry_has_all_eighteen_tools(self) -> None:
+    def test_registry_has_all_twenty_one_tools(self) -> None:
         names = default_registry.names()
         for tool in ["map", "weather", "weather_warning", "air_quality",
                      "weather_forecast", "scenic", "traffic", "food", "booking",
                      "hotel", "train_ticket", "train_transfer", "train_route",
-                     "train_price", "train_trip", "weather_brief",
+                     "train_price", "train_trip", "weather_brief", "hotel_book",
+                     "ticket_book", "flight_search",
                      "web_fetch", "web_search"]:
             self.assertIn(tool, names)
 
