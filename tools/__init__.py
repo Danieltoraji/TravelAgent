@@ -36,6 +36,7 @@ from tools.train import (
     TrainTransferTool,
     TrainTransferToolLive,
 )
+from tools.weather_brief import WeatherBriefSkill, WeatherBriefSkillLive
 from tools.weather_tool import (
     AirQualityTool,
     AirQualityToolLive,
@@ -85,11 +86,13 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(WeatherWarningToolLive(client))
         registry.register(AirQualityToolLive(client))
         registry.register(WeatherForecastToolLive(client))
+        registry.register(WeatherBriefSkillLive(client, world))
     else:
         registry.register(WeatherTool(world))
         registry.register(WeatherWarningTool(world))
         registry.register(AirQualityTool(world))
         registry.register(WeatherForecastTool(world))
+        registry.register(WeatherBriefSkill(world))
 
     registry.register(BookingTool())
 
@@ -164,6 +167,8 @@ __all__ = [
     "TrainTicketToolLive",
     "TrainTransferTool",
     "TrainTransferToolLive",
+    "WeatherBriefSkill",
+    "WeatherBriefSkillLive",
     "WeatherData",
     "WeatherForecastTool",
     "WeatherForecastToolLive",
