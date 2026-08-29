@@ -12,7 +12,14 @@ import logging
 from typing import Any, Dict, Optional
 
 from tools.base_tool import BaseTool
-from tools.mock_data import CITY_MOCK, MockWorld
+from tools.mock_data import MockWorld
+
+
+def _require_city(city: str) -> str:
+    """C6：city 为必填参数（schema required），缺失即业务错误，不再静默兜底北京。"""
+    if not city:
+        raise ValueError("city 不能为空（必填参数）")
+    return city
 
 logger = logging.getLogger("tools.weather")
 
@@ -37,7 +44,7 @@ class WeatherTool(BaseTool):
     def _run(self, city: str = "", date: Optional[str] = None) -> Dict[str, Any]:
         w = self._world.get_weather()
         return {
-            "city": city or CITY_MOCK,
+            "city": _require_city(city),
             "date": date or self._world.now.date().isoformat(),
             "condition": w.condition,
             "temperature_c": w.temperature_c,
@@ -104,7 +111,7 @@ class WeatherToolLive(WeatherTool):
         from datetime import date as date_cls
         from urllib.parse import urlencode
 
-        city = city or CITY_MOCK
+        city = _require_city(city)
         loc_id = self._client.get_location_id(city)
         now_data = self._fetch_now(loc_id)
         uv_index = self._fetch_uv_index(loc_id)
@@ -194,7 +201,7 @@ class WeatherWarningTool(BaseTool):
 
     def _run(self, city: str = "") -> Dict[str, Any]:
         return {
-            "city": city or CITY_MOCK,
+            "city": _require_city(city),
             "warnings": [],  # Mock 默认无预警
             "has_warning": False,
         }
@@ -210,7 +217,7 @@ class WeatherWarningToolLive(WeatherWarningTool):
         self._client = client
 
     def _run(self, city: str = "") -> Dict[str, Any]:
-        city = city or CITY_MOCK
+        city = _require_city(city)
         lat, lon = self._client.get_location_coord(city)
         url = f"/weatheralert/v1/current/{lat}/{lon}"
         try:
@@ -259,7 +266,7 @@ class AirQualityTool(BaseTool):
 
     def _run(self, city: str = "") -> Dict[str, Any]:
         return {
-            "city": city or CITY_MOCK,
+            "city": _require_city(city),
             "aqi": 35,
             "category": "优",
             "pm25": 15.0,
@@ -281,7 +288,7 @@ class AirQualityToolLive(AirQualityTool):
         self._client = client
 
     def _run(self, city: str = "") -> Dict[str, Any]:
-        city = city or CITY_MOCK
+        city = _require_city(city)
         lat, lon = self._client.get_location_coord(city)
         url = f"/airquality/v1/current/{lat}/{lon}"
         try:
@@ -370,7 +377,7 @@ class WeatherForecastTool(BaseTool):
                 "rain_probability": w.rain_probability,
             })
         return {
-            "city": city or CITY_MOCK,
+            "city": _require_city(city),
             "hours": hourly,
             "summary": f"未来{len(hourly)}小时{w.condition}",
         }
@@ -388,7 +395,7 @@ class WeatherForecastToolLive(WeatherForecastTool):
     def _run(self, city: str = "", hours: int = 24) -> Dict[str, Any]:
         from urllib.parse import urlencode
 
-        city = city or CITY_MOCK
+        city = _require_city(city)
         loc_id = self._client.get_location_id(city)
         url = f"/v7/weather/24h?{urlencode({'location': loc_id})}"
         resp = self._client.get(url)

@@ -77,6 +77,19 @@ class TestTools(unittest.TestCase):
             lng, _, lat = restaurant["location"].partition(",")
             self.assertTrue(lng and lat, restaurant["location"])
 
+    def test_schema_validation_errors(self) -> None:
+        # C5：schema 校验（required 空/缺、类型不符）→ ERROR 且不重试
+        from tools.base_tool import ToolRegistry
+        from tools.weather_tool import WeatherTool
+        reg = ToolRegistry()
+        reg.register(WeatherTool())
+        r = reg.call("weather", city="")
+        self.assertEqual(r.status, ToolStatus.ERROR)
+        self.assertIn("city", r.error)
+        r = reg.call("weather", city=123)
+        self.assertEqual(r.status, ToolStatus.ERROR)
+        self.assertIn("string", r.error)
+
     def test_scenic_queue_reflects_world(self) -> None:
         from tools.mock_data import MockWorld
         from tools.scenic_tool import ScenicTool

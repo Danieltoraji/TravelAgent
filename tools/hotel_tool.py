@@ -109,6 +109,9 @@ class HotelTool(BaseTool):
         if action == "detail":
             hotel_id = kwargs.get("hotelId")
             name = kwargs.get("name", "")
+            if hotel_id is None and not name:
+                # C6：对齐 Live 版校验（hotel_tool.py `_call_detail`）
+                raise ValueError("hotel detail requires 'hotelId' or 'name'")
             for hotel in _MOCK_HOTELS:
                 if (hotel_id is not None and str(hotel["id"]) == str(hotel_id)) or (
                     name and name in hotel["name"]

@@ -77,6 +77,8 @@ class ScenicTool(BaseTool):
             },
             "place": {"type": "string", "description": "景点名称，或 search 时为目标城市"},
             "limit": {"type": "integer", "description": "search 返回数量上限（默认 10）"},
+            # C6：schema 与实现同步（Live _status 用 city 做地理编码限定）
+            "city": {"type": "string", "description": "地理编码限定城市（status 时用，默认北京）"},
         },
         "required": ["place"],
     }
