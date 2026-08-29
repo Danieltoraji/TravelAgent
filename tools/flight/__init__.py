@@ -22,12 +22,17 @@ from tools.flight.client import (
     parse_juhe_row,
     validate_flight_date,
 )
-from tools.flight.tools import FlightSearchTool, FlightSearchToolLive
+from tools.flight.tools import (
+    FlightSearchTool,
+    FlightSearchToolLive,
+    FlightSearchToolUnavailable,
+)
 
 __all__ = [
     "FlightClient",
     "FlightSearchTool",
     "FlightSearchToolLive",
+    "FlightSearchToolUnavailable",
     "all_airports",
     "airport_name",
     "parse_avstack_row",

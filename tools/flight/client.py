@@ -29,7 +29,8 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.error import URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
+import urllib.request  # 注意：调用一律用 urllib.request.urlopen（便于测试断网拦截）
 
 logger = logging.getLogger("tools.flight")
 
@@ -49,10 +50,10 @@ _HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9",
 }
 
-# 证书链问题同 12306：部分环境校验失败
+# 证书校验：默认校验主机名与证书链，不以全局关闭 TLS 验证作为兼容方案
+# —— I-13（四小时作战包）：关闭校验存在中间人攻击风险；juhe / aviationstack
+# 均为标准 HTTPS 服务，个别环境证书链异常应在调用侧显式处理，而不是全局放行。
 _SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -262,12 +263,18 @@ class FlightClient:
     """
 
     def __init__(self, backend: str = "juhe",
-                 api_key: str = "", timeout: float | None = None) -> None:
+                 api_key: Optional[str] = None,
+                 timeout: float | None = None) -> None:
         from config.settings import settings
         self.backend = (backend or "juhe").strip().lower()
-        self._api_key = api_key or settings.juhe_flight_key
-        if self.backend == "aviationstack" and not self._api_key:
-            self._api_key = settings.aviationstack_key
+        # None = 读取默认配置；显式字符串（含 ""）= 明确指定，绝不回退读环境
+        # （I-03：空字符串 or 语义会让"无密钥"单元测试意外回退真实 Key 并发起联网）
+        if api_key is None:
+            self._api_key = settings.juhe_flight_key
+            if self.backend == "aviationstack" and not self._api_key:
+                self._api_key = settings.aviationstack_key
+        else:
+            self._api_key = api_key
         self._timeout = timeout if timeout is not None else settings.api_timeout
         if self.backend not in ("aviationstack", "juhe"):
             raise ValueError(f"未知航班后端: {backend}（aviationstack | juhe）")
@@ -352,17 +359,35 @@ class FlightClient:
 
     # -- HTTP 底座 ---------------------------------------------------------
 
+    @staticmethod
+    def _redact_url(url: str) -> str:
+        """URL 脱敏：仅保留 scheme://host/path，丢弃全部查询参数（Key 在 query 中）。
+
+        I-02（四小时作战包）：异常/日志中出现完整 URL 会把 access_key / key
+        泄漏进 traceback 与日志。
+        """
+        try:
+            from urllib.parse import urlsplit, urlunsplit
+            parts = urlsplit(url)
+            if not parts.scheme or not parts.netloc:
+                return "<url>"  # 无完整 URL 结构：一律脱敏为占位符
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        except ValueError:
+            return "<url>"
+
     def _get_json(self, url: str, operation: str) -> Any:
         req = Request(url, headers=_HEADERS)
         try:
-            with urlopen(req, timeout=self._timeout, context=_SSL_CTX) as resp:
+            with urllib.request.urlopen(req, timeout=self._timeout, context=_SSL_CTX) as resp:
                 raw = resp.read()
                 if resp.headers.get("Content-Encoding", "") == "gzip":
                     import gzip
                     raw = gzip.decompress(raw)
                 text = raw.decode("utf-8", errors="replace")
         except URLError as exc:
-            raise ConnectionError(f"{operation}请求失败 [{url}]: {exc}") from exc
+            raise ConnectionError(
+                f"{operation}请求失败 [{self._redact_url(url)}]: {exc}"
+            ) from exc
         try:
             return json.loads(text)
         except ValueError as exc:

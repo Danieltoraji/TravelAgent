@@ -22,6 +22,7 @@ from tools.flight import (
     FlightClient,
     FlightSearchTool,
     FlightSearchToolLive,
+    FlightSearchToolUnavailable,
 )
 from tools.food_tool import FoodTool, FoodToolLive
 from tools.hotel_book import HotelBookSkill, HotelBookSkillLive
@@ -138,7 +139,8 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(TrainTripSkill())
         registry.register(TicketBookSkill())
 
-    # 航班查询 Tool：按配置自动切换 Mock / Live（juhe 聚合数据主，aviationstack 备选）
+    # 航班查询 Tool：三态——Live（真源 Key 齐备）/ Demo 固定样例（DEMO_MODE）/
+    # Unavailable（非 Demo 且无 Key：不注册京沪 Mock 冒充真实数据，I-04）
     if settings.use_real_flight_api:
         use_juhe = bool(settings.juhe_flight_key)
         flight_client = FlightClient(
@@ -146,8 +148,10 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
             api_key=settings.juhe_flight_key or settings.aviationstack_key,
         )
         registry.register(FlightSearchToolLive(flight_client))
-    else:
+    elif settings.demo_mode:
         registry.register(FlightSearchTool())
+    else:
+        registry.register(FlightSearchToolUnavailable())
 
     # 网页抓取/搜索 Tool：按配置自动切换 Mock / Live（无需 API Key）
     if settings.use_real_web:
@@ -174,6 +178,7 @@ __all__ = [
     "FlightClient",
     "FlightSearchTool",
     "FlightSearchToolLive",
+    "FlightSearchToolUnavailable",
     "FoodTool",
     "FoodToolLive",
     "HotelBookSkill",

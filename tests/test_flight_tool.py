@@ -214,7 +214,7 @@ def _fake_http_response(payload: dict, encoding: str = "utf-8"):
 
 
 class TestFlightClient(unittest.TestCase):
-    @patch("tools.flight.client.urlopen")
+    @patch("urllib.request.urlopen")
     def test_juhe_query_url_and_parse(self, mock_urlopen) -> None:
         mock_urlopen.return_value = _fake_http_response(_SAMPLE_BJSHA)
         client = FlightClient(backend="juhe", api_key="testkey", timeout=10)
@@ -231,13 +231,13 @@ class TestFlightClient(unittest.TestCase):
         self.assertIn("arrival=SHA", url)
         self.assertIn("departureDate=2026-09-05", url)
 
-    @patch("tools.flight.client.urlopen")
+    @patch("urllib.request.urlopen")
     def test_juhe_empty_list(self, mock_urlopen) -> None:
         mock_urlopen.return_value = _fake_http_response(_SAMPLE_EMPTY)
         client = FlightClient(backend="juhe", api_key="testkey", timeout=10)
         self.assertEqual(client.query_flights("锦州", "常州", "2026-09-05"), [])
 
-    @patch("tools.flight.client.urlopen")
+    @patch("urllib.request.urlopen")
     def test_juhe_error_code_raises(self, mock_urlopen) -> None:
         mock_urlopen.return_value = _fake_http_response(_SAMPLE_ERROR)
         client = FlightClient(backend="juhe", api_key="testkey", timeout=10)
