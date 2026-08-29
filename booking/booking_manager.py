@@ -55,7 +55,19 @@ class BookingManager:
     ``on_booking_failed``：可选回调（由 AgentRuntime 注入），预订提交失败时
     在状态置 FAILED / Action 置 BLOCKED 之后调用，用于补发 BOOKING 事件
     闭合「确认预订 → 失败 → 事件 → A 换酒店」闭环（AB 合码方案 §三.7）。
+
+    P1 动作执行器注册表：kind（ActionItem.target 的 ``{kind}:{id}`` 前缀）→
+    本类方法名。approve 端点经 ``execute_action`` 查表执行；无执行器的 kind
+    保持"批准仅标记"语义（booking:/payment: 等，E2 语义变更待 C 确认）。
+    未来动作技能（hotel_book/ticket_book）经 ``register_executor`` 接入。
     """
+
+    EXECUTORS: Dict[str, str] = {"hotel": "execute_hotel_booking"}
+
+    @classmethod
+    def register_executor(cls, kind: str, method_name: str) -> None:
+        """注册/覆盖动作执行器（``method_name`` 须为 ``(value, target_date, party_size) -> BookingRecord``）。"""
+        cls.EXECUTORS[kind] = method_name
 
     def __init__(
         self,
@@ -379,13 +391,21 @@ class BookingManager:
         )
 
     def execute_action(self, action: ActionItem) -> Optional[BookingRecord]:
-        """E1：按动作 target 执行；仅 ``hotel:`` 前缀有执行器（booking:/payment:
-        等保持既有语义，approval 执行化见设计文档 §4）。"""
-        if not action.target.startswith("hotel:"):
+        """P1：按 ``target`` 前缀查执行器注册表执行；无执行器返回 None。
+
+        无执行器的 kind（booking:/payment:/timeline:/calendar: 等）由调用方
+        保持既有标记语义（approve 仅标记，E2 语义变更待 C 确认）。
+        """
+        kind, sep, value = action.target.partition(":")
+        if not sep:
             return None
-        name = action.target.split(":", 1)[1].strip()
-        rec = self.execute_hotel_booking(
-            name, target_date=action.date, party_size=action.quantity or 1,
+        method_name = self.EXECUTORS.get(kind)
+        if method_name is None:
+            return None
+        executor = getattr(self, method_name)
+        rec = executor(
+            value.strip(), target_date=action.date,
+            party_size=action.quantity or 1,
         )
         action.status = ActionStatus.EXECUTED
         action.description = (

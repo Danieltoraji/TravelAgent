@@ -461,6 +461,35 @@ class TestHotelTransportAutofillAndExecutor(unittest.TestCase):
         self.assertIsNone(bm.execute_action(action))
         self.assertEqual(action.status, ActionStatus.PENDING)
 
+    def test_executor_registry_register_and_dispatch(self) -> None:
+        # P1：注册表泛化——新 kind 经 register_executor 接入，无需改 execute_action
+        from core.schemas import ActionItem
+
+        bm = BookingManager(registry=self._build_full_registry())
+
+        def _fake_executor(value: str, target_date: str = "",
+                           party_size: int = 1) -> BookingRecord:
+            return bm.prepare(place=f"演示-{value}", target_date=target_date or "2026-09-01",
+                              party_size=party_size, booking_type="scenic")
+
+        type(bm).register_executor("demo", "_fake_demo_executor")
+        bm._fake_demo_executor = _fake_executor  # 实例属性挂方法（避免污染类）
+        try:
+            action = ActionItem(action_id="demo-1", title="演示动作",
+                                target="demo:测试", type="DEMO", quantity=1)
+            rec = bm.execute_action(action)
+            self.assertEqual(action.status, ActionStatus.EXECUTED)
+            self.assertEqual(rec.place, "演示-测试")
+        finally:
+            type(bm).EXECUTORS.pop("demo", None)
+
+    def test_executor_registry_no_colon_returns_none(self) -> None:
+        from core.schemas import ActionItem
+
+        bm = BookingManager(registry=self._build_full_registry())
+        action = ActionItem(action_id="a2", title="x", target="malformed")
+        self.assertIsNone(bm.execute_action(action))
+
 
 if __name__ == "__main__":
     unittest.main()

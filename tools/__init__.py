@@ -35,7 +35,10 @@ from tools.train import (
     TrainTicketToolLive,
     TrainTransferTool,
     TrainTransferToolLive,
+    TrainTripSkill,
+    TrainTripSkillLive,
 )
+from tools.weather_brief import WeatherBriefSkill, WeatherBriefSkillLive
 from tools.weather_tool import (
     AirQualityTool,
     AirQualityToolLive,
@@ -85,11 +88,13 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(WeatherWarningToolLive(client))
         registry.register(AirQualityToolLive(client))
         registry.register(WeatherForecastToolLive(client))
+        registry.register(WeatherBriefSkillLive(client, world))
     else:
         registry.register(WeatherTool(world))
         registry.register(WeatherWarningTool(world))
         registry.register(AirQualityTool(world))
         registry.register(WeatherForecastTool(world))
+        registry.register(WeatherBriefSkill(world))
 
     registry.register(BookingTool())
 
@@ -113,11 +118,13 @@ def build_registry(world: MockWorld | None = None) -> ToolRegistry:
         registry.register(TrainTransferToolLive(train_client))
         registry.register(TrainRouteToolLive(train_client))
         registry.register(TrainPriceToolLive(train_client))
+        registry.register(TrainTripSkillLive(train_client))
     else:
         registry.register(TrainTicketTool())
         registry.register(TrainTransferTool())
         registry.register(TrainRouteTool())
         registry.register(TrainPriceTool())
+        registry.register(TrainTripSkill())
 
     # 网页抓取/搜索 Tool：按配置自动切换 Mock / Live（无需 API Key）
     if settings.use_real_web:
@@ -164,6 +171,10 @@ __all__ = [
     "TrainTicketToolLive",
     "TrainTransferTool",
     "TrainTransferToolLive",
+    "TrainTripSkill",
+    "TrainTripSkillLive",
+    "WeatherBriefSkill",
+    "WeatherBriefSkillLive",
     "WeatherData",
     "WeatherForecastTool",
     "WeatherForecastToolLive",

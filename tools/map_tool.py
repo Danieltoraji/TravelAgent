@@ -111,6 +111,8 @@ def _resolve_coord_fallback(name: str, city: str, geocode) -> Tuple[float, float
 
 class MapTool(BaseTool):
     name = "map"
+    domain = "map"
+    internal_actions = ["batch_route"]   # 内部管道：A 侧交通矩阵
     description = "地图服务：搜索景点位置、计算两点间路线距离与预计耗时。"
     source = "mock"
     input_schema: ClassVar[dict] = {
