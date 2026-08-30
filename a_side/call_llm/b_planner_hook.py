@@ -596,14 +596,27 @@ class BPlannerHook:
                 all_restaurants.setdefault(restaurant.id, restaurant)
 
         # 按簇拆矩阵：每簇一次「簇内锚点 × 簇归属餐厅」的 batch_route 小矩阵。
-        # 簇间复用 nearby 查询已有的节流节奏（查询与矩阵交错更平滑）；单簇
-        # 矩阵失败 → 该簇走估算边，不影响其它簇。
+        # destinations 收窄为**簇内各锚点 top-K 的并集**（非簇查询全量 25 家）——
+        # B 侧 get_distances 按终点循环（每终点一次 /v3/distance + 0.3s 间隔），
+        # 25 家全量 = 25 次请求 ≈ 8.5s 恒定耗时（8.30 复探实测：对数减了终点
+        # 没减）；top-K 并集（~10-15 家）把每簇耗时砍半。圈层外候选仍走估算边。
+        # 单簇矩阵失败 → 该簇走估算边，不影响其它簇。
         matrix_fn = make_live_matrix_fn(self._tool_provider, city=self.city)
         matrix2: Dict[Tuple[str, str], Tuple[float, int]] = {}
         for i, cluster in enumerate(clusters):
             members = [m for m in cluster.get("members", []) if m in name_to_coord]
+            # 簇归属餐厅 = 簇内各锚点 top-K 候选的并集（去重保序）。
+            cluster_restaurant_ids: List[str] = []
+            seen_ids = set()
+            for member in members:
+                for restaurant in nearby_by_anchor.get(member, []):
+                    if restaurant.id not in seen_ids:
+                        seen_ids.add(restaurant.id)
+                        cluster_restaurant_ids.append(restaurant.id)
             cluster_restaurants = [
-                r for r in cluster.get("restaurants", []) if r.location
+                all_restaurants[rid]
+                for rid in cluster_restaurant_ids
+                if rid in all_restaurants and all_restaurants[rid].location
             ]
             if not members or not cluster_restaurants:
                 continue
