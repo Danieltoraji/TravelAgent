@@ -165,6 +165,8 @@ def assign_must_spots_to_days(
     candidate_spots: Sequence[Sequence[Spot]],
     graph_dir: Path = DEFAULT_GRAPH_DIR,
     day_start_time: str = "09:00",
+    first_day_start_time: Optional[str] = None,
+    last_day_end_minutes: Optional[int] = None,
     travel_time_provider: Optional[TravelTimeProvider] = None,
     meal_windows: Sequence[MealWindow] = DEFAULT_MEAL_WINDOWS,
     restaurants=None,
@@ -175,6 +177,13 @@ def assign_must_spots_to_days(
     A beam search keeps several partial allocations instead of committing to
     the first greedy choice. Each attraction is tested in every position of
     every day, and only schedules within ``daily_travel_time`` survive.
+
+    **窗口化（两段式完整化，9.2）**：``first_day_start_time`` / 
+    ``last_day_end_minutes`` 非 None 时，对应天（Day1 / 末日）成为「窗口化天」：
+    beam 可行性除 ``daily_travel_time`` 外额外校验 ① 无景点计划结束超闭馆
+    （补齐 8.19 超闭馆轻量版遗漏的分配器盲区）② 末日最后事件结束 ≤
+    ``last_day_end_minutes``（返程出发 − 离开缓冲）。全部 None → 原判据
+    （只查 ``daily_travel_time``），行为与现状完全一致。
     """
     try:
         content = requirement["content"]
@@ -203,6 +212,9 @@ def assign_must_spots_to_days(
     provider = travel_time_provider or JsonTravelTimeProvider(destination, graph_dir)
     matrix = provider.get_matrix(all_must_options.keys())
     day_start_minutes = _parse_time(day_start_time)
+    first_day_start_minutes = (
+        _parse_time(first_day_start_time) if first_day_start_time else None
+    )
 
     total_available_minutes = day_count * daily_limit
     minimum_required_visit_minutes = sum(
@@ -219,6 +231,58 @@ def assign_must_spots_to_days(
             include_meal_time,
             restaurants,
         )
+
+    def day_window_start(day_index: int) -> int:
+        """该天排程起点（Day1 被首日窗口化时用首日起点，否则统一起点）。"""
+        if day_index == 0 and first_day_start_minutes is not None:
+            return first_day_start_minutes
+        return day_start_minutes
+
+    def day_windowed(day_index: int) -> bool:
+        """该天是否被城际窗口化（需要闭馆 / 末日界检查）。"""
+        if day_index == 0 and first_day_start_minutes is not None:
+            return True
+        if day_index == day_count - 1 and last_day_end_minutes is not None:
+            return True
+        return False
+
+    def day_accept(route: Sequence[Spot], day_index: int) -> bool:
+        """窗口化天的额外可行性（闭馆 / 末日界）；非窗口化天 → 恒 True。
+
+        - 闭馆判据与 repair.py 超闭馆轻量版同构：``event.end > closing_time``
+          （缺 closing_time → 视为 24:00，永不违规）；
+        - 末日界：窗口化末日最后事件结束 ≤ ``last_day_end_minutes``；
+        - 未窗口化天保持 8.19 前原判据（只查 ``daily_travel_time``），
+          全部参数 None → 行为与现状完全一致（回归安全）。
+        """
+        if not route or not day_windowed(day_index):
+            return True
+        raw_events, _ = _build_schedule_events(
+            route,
+            matrix,
+            day_window_start(day_index),
+            meal_windows,
+            restaurants,
+        )
+        for event in raw_events:
+            if event["type"] != "spot":
+                continue
+            spot = next(
+                (s for s in route if _spot_key(s) == event["details"]["spot_id"]),
+                None,
+            )
+            if spot is None:
+                continue
+            if event["end_minutes"] > _parse_time(
+                spot.get("closing_time", "24:00")
+            ):
+                return False
+        if day_index == day_count - 1 and last_day_end_minutes is not None:
+            if raw_events and max(
+                event["end_minutes"] for event in raw_events
+            ) > last_day_end_minutes:
+                return False
+        return True
 
     # Long and remote mandatory attractions are placed first because they have
     # fewer feasible insertion options later.
@@ -316,6 +380,8 @@ def assign_must_spots_to_days(
                             )
                             if elapsed(new_day_route) > daily_limit:
                                 continue
+                            if not day_accept(new_day_route, day_index):
+                                continue
                             new_state = list(state)
                             new_state[day_index] = tuple(new_day_route)
                             new_state = tuple(new_state)
@@ -352,7 +418,11 @@ def assign_must_spots_to_days(
     for day_index in range(day_count):
         route_for_day = list(best_state[day_index]) if best_state else []
         events, schedule_warnings = _build_schedule_events(
-            route_for_day, matrix, day_start_minutes, meal_windows, restaurants
+            route_for_day,
+            matrix,
+            day_window_start(day_index),
+            meal_windows,
+            restaurants,
         )
         days.append(
             {

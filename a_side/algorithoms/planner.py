@@ -844,6 +844,7 @@ def plan_multi_day(
     graph_dir: Path = DEFAULT_GRAPH_DIR,
     day_start_time: str = "09:00",
     first_day_start_time: Optional[str] = None,
+    last_day_end_minutes: Optional[int] = None,
     travel_time_provider: Optional[TravelTimeProvider] = None,
     meal_windows: Sequence[MealWindow] = DEFAULT_MEAL_WINDOWS,
     restaurants=None,
@@ -863,8 +864,18 @@ def plan_multi_day(
     ``first_day_start_time``（到达日时间轴重叠修复，方案 A）：可选。仅覆盖
     **第 1 天执行排程**的起点（如城际到达 + 接驳缓冲），其余天仍用
     ``day_start_time``；``None`` → 行为与现状完全一致（第 1 天也用
-    ``day_start_time``）。must 分配与可选预分配仍按统一 ``day_start_time``
-    评估（不感知首日压缩），避免波及分配逻辑。
+    ``day_start_time``）。
+
+    ``last_day_end_minutes``（两段式完整化，9.2）：可选。末日（最后一天）
+    游玩截止分钟（如＝ 返程出发时刻 − 离开缓冲）；``None`` → 不设末日界。
+
+    窗口化语义（首日起点 / 末日截止只要有一个非 None，对应天即被「窗口化」）：
+    must 分天分配器（``assign_must_spots_to_days``）对窗口化的天额外校验——
+    ① 任何景点计划结束不得超其闭馆时间（复用 repair.py 超闭馆轻量版判据，
+    补齐 8.19 遗漏的分配器盲区；如到达日 14:22 起排 6h 故宫 → 超 17:00 闭馆
+    → 判不可行、自然落非窗口化天）；② 末日最后事件结束 ≤ ``last_day_end_minutes``
+    （防 must 排进返程出发之后）。未窗口化的天保持原判据（只查 daily_limit），
+    全部参数 ``None`` → 行为与现状完全一致。
     """
     try:
         day_count = int(requirement["content"]["days"])
@@ -879,12 +890,21 @@ def plan_multi_day(
         raise ValueError(f"未知 allocator：{allocator!r}（可选 balanced / greedy）")
     if first_day_start_time is not None:
         _parse_time(first_day_start_time)  # 格式校验，非法直接抛 ValueError
+    if last_day_end_minutes is not None:
+        if (
+            not isinstance(last_day_end_minutes, int)
+            or isinstance(last_day_end_minutes, bool)
+            or last_day_end_minutes <= 0
+        ):
+            raise ValueError("last_day_end_minutes 必须是正整数分钟")
 
     allocation = assign_must_spots_to_days(
         requirement,
         candidate_spots,
         graph_dir=graph_dir,
         day_start_time=day_start_time,
+        first_day_start_time=first_day_start_time,
+        last_day_end_minutes=last_day_end_minutes,
         travel_time_provider=travel_time_provider,
         meal_windows=meal_windows,
         restaurants=restaurants,

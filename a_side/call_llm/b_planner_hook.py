@@ -94,6 +94,10 @@ _ESTIMATED_MINUTES_PER_KM = 3.4
 # 未来演进为「机场/车站 → 酒店 的转场时长 + 30min」（local 接驳 legs 现为占位）。
 _ARRIVAL_BUFFER_MINUTES = 90
 
+# 离开日缓冲（用户 9.2 拍板 60min）：末日游玩截止 = 返程出发时刻 − 该值
+# （语义：出发前 1h 到站/机场）。
+_DEPARTURE_BUFFER_MINUTES = 60
+
 
 def _first_day_start_from_segments(
     segments: List[Dict[str, Any]],
@@ -119,6 +123,29 @@ def _first_day_start_from_segments(
         if start >= 24 * 60:
             start = max(9 * 60, start % (24 * 60))
         return f"{start // 60:02d}:{start % 60:02d}"
+    return None
+
+
+def _last_day_end_from_segments(
+    segments: List[Dict[str, Any]],
+    buffer_minutes: int = _DEPARTURE_BUFFER_MINUTES,
+) -> Optional[int]:
+    """返程段出发时刻 − 离开缓冲 → 末日游玩截止分钟（无返程段 → None）。
+
+    与 ``_first_day_start_from_segments`` 同源（travel.py make_segment：return
+    段 ``start_minutes`` = 返程出发时刻）；返程过早（截止早于当天开始）时
+    保底 09:00（当天游玩不早开始——极早返程属行程设计问题，不在此处理）。
+    """
+    for seg in segments or []:
+        if not isinstance(seg, dict) or seg.get("type") != "transport":
+            continue
+        if (seg.get("details") or {}).get("kind") != "return":
+            continue
+        start = seg.get("start_minutes")
+        if not isinstance(start, (int, float)) or start <= 0:
+            continue
+        end = int(start) - int(buffer_minutes)
+        return max(9 * 60, end)
     return None
 
 
@@ -331,6 +358,7 @@ class BPlannerHook:
         travel_time_provider: Any = None,
         restaurants: Any = None,
         first_day_start_time: Optional[str] = None,
+        last_day_end_minutes: Optional[int] = None,
     ) -> Dict[str, Any]:
         if self._planner_fn is not None:
             # 自定义 planner_fn 保持原契约 (requirement, spots)；真源接线由注入方负责
@@ -346,12 +374,14 @@ class BPlannerHook:
                 travel_time_provider=travel_time_provider,
                 restaurants=restaurants,
                 first_day_start_time=first_day_start_time,
+                last_day_end_minutes=last_day_end_minutes,
             )
         return plan_multi_day(
             requirement,
             spots,
             restaurants=restaurants,
             first_day_start_time=first_day_start_time,
+            last_day_end_minutes=last_day_end_minutes,
         )
 
     def _empty_timeline(self) -> TripTimeline:
@@ -545,6 +575,7 @@ class BPlannerHook:
         # 只在真源规划路径执行。
         segments = self._build_trip_segments()
         first_day_start_time = _first_day_start_from_segments(segments)
+        last_day_end_minutes = _last_day_end_from_segments(segments)
         base_matrix: Dict[Tuple[str, str], Tuple[float, int]] = {}
         live_hotels = self._live_hotel_pool()  # 8.29：假池酒店候选（坐标并入矩阵 → 通勤真源）
         try:
@@ -592,16 +623,19 @@ class BPlannerHook:
                     travel_time_provider=self._travel_time_provider,
                     restaurants=None,
                     first_day_start_time=first_day_start_time,
+                    last_day_end_minutes=last_day_end_minutes,
                 )
                 # 阶段 2：锚点确定后，只对候选景点 × 真源餐厅补增量矩阵再重排
                 plan = self._live_plan_with_restaurants(
                     plan1, spots, name_to_coord, base_matrix, live_hotels,
                     first_day_start_time=first_day_start_time,
+                    last_day_end_minutes=last_day_end_minutes,
                 )
             else:
                 plan = self._planner(
                     self.requirement, spots,
                     first_day_start_time=first_day_start_time,
+                    last_day_end_minutes=last_day_end_minutes,
                 )
         except Exception as exc:  # noqa: BLE001
             reason = f"真实数据接入失败，已回退假数据：{exc}"
@@ -638,6 +672,7 @@ class BPlannerHook:
         base_matrix: Dict[Tuple[str, str], Tuple[float, int]],
         live_hotels: Sequence[Any],
         first_day_start_time: Optional[str] = None,
+        last_day_end_minutes: Optional[int] = None,
     ) -> Dict[str, Any]:
         """8.30 阶段 2：对「候选景点 × 真源餐厅」补增量矩阵后带餐厅重排。
 
@@ -778,6 +813,7 @@ class BPlannerHook:
                 travel_time_provider=self._travel_time_provider,
                 restaurants=resolver,
                 first_day_start_time=first_day_start_time,
+                last_day_end_minutes=last_day_end_minutes,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("带餐厅重排失败，降级为无餐厅计划（阶段 1）：%s", exc)
@@ -908,16 +944,19 @@ class BPlannerHook:
             return timeline
 
         # 2) 规划
-        # 到达日重叠修复（方案 A）：规划前构建城际段一次（本地 options 表或不
-        # 联网 provider），取去程到达时刻 + 90min 接驳缓冲 → 首日起点。
+        # 到达日重叠修复（方案 A）+ 两段式完整化（离开缓冲 60min）：规划前
+        # 构建城际段一次（本地 options 表或不联网 provider），取去程到达时刻
+        # + 90min 接驳 → 首日起点、返程出发 − 60min → 末日截止。
         segments = self._build_trip_segments()
         first_day_start_time = _first_day_start_from_segments(segments)
+        last_day_end_minutes = _last_day_end_from_segments(segments)
         try:
             plan = self._planner(
                 self.requirement,
                 spots,
                 travel_time_provider=travel_time_provider,
                 first_day_start_time=first_day_start_time,
+                last_day_end_minutes=last_day_end_minutes,
             )
         except Exception as exc:  # noqa: BLE001
             self.last_error = f"规划失败：{exc}"
