@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -51,9 +52,21 @@ def post(path: str, payload: dict):
         return e.code, json.loads(body) if body else {"error": e.reason}
 
 
-def get(path: str):
-    with urllib.request.urlopen(BASE + path, timeout=30) as r:
-        return r.status, json.loads(r.read().decode("utf-8"))
+def get(path: str, retries: int = 3):
+    """GET（带重试）：gunicorn 单 worker（内存单例约束），规划类长请求
+    （2 天行程含锚点间隔 ~30s+）占用期间，后续短请求需排队——部署后冒烟
+    与外部探测请求并发时曾 30s 超时误报失败（8.30 线上教训）。
+    每次尝试 60s + 失败退避 5s，纯读接口重试安全。"""
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(BASE + path, timeout=60) as r:
+                return r.status, json.loads(r.read().decode("utf-8"))
+        except (TimeoutError, OSError) as exc:
+            last_exc = exc
+            print(f"    [smoke] GET {path} 超时/网络错误（尝试 {attempt + 1}/{retries}），5s 后重试：{exc}")
+            time.sleep(5)
+    raise AssertionError(f"GET {path} 重试 {retries} 次仍失败: {last_exc}")
 
 
 def requirement() -> dict:
