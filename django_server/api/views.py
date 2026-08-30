@@ -241,6 +241,17 @@ def plan(request: HttpRequest) -> JsonResponse:
     content = payload.get("content") if isinstance(payload, dict) else None
     if isinstance(content, dict) and not content.get("origin") and content.get("departure_location"):
         content["origin"] = content.pop("departure_location")
+    # 预算必填（8.30 拍板）：缺失/null → 400 要求补全，不静默默认——
+    # 预算参与路线选择（城际降档）与费用核算，缺省会导致"速度快但超支"
+    # 的方案无人拦截。备注解析（LLM）产出的 budget 同样受此校验。
+    if isinstance(content, dict):
+        budget = (content.get("constraints") or {}).get("budget")
+        if budget is None or (isinstance(budget, (int, float)) and not isinstance(budget, bool) and budget < 0):
+            return _error(
+                "缺少总预算（constraints.budget）：预算必填。请提供整趟行程的"
+                "人均总预算（元，含城际交通/住宿/餐饮/门票），例如 3000。",
+                status=400,
+            )
     try:
         timeline_obj = runtime.init_from_requirement(payload)
     except Exception as exc:

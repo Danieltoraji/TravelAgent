@@ -87,7 +87,16 @@ requirement_schema = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "budget": {**nullable_integer, "title": "总预算（元）", "minimum": 0},
+                "budget": {
+                    **nullable_integer,
+                    "title": "总预算（元）",
+                    "minimum": 0,
+                    "description": (
+                        "必填。整趟行程的人均总预算（含城际交通/住宿/餐饮/门票）；"
+                        "null 或缺失视为未提供，由入口层要求补全（预算参与路线"
+                        "选择与费用核算，不能缺省）"
+                    ),
+                },
                 "must_visit": {"type": "array", "items": {"type": "string"}},
                 "required_tags": {"type": "array", "items": {"type": "string"}},
                 "dismissed_tags": {"type": "array", "items":{"type": "string"}},

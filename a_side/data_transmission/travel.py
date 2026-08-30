@@ -29,6 +29,10 @@ from data_transmission.city_travel import (
 
 logger = logging.getLogger("data_transmission.travel")
 
+# 城际预算份额（8.30 预算贯通）：总预算中划给「来去城际交通」的比例——
+# 四项大头（城际/住宿/餐饮/门票）里城际约占 40%；单程上限 = budget × 40% ÷ 2。
+TRANSIT_BUDGET_SHARE = 0.4
+
 # 标准日期：2026-08-21 / 2026/8/21 / 2026年8月21日（必须带 4 位年份）
 _DATE_PATTERN = r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?"
 
@@ -213,6 +217,7 @@ def _resolve_intercity_route(
     options: Dict[Tuple[str, str], Dict[str, Any]],
     priority: Optional[str] = None,
     date_str: str = "",
+    budget_per_leg: Optional[float] = None,
 ) -> Optional[IntercityRoute]:
     """城际路线解析（单段直达 → 空铁候选 → 老 BFS → 直达兜底），返回
     ``IntercityRoute`` 或 None：
@@ -226,6 +231,13 @@ def _resolve_intercity_route(
     3. 候选生成无果 → 老 BFS（估算表邻接 + 段级真源升级）兜底；
     4. 全部无解 → 直达如实给出（如表外 driving 19h；超 12h 的兜底边
        不再参与「软直达优先」基准——它是被迫选项不是优选）。
+
+    ``budget_per_leg``（8.30 预算贯通）：单程人均城际预算上限（由调用方按
+    总预算分摊，如 budget × 40% ÷ 2 程）。提供时**不影响候选排序**（偏好
+    优先），但选中的首选若超预算 → 回落预算内最便宜候选并打 warning；
+    预算内无可行候选 → 维持首选 + warning（速度偏好超支时如实给出而非
+    静默降级，用户可见可改）。注：航段 Day 3 前 cost=0（拓扑无价格），
+    纯航段候选的费用被低估——贯通只对含铁路段的候选精确。
     """
     direct = find_city_travel_preferred(
         origin, destination, options=options, provider=provider, priority=priority
@@ -237,7 +249,18 @@ def _resolve_intercity_route(
     )
     if direct is not None and direct_minutes <= DEFAULT_MAX_TOTAL_MINUTES:
         # I-11：直达判断与总时长都按**完整耗时**（air 含值机缓冲），不按裸运行时长
-        return IntercityRoute((direct,), direct_minutes, direct.cost_per_person)
+        route = IntercityRoute((direct,), direct_minutes, direct.cost_per_person)
+        if (
+            budget_per_leg is not None
+            and route.total_cost > budget_per_leg
+            and route.total_cost > 0
+        ):
+            logger.warning(
+                "城际直达 %s→%s 人均 ¥%.0f 超单程预算 ¥%.0f（速度偏好保持，"
+                "建议用户上调预算或改 cost 偏好）",
+                origin, destination, route.total_cost, budget_per_leg,
+            )
+        return route
 
     # 空铁联运候选（§4.2）：铁路走 provider 的**无预算通道**（候选生成器有
     # 自带的总量纪律 MAX_TRAIN_CALLS=12，与主链路共享 per-mode 预算会互相
@@ -266,6 +289,32 @@ def _resolve_intercity_route(
                 # 候选必须优于「被迫直达」（超 12h 的 driving 之类才有意义
                 # 被替换；直达缺失时任何候选都更好）
                 if direct_minutes is None or best.total_minutes < direct_minutes:
+                    # 预算贯通（8.30）：偏好首选超单程预算 → 回落预算内最便宜
+                    # 候选；预算内无可行 → 维持首选 + warning（不静默降级）。
+                    if (
+                        budget_per_leg is not None
+                        and best.total_cost > budget_per_leg
+                    ):
+                        affordable = [
+                            r for r in candidates
+                            if r.total_cost <= budget_per_leg
+                        ]
+                        if affordable:
+                            cheapest = min(affordable, key=lambda r: r.total_cost)
+                            logger.warning(
+                                "城际 %s→%s 首选（%dmin ¥%.0f）超单程预算 "
+                                "¥%.0f，回落预算内最便宜候选（%dmin ¥%.0f）",
+                                origin, destination, best.total_minutes,
+                                best.total_cost, budget_per_leg,
+                                cheapest.total_minutes, cheapest.total_cost,
+                            )
+                            return cheapest
+                        logger.warning(
+                            "城际 %s→%s 全部候选超单程预算 ¥%.0f（最便宜 "
+                            "¥%.0f），维持偏好首选并提示用户",
+                            origin, destination, budget_per_leg,
+                            min(r.total_cost for r in candidates),
+                        )
                     return best
         except Exception as exc:  # noqa: BLE001  候选生成失败不阻断老链路
             logger.warning("空铁候选生成失败，回落老 BFS：%s", exc)
@@ -325,6 +374,16 @@ def build_trip_segments(
     options = load_city_travel_options()
     segments: List[Dict[str, Any]] = []
 
+    # 预算贯通（8.30）：总预算 × 城际份额 ÷ 2 程 = 单程人均城际预算上限。
+    # 份额取 40%（来去程城际是四项大头之一；住/吃/门票占 60%）。缺预算
+    # （兼容旧调用方/测试）→ None 不约束。
+    budget = (content.get("constraints") or {}).get("budget")
+    budget_per_leg = (
+        float(budget) * TRANSIT_BUDGET_SHARE / 2
+        if isinstance(budget, (int, float)) and not isinstance(budget, bool) and budget > 0
+        else None
+    )
+
     def hhmm_to_minutes(text: str) -> Optional[int]:
         try:
             hour, minute = text.split(":", 1)
@@ -363,6 +422,7 @@ def build_trip_segments(
     outbound = _resolve_intercity_route(
         origin, destination, travel_provider, options, priority,
         date_str=(schedule.get("departure_date") or "").strip(),
+        budget_per_leg=budget_per_leg,
     )
     if outbound is not None and schedule.get("departure_date") and schedule.get("departure_time"):
         start = hhmm_to_minutes(schedule["departure_time"])
@@ -380,6 +440,7 @@ def build_trip_segments(
     homeward = _resolve_intercity_route(
         destination, origin, travel_provider, options, priority,
         date_str=(schedule.get("return_date") or "").strip(),
+        budget_per_leg=budget_per_leg,
     )
     if homeward is not None and schedule.get("return_date") and schedule.get("return_time"):
         start = hhmm_to_minutes(schedule["return_time"])

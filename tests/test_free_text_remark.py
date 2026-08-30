@@ -191,3 +191,52 @@ def test_llm_false_include_meal_time_kept(monkeypatch):
     result = views._parse_free_text_requirement(_body("备注内容"))
 
     assert result["content"]["constraints"]["include_meal_time_in_daily_limit"] is False
+
+
+def test_plan_view_rejects_missing_budget(monkeypatch):
+    """预算必填（8.30 拍板）：constraints.budget 缺失/null/负数 → 400 要求补全。"""
+    from django.http import HttpRequest
+    import json as _json
+
+    class _FakeTimeline:
+        days = [{"day": 1}]
+
+    class _FakeRuntime:
+        def __init__(self):
+            self.calls = 0
+
+        def init_from_requirement(self, payload):
+            self.calls += 1  # 正常预算路径才应进规划
+            return type("TL", (), {"days": [{"day": 1}]})()
+
+    fake = _FakeRuntime()
+    monkeypatch.setattr(views, "runtime", fake)
+    monkeypatch.setattr(views, "to_dict", lambda tl: {"days": tl.days})
+
+    def _req(body):
+        req = HttpRequest()
+        req.method = "POST"
+        req._body = _json.dumps(body, ensure_ascii=False).encode("utf-8")
+        return req
+
+    # 正常预算（备注 'x' 不触发 LLM——空备注跳过解析；budget=3000 在 _body 里）
+    base = _body("x")
+    ok = views.plan(_req(base))
+    assert ok.status_code == 200, str(ok.content, "utf-8")
+    assert fake.calls == 1
+    # 缺预算
+    no_budget = _body("x")
+    del no_budget["content"]["constraints"]["budget"]
+    resp = views.plan(_req(no_budget))
+    body_text = _json.loads(resp.content.decode("unicode_escape").encode("latin-1").decode("utf-8"))         if False else _json.loads(resp.content)["error"]
+    assert resp.status_code == 400 and "预算" in body_text
+    # null 预算
+    null_budget = _body("x")
+    null_budget["content"]["constraints"]["budget"] = None
+    resp = views.plan(_req(null_budget))
+    assert resp.status_code == 400
+    # 负数
+    neg_budget = _body("x")
+    neg_budget["content"]["constraints"]["budget"] = -100
+    resp = views.plan(_req(neg_budget))
+    assert resp.status_code == 400
