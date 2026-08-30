@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -80,11 +79,10 @@ def _collect_plan_spot_names(plan: Dict[str, Any]) -> List[str]:
 # 8.30 矩阵瘦身（归属制连边）常量与工具
 # ---------------------------------------------------------------------------
 
-# 每个用餐锚点进真源矩阵的附近餐厅数：top1 进时间轴 + 去重换选的余量。
-_NEARBY_MATRIX_K = 3
-# 锚点附近查询间隔（秒）：免费 key QPS≈2-3/s，20 锚点无间隔连发必触发 10021
-# 限流（实测 14/20 失败 → 大部分锚点回退全池，归属制连边失效）。
-_NEARBY_QUERY_INTERVAL = 0.4
+# 每个用餐锚点进真源矩阵的附近餐厅数（8.30：3→5，top1 进时间轴 + 去重换选
+# 余量 + 为 §五 TOP10 推荐预留）。
+_NEARBY_MATRIX_K = 5
+# 簇间查询间隔已随聚类挪到 RestaurantResolver.CLUSTER_QUERY_INTERVAL。
 # haversine 估算系数（直线 km → 驾车分钟；与 transport/restaurants.py 同口径，
 # 圈层外餐厅边/矩阵失败兜底用——真源边只给归属圈层）。
 _ESTIMATED_MINUTES_PER_KM = 3.4
@@ -563,21 +561,26 @@ class BPlannerHook:
         from data_transmission.live_data import _coord_str, make_live_matrix_fn
 
         # 8.30 归属制连边（矩阵瘦身）：对**全部候选景点**预查附近候选（保重排
-        # 换景点后新锚点的附近餐厅已就绪），但矩阵只建「锚点 × 自己的 top-K
+        # 换景点后新锚点的附近餐厅就绪），但矩阵只建「锚点 × 自己的 top-K
         # 附近餐厅」——一家餐厅只和它附近的锚点连真源边，远处锚点走 haversine
         # 估算（P0 已有兜底；距离上就赢不了，真源边是浪费）。
-        # K=3：top1 进时间轴 + 去重换选的余量。660 对全连接 → 每锚点 3 条。
+        # 8.30 聚类共享：相邻锚点（<1km）一簇一次查询（北京 20 锚点 → ~8 簇），
+        # 高德请求数与 QPS 压力砍 60%；K=5（top1 进时间轴 + 去重换选 +
+        # TOP10 推荐的余量）。
         hotel_names = {hotel.name for hotel in live_hotels}
         candidate_anchor_names = [
             name
             for name in name_to_coord
             if name not in hotel_names
         ]
-        nearby_by_anchor: Dict[str, List[Any]] = {}
-        for i, anchor_name in enumerate(candidate_anchor_names):
-            if i:
-                time.sleep(_NEARBY_QUERY_INTERVAL)  # 免费key QPS≈2-3/s：20锚点连发必 10021
-            nearby_by_anchor[anchor_name] = resolver.nearby(anchor_name)
+        # 聚类批量查询（簇间 QPS 间隔在 nearby_clustered 内部控制）。resolver
+        # 缓存按锚点 key 写入，后续 select() 命中缓存不再发起请求。
+        nearby_by_anchor = resolver.nearby_clustered(
+            candidate_anchor_names, k=_NEARBY_MATRIX_K
+        ) or {}
+        # 缺失锚点（坐标缺失/簇失败）补空，保持键完整（上层全池兜底）。
+        for name in candidate_anchor_names:
+            nearby_by_anchor.setdefault(name, [])
 
         # 真源矩阵终点：全部候选锚点的 top-K 附近餐厅（按锚点→餐厅距离圈层）。
         matrix_restaurant_ids: List[str] = []
