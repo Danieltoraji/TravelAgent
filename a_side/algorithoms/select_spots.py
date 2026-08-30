@@ -32,11 +32,21 @@ def match_name(spot,name):
     if(spot["name"]==name):
         return 1        #1代表相等
     if(name in set(spot["alias"])):     #我们先认为这一层过滤掉所有简称，下一层用来处理长城与八达岭长城这样的包含关系
-        return 1        
+        return 1
     if(fuzz.partial_ratio(name,spot["name"])==100 and fuzz.ratio(name,spot["name"])<=60):
         return 2        #2代表包含
     elif(fuzz.ratio(name,spot["name"])>75):
         return 1
+    # 8.30 demo1 复探：分段命中——「山丹马场」vs「山丹皇家马场景区」ratio 66.7
+    # 差一点不到 75，但 must 名按 2 字以上切点拆两段后两段都连续出现在池名里
+    # （山丹 + 马场），语义上明确是同一景点。仅对长度 ≥4 的 must 名启用，
+    # 两段各 ≥2 字防碎片误命中。
+    if len(name) >= 4:
+        pool_name = spot["name"]
+        for cut in range(2, len(name) - 1):
+            head, tail = name[:cut], name[cut:]
+            if len(tail) >= 2 and head in pool_name and tail in pool_name:
+                return 2
     return 0
 
 def _confirm_conflict_spot(
