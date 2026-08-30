@@ -90,6 +90,37 @@ _CLUSTER_MATRIX_INTERVAL = 0.4
 # 圈层外餐厅边/矩阵失败兜底用——真源边只给归属圈层）。
 _ESTIMATED_MINUTES_PER_KM = 3.4
 
+# 到达日接驳缓冲（方案 A，用户 9.1 拍板）：城际到达后到第一个景点的缓冲分钟。
+# 未来演进为「机场/车站 → 酒店 的转场时长 + 30min」（local 接驳 legs 现为占位）。
+_ARRIVAL_BUFFER_MINUTES = 90
+
+
+def _first_day_start_from_segments(
+    segments: List[Dict[str, Any]],
+    buffer_minutes: int = _ARRIVAL_BUFFER_MINUTES,
+) -> Optional[str]:
+    """城际去程到达时刻 + 接驳缓冲 → 首日起点 ``HH:MM``（无去程段 → None）。
+
+    - 只认 ``type=="transport"`` 且 ``details.kind=="outbound"`` 的段（travel.py
+      make_segment 产出：``end_minutes = 出发时刻 + total_minutes`` 即到达时刻）；
+    - 起点 = ``max(09:00, 到达 + 缓冲)``：到达早于 09:00 仍 09:00 起（景点开门前）；
+    - 罕见超长/跨日联运（到达+缓冲 ≥ 24h）→ 截断次日并保底 09:00（当天不可达，
+      次日从 09:00 起为保守语义，先不细究跨日到达日归属）。
+    """
+    for seg in segments or []:
+        if not isinstance(seg, dict) or seg.get("type") != "transport":
+            continue
+        if (seg.get("details") or {}).get("kind") != "outbound":
+            continue
+        end = seg.get("end_minutes")
+        if not isinstance(end, (int, float)) or end <= 0:
+            continue
+        start = max(9 * 60, int(end) + int(buffer_minutes))
+        if start >= 24 * 60:
+            start = max(9 * 60, start % (24 * 60))
+        return f"{start // 60:02d}:{start % 60:02d}"
+    return None
+
 
 def _haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     """两坐标 (lat, lng) 的球面直线距离（km）。"""
@@ -299,6 +330,7 @@ class BPlannerHook:
         spots: Any,
         travel_time_provider: Any = None,
         restaurants: Any = None,
+        first_day_start_time: Optional[str] = None,
     ) -> Dict[str, Any]:
         if self._planner_fn is not None:
             # 自定义 planner_fn 保持原契约 (requirement, spots)；真源接线由注入方负责
@@ -313,8 +345,14 @@ class BPlannerHook:
                 spots,
                 travel_time_provider=travel_time_provider,
                 restaurants=restaurants,
+                first_day_start_time=first_day_start_time,
             )
-        return plan_multi_day(requirement, spots, restaurants=restaurants)
+        return plan_multi_day(
+            requirement,
+            spots,
+            restaurants=restaurants,
+            first_day_start_time=first_day_start_time,
+        )
 
     def _empty_timeline(self) -> TripTimeline:
         start = _as_date(self.start_date)
@@ -357,17 +395,15 @@ class BPlannerHook:
         }
         return content
 
-    def _attach_trip_segments(self, plan: Dict[str, Any]) -> None:
-        """城际来去程段写入 ``plan["trip_segments"]``（A1 死代码解除，Web 链路接通）。
+    def _build_trip_segments(self) -> List[Dict[str, Any]]:
+        """构建城际来去程段（**一次**查询：demo 候选 → 主链 build_trip_segments）。
 
-        决策顺序（用户 8.28 建议）：**先定城际方式**（``build_trip_segments`` 内
-        本地 options 按 train→air→driving 偏好链，或 live provider 单调用降级），
-        站点/机场对落定后段 details 内预留市内衔接 legs（local 段占位，阶段三用
-        map 真源填充——「再选择 A 到车站 / 车站到 B 的方式」）。
-
-        批次 3（预算 transit）：同时写 ``plan["estimated_transit_cost"]``（= 去程 +
-        返程人均费用之和 × 人数，预算五项的权威来源；replan 时由 replanner 保留，
-        ``_plan_cost_summary`` 优先读它，缺省再从 trip_segments 兜底推导）。
+        - 方案 A（到达日时间轴重叠修复）调用时机改为规划**前**：取去程段
+          ``end_minutes``（城际到达时刻）计算首日起点；规划后仅
+          ``_inject_trip_segments`` 写入——避免重复查询 12306/juhe 消耗额度；
+        - demo 候选链路不读 plan 参数（纯 requirement 驱动，见 demo_candidate.py
+          build_demo_trip_segments），此处传空 plan ``{}`` 安全；
+        - 失败返回 []（不阻断规划），与旧 ``_attach_trip_segments`` 语义一致。
         """
         from data_transmission.travel import build_trip_segments
 
@@ -375,9 +411,6 @@ class BPlannerHook:
         provider = None
         if self._use_live and getattr(self, "_tool_provider", None) is not None:
             # 8.29 真源：组合城际 provider（train 12306 → flight juhe → map 估算兜底）。
-            # train 分支已融合 PR#5 的 train_trip 技能（P2b：站名解析/真票价优先），
-            # 无班次回落 train_ticket 候选版；需 travel_schedule 日期（按去程/返程
-            # 方向自动选）；origin/destination 取自 requirement，用于方向判定。
             from data_transmission.live_data import make_live_intercity_provider
 
             content = self.requirement.get("content") or {}
@@ -387,37 +420,60 @@ class BPlannerHook:
                 origin=(content.get("origin") or "").strip(),
                 destination=(content.get("destination") or "").strip(),
             )
-        # 固定 Demo 场景（锦州→上海）优先走候选链路：有限模板 + 铁路先查 + Top-K
-        # + 换乘校验 → 与 build_trip_segments 同构的输出段（fixture，断网可复现）。
+        # 固定 Demo 场景（锦州→上海）优先走候选链路（fixture，断网可复现）。
         demo_segments: List[Dict[str, Any]] = []
         try:
             from data_transmission.demo_candidate import build_demo_trip_segments
+
             demo_segments = build_demo_trip_segments(
-                plan, self.requirement,
+                {}, self.requirement,
                 tool_provider=getattr(self, "_tool_provider", None),
             )
         except Exception as exc:  # noqa: BLE001  Demo 链路失败 → 回退原链
             logger.warning("demo chain segments failed: %s", exc)
             demo_segments = []
+        if demo_segments:
+            return demo_segments
         try:
-            segments = demo_segments if demo_segments else build_trip_segments(
-                plan, self.requirement, travel_provider=provider
+            return build_trip_segments(
+                {}, self.requirement, travel_provider=provider
             )
         except Exception as exc:  # noqa: BLE001  城际段失败不阻断规划
             logger.warning("build_trip_segments failed: %s", exc)
-            segments = []
-        if segments:
-            plan["trip_segments"] = segments
-            per_person = sum(
-                float((seg.get("details") or {}).get("cost_per_person") or 0.0)
-                for seg in segments
-            )
-            visitor_number = int(
-                plan.get("visitor_number")
-                or (self.requirement.get("content") or {}).get("visitor_number")
-                or 1
-            )
-            plan["estimated_transit_cost"] = round(per_person * visitor_number, 2)
+            return []
+
+    def _inject_trip_segments(
+        self, plan: Dict[str, Any], segments: List[Dict[str, Any]]
+    ) -> None:
+        """规划后把**预构建**的城际段写入 ``plan["trip_segments"]``（不重复查询）。
+
+        批次 3（预算 transit）：同时写 ``plan["estimated_transit_cost"]``（= 去程 +
+        返程人均费用之和 × 人数，预算五项的权威来源；replan 时由 replanner 保留，
+        ``_plan_cost_summary`` 优先读它，缺省再从 trip_segments 兜底推导）。
+        """
+        if not segments:
+            return
+        plan["trip_segments"] = segments
+        per_person = sum(
+            float((seg.get("details") or {}).get("cost_per_person") or 0.0)
+            for seg in segments
+        )
+        visitor_number = int(
+            plan.get("visitor_number")
+            or (self.requirement.get("content") or {}).get("visitor_number")
+            or 1
+        )
+        plan["estimated_transit_cost"] = round(per_person * visitor_number, 2)
+
+    def _attach_trip_segments(self, plan: Dict[str, Any]) -> None:
+        """城际来去程段构建 + 写入（**兼容旧接口**，构建+注入一步完成）。
+
+        生产路径请改用 ``_build_trip_segments()``（规划前一次）+
+        ``_inject_trip_segments(plan, segments)``（规划后只写不重查），
+        避免 live 场景重复查询 12306/juhe。本 wrapper 保留给既有测试/外部调用。
+        """
+        segments = self._build_trip_segments()
+        self._inject_trip_segments(plan, segments)
 
     def _attach_hotels(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         """把住宿安排写入计划（``plan["accommodation"]``，与 main.py 口径一致）。
@@ -483,6 +539,12 @@ class BPlannerHook:
             self.last_data_source = "live_fallback"
             self.last_error = reason
             return timeline
+        # 到达日重叠修复（方案 A）：规划前构建城际段**一次**（不重复查询
+        # 12306/juhe），取去程到达时刻 + 90min 接驳缓冲 → 首日起点；规划后
+        # 仅 ``_inject_trip_segments`` 写入。spots 失败早已回退，此处构建
+        # 只在真源规划路径执行。
+        segments = self._build_trip_segments()
+        first_day_start_time = _first_day_start_from_segments(segments)
         base_matrix: Dict[Tuple[str, str], Tuple[float, int]] = {}
         live_hotels = self._live_hotel_pool()  # 8.29：假池酒店候选（坐标并入矩阵 → 通勤真源）
         try:
@@ -529,13 +591,18 @@ class BPlannerHook:
                     spots,
                     travel_time_provider=self._travel_time_provider,
                     restaurants=None,
+                    first_day_start_time=first_day_start_time,
                 )
                 # 阶段 2：锚点确定后，只对候选景点 × 真源餐厅补增量矩阵再重排
                 plan = self._live_plan_with_restaurants(
-                    plan1, spots, name_to_coord, base_matrix, live_hotels
+                    plan1, spots, name_to_coord, base_matrix, live_hotels,
+                    first_day_start_time=first_day_start_time,
                 )
             else:
-                plan = self._planner(self.requirement, spots)
+                plan = self._planner(
+                    self.requirement, spots,
+                    first_day_start_time=first_day_start_time,
+                )
         except Exception as exc:  # noqa: BLE001
             reason = f"真实数据接入失败，已回退假数据：{exc}"
             timeline = self._run_pipeline(self._spots_provider, None, source="fake")
@@ -552,7 +619,7 @@ class BPlannerHook:
         self._current_plan = plan
         self.last_error = None
         self.last_data_source = "live"
-        self._attach_trip_segments(plan)
+        self._inject_trip_segments(plan, segments)
         self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
             plan,
@@ -570,6 +637,7 @@ class BPlannerHook:
         name_to_coord: Dict[str, str],
         base_matrix: Dict[Tuple[str, str], Tuple[float, int]],
         live_hotels: Sequence[Any],
+        first_day_start_time: Optional[str] = None,
     ) -> Dict[str, Any]:
         """8.30 阶段 2：对「候选景点 × 真源餐厅」补增量矩阵后带餐厅重排。
 
@@ -709,6 +777,7 @@ class BPlannerHook:
                 spots,
                 travel_time_provider=self._travel_time_provider,
                 restaurants=resolver,
+                first_day_start_time=first_day_start_time,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("带餐厅重排失败，降级为无餐厅计划（阶段 1）：%s", exc)
@@ -839,9 +908,16 @@ class BPlannerHook:
             return timeline
 
         # 2) 规划
+        # 到达日重叠修复（方案 A）：规划前构建城际段一次（本地 options 表或不
+        # 联网 provider），取去程到达时刻 + 90min 接驳缓冲 → 首日起点。
+        segments = self._build_trip_segments()
+        first_day_start_time = _first_day_start_from_segments(segments)
         try:
             plan = self._planner(
-                self.requirement, spots, travel_time_provider=travel_time_provider
+                self.requirement,
+                spots,
+                travel_time_provider=travel_time_provider,
+                first_day_start_time=first_day_start_time,
             )
         except Exception as exc:  # noqa: BLE001
             self.last_error = f"规划失败：{exc}"
@@ -857,7 +933,7 @@ class BPlannerHook:
         self._current_plan = plan
         self.last_error = None
         self.last_data_source = source
-        self._attach_trip_segments(plan)
+        self._inject_trip_segments(plan, segments)
         self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
             plan,

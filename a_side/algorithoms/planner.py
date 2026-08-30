@@ -391,6 +391,7 @@ def _plan_multi_day_with_prealloc(
     restaurants,
     repair_hard_constraints: bool,
     min_spots: int,
+    first_day_start_time: Optional[str] = None,
 ) -> Dict[str, Any]:
     """给定必去分天 + 可选预分配池，逐天走完整 plan_one_day 管线并汇总。
 
@@ -427,11 +428,18 @@ def _plan_multi_day_with_prealloc(
         daily_requirement = deepcopy(requirement)
         # 预算为全程约束，每天不单独扣减（汇总时整体检查）。
         daily_requirement["content"]["constraints"]["budget"] = None
+        # 到达日起点覆盖（方案 A）：仅第 1 天用 first_day_start_time（如城际
+        # 到达 + 接驳缓冲），其余天用统一 day_start_time；None → 原行为不变。
+        effective_start = (
+            first_day_start_time
+            if day_index == 1 and first_day_start_time is not None
+            else day_start_time
+        )
         daily_result = plan_one_day(
             daily_requirement,
             daily_candidates,
             graph_dir=graph_dir,
-            day_start_time=day_start_time,
+            day_start_time=effective_start,
             travel_time_provider=provider,
             meal_windows=meal_windows,
             restaurants=restaurants,
@@ -835,6 +843,7 @@ def plan_multi_day(
     candidate_spots: Sequence[Sequence[Spot]],
     graph_dir: Path = DEFAULT_GRAPH_DIR,
     day_start_time: str = "09:00",
+    first_day_start_time: Optional[str] = None,
     travel_time_provider: Optional[TravelTimeProvider] = None,
     meal_windows: Sequence[MealWindow] = DEFAULT_MEAL_WINDOWS,
     restaurants=None,
@@ -850,6 +859,12 @@ def plan_multi_day(
     ``allocator``：可选景点的跨天分配策略（``balanced`` 均匀 / ``greedy`` 逐日优先）。
     ``perturbation``：分配时在可行天里取第 k 个（0=最优）→ 与其它种子配合生成多路线候选。
     ``min_spots``：完整的一天至少排多少个景点（达标路由优先，硬规则透传）。
+
+    ``first_day_start_time``（到达日时间轴重叠修复，方案 A）：可选。仅覆盖
+    **第 1 天执行排程**的起点（如城际到达 + 接驳缓冲），其余天仍用
+    ``day_start_time``；``None`` → 行为与现状完全一致（第 1 天也用
+    ``day_start_time``）。must 分配与可选预分配仍按统一 ``day_start_time``
+    评估（不感知首日压缩），避免波及分配逻辑。
     """
     try:
         day_count = int(requirement["content"]["days"])
@@ -862,6 +877,8 @@ def plan_multi_day(
         raise ValueError("days 必须大于 0")
     if allocator not in {"balanced", "greedy"}:
         raise ValueError(f"未知 allocator：{allocator!r}（可选 balanced / greedy）")
+    if first_day_start_time is not None:
+        _parse_time(first_day_start_time)  # 格式校验，非法直接抛 ValueError
 
     allocation = assign_must_spots_to_days(
         requirement,
@@ -924,6 +941,7 @@ def plan_multi_day(
         restaurants,
         repair_hard_constraints,
         min_spots,
+        first_day_start_time,
     )
     if plan.get("feasible"):
         plan["minimum_required_visit_minutes"] = allocation[
