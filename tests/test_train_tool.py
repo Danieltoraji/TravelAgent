@@ -101,7 +101,7 @@ def fake_response(status=200, url="https://kyfw.12306.cn/otn/leftTicket/init",
 
 
 class TestStations(unittest.TestCase):
-    def test_resolve_by_name(self) -> None:
+    def test_resolve_station_name(self) -> None:
         self.assertEqual(resolve_station("北京南"), "VNP")
 
     def test_resolve_strips_station_suffix(self) -> None:
@@ -113,6 +113,19 @@ class TestStations(unittest.TestCase):
 
     def test_resolve_by_pinyin(self) -> None:
         self.assertEqual(resolve_station("beijingnan"), "VNP")
+
+    def test_resolve_city_name_exact(self) -> None:
+        """城市名（Station.city 字段）直接命中同名主站（8.31 新增）。"""
+        self.assertEqual(resolve_station("贵港"), "GGZ")
+        self.assertEqual(resolve_station("南宁"), "NNZ")
+
+    def test_resolve_province_prefixed_city(self) -> None:
+        """LLM 备注解析出的带省级前缀 origin 可解析（8.31 新增）：
+        「广西贵港」/「广西贵港市」/「贵港市」→ 贵港站 GGZ。"""
+        self.assertEqual(resolve_station("广西贵港"), "GGZ")
+        self.assertEqual(resolve_station("广西贵港市"), "GGZ")
+        self.assertEqual(resolve_station("贵港市"), "GGZ")
+        self.assertEqual(resolve_station("广东广州"), "GZQ")
 
     def test_resolve_empty_raises(self) -> None:
         with self.assertRaises(ValueError):
