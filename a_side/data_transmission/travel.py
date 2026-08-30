@@ -285,37 +285,57 @@ def _resolve_intercity_route(
                 priority=priority,
             )
             if candidates:
-                best = candidates[0]
-                # 候选必须优于「被迫直达」（超 12h 的 driving 之类才有意义
-                # 被替换；直达缺失时任何候选都更好）
-                if direct_minutes is None or best.total_minutes < direct_minutes:
-                    # 预算贯通（8.30）：偏好首选超单程预算 → 回落预算内最便宜
-                    # 候选；预算内无可行 → 维持首选 + warning（不静默降级）。
-                    if (
-                        budget_per_leg is not None
-                        and best.total_cost > budget_per_leg
-                    ):
-                        affordable = [
-                            r for r in candidates
-                            if r.total_cost <= budget_per_leg
-                        ]
-                        if affordable:
-                            cheapest = min(affordable, key=lambda r: r.total_cost)
+                # Day 3 提前（8.30）：top 候选航段 juhe 真价验证——真价覆盖
+                # 拓扑提示、无航班淘汰、故障保持 estimated（额度 ≤4 城市对，
+                # 复用 provider air 分支的 per-mode 预算 ≤6 双重保护）。
+                try:
+                    from data_transmission.intercity_candidates import (
+                        verify_flight_legs,
+                    )
+
+                    candidates = verify_flight_legs(
+                        candidates,
+                        lambda a, b: provider(a, b, mode="air"),
+                    )
+                except Exception as exc:  # noqa: BLE001  验证失败不阻断候选
+                    logger.warning("航段真价验证异常，保持拓扑档：%s", exc)
+                if not candidates:
+                    logger.info(
+                        "联运候选全部被真源证伪，回落老 BFS：%s→%s",
+                        origin, destination,
+                    )
+                else:
+                    best = candidates[0]
+                    # 候选必须优于「被迫直达」（超 12h 的 driving 之类才有意义
+                    # 被替换；直达缺失时任何候选都更好）
+                    if direct_minutes is None or best.total_minutes < direct_minutes:
+                        # 预算贯通（8.30）：偏好首选超单程预算 → 回落预算内最便宜
+                        # 候选；预算内无可行 → 维持首选 + warning（不静默降级）。
+                        if (
+                            budget_per_leg is not None
+                            and best.total_cost > budget_per_leg
+                        ):
+                            affordable = [
+                                r for r in candidates
+                                if r.total_cost <= budget_per_leg
+                            ]
+                            if affordable:
+                                cheapest = min(affordable, key=lambda r: r.total_cost)
+                                logger.warning(
+                                    "城际 %s→%s 首选（%dmin ¥%.0f）超单程预算 "
+                                    "¥%.0f，回落预算内最便宜候选（%dmin ¥%.0f）",
+                                    origin, destination, best.total_minutes,
+                                    best.total_cost, budget_per_leg,
+                                    cheapest.total_minutes, cheapest.total_cost,
+                                )
+                                return cheapest
                             logger.warning(
-                                "城际 %s→%s 首选（%dmin ¥%.0f）超单程预算 "
-                                "¥%.0f，回落预算内最便宜候选（%dmin ¥%.0f）",
-                                origin, destination, best.total_minutes,
-                                best.total_cost, budget_per_leg,
-                                cheapest.total_minutes, cheapest.total_cost,
+                                "城际 %s→%s 全部候选超单程预算 ¥%.0f（最便宜 "
+                                "¥%.0f），维持偏好首选并提示用户",
+                                origin, destination, budget_per_leg,
+                                min(r.total_cost for r in candidates),
                             )
-                            return cheapest
-                        logger.warning(
-                            "城际 %s→%s 全部候选超单程预算 ¥%.0f（最便宜 "
-                            "¥%.0f），维持偏好首选并提示用户",
-                            origin, destination, budget_per_leg,
-                            min(r.total_cost for r in candidates),
-                        )
-                    return best
+                        return best
         except Exception as exc:  # noqa: BLE001  候选生成失败不阻断老链路
             logger.warning("空铁候选生成失败，回落老 BFS：%s", exc)
 

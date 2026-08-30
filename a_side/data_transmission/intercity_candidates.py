@@ -19,6 +19,13 @@
 铁路查询纪律（§3.2/§4.3）：同一 (o, d, date) 只查一次（缓存正负结果）；
 每侧邻居最多 ``MAX_NEIGHBORS`` 个进入铁路查询（拓扑先按班期筛）；总量
 延迟保护 ``MAX_TRAIN_CALLS``。
+
+Day 3 提前（8.30 拍板，用户要求真价提前）：``verify_flight_legs`` 对入围
+候选的**航段城市对**调 juhe（flight_search，付费）拿真实价格/时刻——
+真价覆盖拓扑提示（段升级为 live），无航班/失败保持 estimated 不阻断。
+额度纪律（§4.4）：验证的城市对 ≤ ``MAX_FLIGHT_VERIFIES``（默认 4），
+同对去重缓存；无价航班（ticketPrice=0）如实保持 0（juhe 部分航线无价，
+预算口径注明低估）。
 """
 
 from __future__ import annotations
@@ -160,3 +167,86 @@ def generate_intercity_candidates(
     else:
         candidates.sort(key=lambda r: r.total_minutes)
     return candidates
+
+
+# ---------------------------------------------------------------------------
+# Day 3 提前（8.30）：Top-K 航段真价验证（juhe 付费，额度 ≤4 城市对/规划）
+# ---------------------------------------------------------------------------
+
+# 验证的城市对上限（§4.4 默认 ≤4；去重后计——同一城市对出现在多条候选只查一次）
+MAX_FLIGHT_VERIFIES = 4
+
+
+def verify_flight_legs(
+    routes: List[IntercityRoute],
+    flight_provider: Callable[[str, str], Optional[CityTravelEdge]],
+    top_k: int = 2,
+) -> List[IntercityRoute]:
+    """对前 ``top_k`` 条候选的航段城市对做 juhe 真价验证，返回更新后的列表。
+
+    - 城市对去重缓存 + 总量 ≤ ``MAX_FLIGHT_VERIFIES``（额度纪律 §4.4）；
+    - 真源命中 → 航段替换为真价边（cost/时刻/duration/source=live，
+      全量航班在 ``candidates`` 字段透传），``total_minutes/total_cost`` 重算；
+    - 真源 None → 航段保持 estimated（**不淘汰**：None 语义过载——
+      无航班 / provider 未实现 air 分支 / 额度尽，无法区分，误杀代价大于
+      保留代价；明确证伪淘汰留给 Day 4 接续校验，届时以具体班次空列表
+      为准）；
+    - 查询异常 → 保持 estimated 档（工具故障 ≠ 航段不存在，不误杀）；
+    - 无航段的候选（纯铁路直达）原样返回（零 juhe 消耗）。
+
+    ``flight_provider``：``fn(a, b) -> Optional[CityTravelEdge]``（B 侧组合
+    provider 的 air 分支或 make_live_flight_provider 产物）。
+    """
+    air_cache: Dict[Tuple[str, str], Optional[CityTravelEdge]] = {}
+    verified = 0
+
+    def _air(a: str, b: str) -> Optional[CityTravelEdge]:
+        nonlocal verified
+        key = (a, b)
+        if key in air_cache:
+            return air_cache[key]
+        if verified >= MAX_FLIGHT_VERIFIES:
+            return None  # 额度尽：未验证航段保持 estimated（调用方不淘汰）
+        verified += 1
+        try:
+            edge = flight_provider(a, b)
+        except Exception as exc:  # noqa: BLE001  工具故障不误杀候选
+            logger.warning("航段真价验证失败（%s→%s），保持 estimated：%s", a, b, exc)
+            edge = None
+            air_cache[key] = None
+            return None  # 异常语义：不可判 → 不升级也不淘汰
+        air_cache[key] = edge
+        return edge
+
+    result: List[IntercityRoute] = []
+    for index, route in enumerate(routes):
+        if index >= top_k or not any(e.mode == "air" for e in route.edges):
+            result.append(route)  # top 之外 / 纯铁路：原样
+            continue
+        new_edges: List[CityTravelEdge] = []
+        upgraded = False
+        for edge in route.edges:
+            if edge.mode != "air" or edge.source == "live":
+                new_edges.append(edge)
+                continue
+            live_edge = _air(edge.origin, edge.destination)
+            if live_edge is None:
+                # None 语义过载（无航班/air 分支未实现/额度尽）→ 保持
+                # estimated 不淘汰（误杀代价 > 保留代价，见 docstring）。
+                new_edges.append(edge)
+                continue
+            new_edges.append(live_edge)
+            upgraded = True
+        if upgraded:
+            minutes = 0
+            for e in new_edges:
+                minutes += e.transport_minutes
+                if e.mode == "air":
+                    minutes += AIR_BUFFER_MIN
+            result.append(IntercityRoute(
+                tuple(new_edges), minutes,
+                sum(e.cost_per_person for e in new_edges),
+            ))
+        else:
+            result.append(route)
+    return result
