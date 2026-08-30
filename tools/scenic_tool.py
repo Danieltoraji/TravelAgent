@@ -79,6 +79,9 @@ class ScenicTool(BaseTool):
             },
             "place": {"type": "string", "description": "景点名称，或 search 时为目标城市"},
             "limit": {"type": "integer", "description": "search 返回数量上限（默认 10）"},
+            # 8.30 必去强拉：搜索结果未覆盖的必去景点逐个精确查找入库
+            "ensure_spots": {"type": "array", "items": {"type": "string"},
+                             "description": "必去景点名列表（search 时强拉保障，远郊景点不依赖搜索排名）"},
             # C6：schema 与实现同步（Live _status 用 city 做地理编码限定）
             "city": {"type": "string", "description": "地理编码限定城市（status 时用，默认北京）"},
         },
@@ -162,9 +165,10 @@ class ScenicToolLive(ScenicTool):
         self._client = client
 
     def _run(self, place: str = "", action: str = "status",
-             limit: int = 10, city: str = "北京") -> Any:
+             limit: int = 10, city: str = "北京",
+             ensure_spots: Optional[List[str]] = None) -> Any:
         if action == "search":
-            return self._search_spots(place, limit=limit)
+            return self._search_spots(place, limit=limit, ensure_spots=ensure_spots)
         return self._status(place, city=city)
 
     def _status(self, place: str, city: str = "北京") -> Dict[str, Any]:
@@ -200,7 +204,9 @@ class ScenicToolLive(ScenicTool):
             "open_hours_week": poi.get("opentime_week", ""),
         }
 
-    def _search_spots(self, place: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def _search_spots(
+        self, place: str, limit: int = 10, ensure_spots: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """Live 城市候选池（B5）：搜索「城市+景点」→ 返回 A 侧 spot dict 列表。
 
         - 首次按 ``f"{place} 景点"`` 搜索；空结果回落按城市名搜索；
@@ -208,6 +214,10 @@ class ScenicToolLive(ScenicTool):
           防 QPS）——候选池宽度可随行程天数联动（A 侧传 ``days×5``）；
         - **同名去重**（8.30）：翻页时高德可能返回同名 POI（不同入口/别名），
           按名称去重；``scenic_N`` 的 N 取去重后的全局序号；
+        - **must_visit 强拉**（8.30 demo1 教训）：``ensure_spots`` 里的必去景点
+          若未被搜索结果覆盖（远郊景点排名靠后/关键词召回死角，如山丹马场），
+          逐个按名字精确搜索（带 city 限定）拉回 POI 追加进池——必去是硬
+          约束，不能依赖搜索排名命中。找不到的跳过（上层 warning）；
         - 字段映射：name / location / suggest_duration / opening_time /
           closing_time / price（cost，人均近似）/ tags（type 大类 + tag）/
           rating / alias / address；
@@ -222,14 +232,13 @@ class ScenicToolLive(ScenicTool):
         spots: List[Dict[str, Any]] = []
         seen_keys: set = set()
         index = 0
-        for poi in pois:
+
+        def _append(poi: Dict[str, Any]) -> None:
+            nonlocal index
             name = (poi.get("name") or "").strip() or city
-            # 翻页/粒度去重（8.30）：同名完全重复 + 同地标变体（「天安门-城楼」
-            # /「故宫博物院-午门」是「天安门」/「故宫博物院」的入口/子 POI——
-            # 取「-」前的主干名作 key，主干已见过则丢弃，避免同一地标排两站。
             base_key = name.split("-")[0].strip()
             if name in seen_keys or (len(base_key) >= 2 and base_key in seen_keys):
-                continue
+                return
             seen_keys.add(name)
             if len(base_key) >= 2:
                 seen_keys.add(base_key)
@@ -253,4 +262,38 @@ class ScenicToolLive(ScenicTool):
                 }
             )
             index += 1
+
+        for poi in pois:
+            _append(poi)
+
+        # must_visit 强拉：搜索结果没覆盖的必去景点逐个精确查找（QPS 节流）。
+        if ensure_spots:
+            import time as _time
+
+            for i, must_name in enumerate(ensure_spots):
+                must_name = (must_name or "").strip()
+                if not must_name:
+                    continue
+                covered = any(
+                    must_name in key or key in must_name for key in seen_keys
+                )
+                if covered:
+                    continue
+                if i:
+                    _time.sleep(0.3)  # 免费key QPS≈2-3/s
+                try:
+                    exact = self._client.search_poi(
+                        must_name, city=city, limit=1
+                    )
+                except Exception as exc:  # noqa: BLE001  单个必去找不到不阻断
+                    logger.warning("must_visit 强拉失败 %s: %s", must_name, exc)
+                    continue
+                if exact:
+                    _append(exact[0])
+                    logger.info(
+                        "must_visit 强拉入库: %s → %s（搜索排名未覆盖）",
+                        must_name, exact[0].get("name"),
+                    )
+                else:
+                    logger.warning("must_visit %s 精确搜索无结果，跳过", must_name)
         return spots

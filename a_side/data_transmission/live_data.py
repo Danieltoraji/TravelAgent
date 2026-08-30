@@ -330,10 +330,19 @@ class LiveSpotsSource:
         # B 档（8.25）：缓存最近一次拉取的候选池（含 location），供矩阵构建读坐标
         self.spots: List[Dict[str, Any]] = []
 
-    def __call__(self, city: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def __call__(
+        self,
+        city: str,
+        limit: Optional[int] = None,
+        ensure_spots: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         kwargs: Dict[str, Any] = {"action": "search", "place": city}
         if limit:
             kwargs["limit"] = int(limit)
+        if ensure_spots:
+            kwargs["ensure_spots"] = [
+                str(name) for name in ensure_spots if str(name).strip()
+            ]
         try:
             result = self.tool_provider.call("scenic", **kwargs)
         except Exception as exc:  # noqa: BLE001  工具层网络/参数错误统一转 LiveDataError

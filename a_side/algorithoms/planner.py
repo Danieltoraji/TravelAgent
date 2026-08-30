@@ -298,9 +298,28 @@ def _allocate_optional_spots(
       - ``greedy``：逐个塞给「最早（天数最小）能塞下」的天 → Day1 优先拿高分
         短景点（近似早期的逐日贪心效果）。
     ``perturbation``：可行天里取第 k 个（0=最优，1=次优……）→ 制造变体种子。
+
+    8.30 远郊日保护：含远郊必去（距质心 > 25km，spot_assignment 识别）的
+    天不接收市区可选景点——远郊日的时间预算应留给往返通勤，市区景点硬塞
+    会挤爆当日限额或制造「远郊+市区折返跑」。
     """
     day_count = len(mandatory_routes)
     prealloc: List[List[Spot]] = [[] for _ in range(day_count)]
+
+    # 远郊日识别：当天任一必去景点被 _remote_groups 判为远郊 → 整天保护。
+    from algorithoms.spot_assignment import _remote_groups
+
+    all_must = {
+        _spot_key(spot): spot
+        for route in mandatory_routes
+        for spot in route
+    }
+    remote_cluster_of, _ = _remote_groups(all_must)
+    remote_day_indexes = {
+        index
+        for index, route in enumerate(mandatory_routes)
+        if any(_spot_key(spot) in remote_cluster_of for spot in route)
+    }
 
     def day_elapsed(index: int, extra: Optional[Spot] = None) -> Optional[int]:
         """排程后的计入时长；若插入后出现超闭馆景点则返回 None（不可塞入）。"""
@@ -344,7 +363,8 @@ def _allocate_optional_spots(
         feasible = [
             index
             for index in range(day_count)
-            if (elapsed := day_elapsed(index, spot)) is not None
+            if index not in remote_day_indexes  # 远郊日不塞市区可选
+            and (elapsed := day_elapsed(index, spot)) is not None
             and elapsed <= daily_limit
         ]
         if not feasible:

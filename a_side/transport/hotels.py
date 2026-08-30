@@ -33,8 +33,11 @@ except ModuleNotFoundError:
     from ..data_transmission.city_graph import DEFAULT_GRAPH_DIR, match_city_spots
     from ..data_transmission.hotel import Hotel, load_hotels
 
-# 换宿阈值（分钟）：常驻酒店 → 当日首景点超此值才允许换宿
-MAX_SINGLE_HOTEL_COMMUTE = 120
+# 换宿阈值（分钟）：常驻酒店 → 当日首景点超此值才允许换宿。
+# 8.30 调整 120→60：地级市远郊场景（demo1 张掖）市区→七彩丹霞 ~50min、
+# →山丹马场 ~75min，在旧 120 阈值下永不触发换宿；60 让「丹霞日住临泽、
+# 马场日住山丹」可行（用户拍板：两小时对地级市内通勤太长）。
+MAX_SINGLE_HOTEL_COMMUTE = 60
 # 换宿目标阈值（分钟）：换宿酒店的当日通勤必须 ≤ 此值（半阈值）——
 # 若换宿后通勤仍很长（如所有酒店离该景点都 200+ 分钟），换宿收益不足以
 # 抵消换宿代价，维持常驻。

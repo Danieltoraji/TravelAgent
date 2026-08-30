@@ -239,9 +239,13 @@ class BPlannerHook:
                 from algorithoms.select_spots import select_spots
 
                 # select_spots 的 spots_provider 是 fn(city) 单参：这里用闭包
-                # 注入天数联动的 limit（LiveSpotsSource.__call__ 支持 limit=）。
+                # 注入天数联动的 limit + 必去景点强拉名单（LiveSpotsSource 支持）。
                 def _source_with_limit(city: str):
-                    return live_source(city, limit=self._pool_days_limit())
+                    return live_source(
+                        city,
+                        limit=self._pool_days_limit(),
+                        ensure_spots=self._must_visit_names(),
+                    )
 
                 return select_spots(
                     self.requirement,
@@ -267,6 +271,25 @@ class BPlannerHook:
         except (TypeError, ValueError):
             days = 2
         return max(10, days * 5)
+
+    def _must_visit_names(self) -> List[str]:
+        """必去景点名（constraints + preferences 两处取并集，去重保序）。
+
+        传给 B 侧 scenic 工具的 ``ensure_spots``：搜索结果未覆盖的必去景点
+        逐个精确查找强拉入库（demo1 教训：七彩丹霞排名 38、山丹马场关键词
+        召回死角——必去是硬约束，不依赖搜索排名）。
+        """
+        content = self.requirement.get("content") or {}
+        names: List[str] = []
+        for holder in (
+            (content.get("constraints") or {}).get("must_visit"),
+            (content.get("preferences") or {}).get("must_visit"),
+        ):
+            for name in holder or []:
+                name = str(name).strip()
+                if name and name not in names:
+                    names.append(name)
+        return names
 
     # -- 内部 --------------------------------------------------------------
 
@@ -471,7 +494,9 @@ class BPlannerHook:
                 # 坐标直连（B 侧跳过地理编码）：消灭 QPS 突刺（10021）与怪名 POI
                 # 编码失败（30001）；矩阵构建失败与规划失败同走回退假源。
                 source_spots = self._live_spots_source.spots or self._live_spots_source(
-                    self.city, limit=max(10, self._pool_days_limit())
+                    self.city,
+                    limit=max(10, self._pool_days_limit()),
+                    ensure_spots=self._must_visit_names(),
                 )
                 name_to_coord = {
                     spot["name"]: coord
