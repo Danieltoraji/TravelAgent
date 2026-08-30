@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -82,6 +83,8 @@ def _collect_plan_spot_names(plan: Dict[str, Any]) -> List[str]:
 # 每个用餐锚点进真源矩阵的附近餐厅数（8.30：3→5，top1 进时间轴 + 去重换选
 # 余量 + 为 §五 TOP10 推荐预留）。
 _NEARBY_MATRIX_K = 5
+# 按簇拆矩阵的簇间间隔（秒）：免费 key QPS≈2-3/s（与聚类查询节流同节奏）。
+_CLUSTER_MATRIX_INTERVAL = 0.4
 # 簇间查询间隔已随聚类挪到 RestaurantResolver.CLUSTER_QUERY_INTERVAL。
 # haversine 估算系数（直线 km → 驾车分钟；与 transport/restaurants.py 同口径，
 # 圈层外餐厅边/矩阵失败兜底用——真源边只给归属圈层）。
@@ -560,13 +563,13 @@ class BPlannerHook:
             return plan1
         from data_transmission.live_data import _coord_str, make_live_matrix_fn
 
-        # 8.30 归属制连边（矩阵瘦身）：对**全部候选景点**预查附近候选（保重排
-        # 换景点后新锚点的附近餐厅就绪），但矩阵只建「锚点 × 自己的 top-K
-        # 附近餐厅」——一家餐厅只和它附近的锚点连真源边，远处锚点走 haversine
-        # 估算（P0 已有兜底；距离上就赢不了，真源边是浪费）。
-        # 8.30 聚类共享：相邻锚点（<1km）一簇一次查询（北京 20 锚点 → ~8 簇），
-        # 高德请求数与 QPS 压力砍 60%；K=5（top1 进时间轴 + 去重换选 +
-        # TOP10 推荐的余量）。
+        # 8.30 聚类共享 + 按簇拆矩阵（方案一）：相邻锚点（<1km）一簇一次附近
+        # 查询（北京 20 锚点 → ~8 簇，请求数砍 60%）；真源矩阵也随之按簇拆——
+        # 每簇只查「簇内锚点 × 簇归属餐厅」的小矩阵（簇查询返回的全量候选），
+        # 彻底消灭跨簇死对（天坛锚点 × 景山餐厅这类物理上选不到的组合）。
+        # 单次大矩阵 20×56=1120 对 → ~8 簇 × 20~30 对 ≈ 200 对（-82%）。
+        # 跨簇对/圈层外餐厅按 haversine 估算边预填（P0 教训：缺边累计降级会
+        # 整链回退假源）。K=5（top1 进时间轴 + 去重换选 + TOP10 推荐余量）。
         hotel_names = {hotel.name for hotel in live_hotels}
         candidate_anchor_names = [
             name
@@ -575,64 +578,65 @@ class BPlannerHook:
         ]
         # 聚类批量查询（簇间 QPS 间隔在 nearby_clustered 内部控制）。resolver
         # 缓存按锚点 key 写入，后续 select() 命中缓存不再发起请求。
-        nearby_by_anchor = resolver.nearby_clustered(
+        nearby_by_anchor, clusters = resolver.nearby_clustered(
             candidate_anchor_names, k=_NEARBY_MATRIX_K
-        ) or {}
+        )
+        nearby_by_anchor = nearby_by_anchor or {}
         # 缺失锚点（坐标缺失/簇失败）补空，保持键完整（上层全池兜底）。
         for name in candidate_anchor_names:
             nearby_by_anchor.setdefault(name, [])
 
-        # 真源矩阵终点：全部候选锚点的 top-K 附近餐厅（按锚点→餐厅距离圈层）。
-        matrix_restaurant_ids: List[str] = []
-        seen_ids = set()
-        for anchor_name in candidate_anchor_names:
-            for restaurant in nearby_by_anchor.get(anchor_name, [])[:_NEARBY_MATRIX_K]:
-                if restaurant.id not in seen_ids:
-                    seen_ids.add(restaurant.id)
-                    matrix_restaurant_ids.append(restaurant.id)
+        # 全部已知餐厅（全池 ∪ 各簇候选）的坐标注册：矩阵名单内用真源边，
+        # 跨簇/圈层外用估算边——两者都要能被 provider 查到坐标。
         all_restaurants = {
             restaurant.id: restaurant for restaurant in resolver.restaurants
         }
-        for restaurants in nearby_by_anchor.values():
-            for restaurant in restaurants:
+        for cluster in clusters:
+            for restaurant in cluster.get("restaurants", []):
                 all_restaurants.setdefault(restaurant.id, restaurant)
 
-        rest_coords: Dict[str, str] = {}
-        for rid in matrix_restaurant_ids:
-            restaurant = all_restaurants[rid]
-            coord = _coord_str(
-                {"lat": restaurant.location[0], "lng": restaurant.location[1]}
-            )
-            if coord and restaurant.name not in rest_coords:
-                rest_coords[restaurant.name] = coord
-        # 全部候选景点作起点（排除酒店与餐厅；酒店↔餐厅无需边，酒店↔景点在矩阵1）
-        origin_names = [
-            name
-            for name in name_to_coord
-            if name not in hotel_names and name not in rest_coords
-        ]
+        # 按簇拆矩阵：每簇一次「簇内锚点 × 簇归属餐厅」的 batch_route 小矩阵。
+        # 簇间复用 nearby 查询已有的节流节奏（查询与矩阵交错更平滑）；单簇
+        # 矩阵失败 → 该簇走估算边，不影响其它簇。
+        matrix_fn = make_live_matrix_fn(self._tool_provider, city=self.city)
         matrix2: Dict[Tuple[str, str], Tuple[float, int]] = {}
-        if origin_names and rest_coords:
-            try:
-                matrix2 = make_live_matrix_fn(self._tool_provider, city=self.city)(
-                    {**name_to_coord, **rest_coords},
-                    origins=origin_names,
-                    destinations=list(rest_coords),
+        for i, cluster in enumerate(clusters):
+            members = [m for m in cluster.get("members", []) if m in name_to_coord]
+            cluster_restaurants = [
+                r for r in cluster.get("restaurants", []) if r.location
+            ]
+            if not members or not cluster_restaurants:
+                continue
+            cluster_rest_coords = {}
+            for restaurant in cluster_restaurants:
+                coord = _coord_str(
+                    {"lat": restaurant.location[0], "lng": restaurant.location[1]}
                 )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("真源餐厅增量矩阵失败，用估算边继续（不阻断）：%s", exc)
-                matrix2 = {}
-        # 合并两阶段矩阵 + **估算边兜底**：锚点→餐厅的真源边缺失时（圈层外/
-        # 矩阵失败），按 haversine 预填——规划器查任何餐厅边都有值，不会触发
-        # provider 缺边降级计数（连续超限会整链回退假源，P0 的教训）。
+                if coord and restaurant.name not in cluster_rest_coords:
+                    cluster_rest_coords[restaurant.name] = coord
+            if not cluster_rest_coords:
+                continue
+            if i:
+                time.sleep(_CLUSTER_MATRIX_INTERVAL)
+            try:
+                sub_matrix = matrix_fn(
+                    {**name_to_coord, **cluster_rest_coords},
+                    origins=members,
+                    destinations=list(cluster_rest_coords),
+                )
+            except Exception as exc:  # noqa: BLE001  单簇失败走估算边，不阻断
+                logger.warning("簇矩阵失败（members=%s），该簇走估算边：%s", members, exc)
+                continue
+            matrix2.update(sub_matrix)
+
+        # 合并两阶段矩阵 + **估算边兜底**：真源矩阵没覆盖到的锚点→餐厅对
+        # （跨簇对/圈层外/簇失败），按 haversine 预填——规划器查任何餐厅边
+        # 都有值，不触发 provider 缺边降级计数（P0 教训）。
         merged = dict(base_matrix)
         for (origin_coord, dest_coord), value in matrix2.items():
             merged[(origin_coord, dest_coord)] = value
             merged[(dest_coord, origin_coord)] = value
         merged_n2c = dict(name_to_coord)
-        merged_n2c.update(rest_coords)
-        # 全部已知餐厅（全池 ∪ 各锚点附近）的坐标都进 n2c 映射：矩阵名单内
-        # 用真源边，圈层外餐厅用估算边——两者都要能被 provider 查到坐标。
         for restaurant in all_restaurants.values():
             coord = _coord_str(
                 {"lat": restaurant.location[0], "lng": restaurant.location[1]}

@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
     from data_transmission.city_graph import DEFAULT_GRAPH_DIR
@@ -229,20 +229,26 @@ class RestaurantResolver:
 
     def nearby_clustered(
         self, anchor_ids: Sequence[str], k: int = 10
-    ) -> Dict[str, List[Restaurant]]:
-        """聚类共享的批量附近查询：``{anchor_key: 按距离排好的候选列表}``。
+    ) -> Tuple[Dict[str, List[Restaurant]], List[Dict[str, Any]]]:
+        """聚类共享的批量附近查询。
 
         相邻锚点（< ``CLUSTER_RADIUS_KM``）贪心聚簇 → 每簇以**质心**发一次
         ``nearby_pool``（radius 覆盖「簇半径 + 搜索半径」，默认搜索半径按
         nearby_pool 的 2km 口径）→ 簇内每个锚点拿簇结果按**自身坐标**
         haversine 重排，取前 ``k``。
 
+        返回 ``(anchor_results, clusters)``：
+        - ``anchor_results``：``{anchor_key: 按距离排好的 top-k 候选}``；
+        - ``clusters``：``[{"members": [anchor_key...], "restaurants": [簇查询
+          全量候选（25 家，未截断）]}]``——供上层按簇拆矩阵（簇内锚点 ×
+          簇归属餐厅的小矩阵，消灭跨簇死对）。
+
         收益（实测北京 20 锚点 → ~8 簇）：高德请求数砍 60%，QPS 压力与
         节流等待同步下降；簇内锚点本就共享同一片餐厅，结果近乎无损。
-        单锚点失败不影响其它簇；簇查询失败 → 该簇锚点拿空列表（上层全池兜底）。
+        单簇失败不影响其它簇；簇查询失败 → 该簇锚点拿空列表（上层全池兜底）。
         """
         if self._nearby_pool is None:
-            return {}
+            return {}, []
 
         # 锚点 key → 坐标（缺坐标的锚点不参与聚类，单独不查——上层兜底）。
         keyed: Dict[str, Tuple[float, float]] = {}
@@ -253,9 +259,9 @@ class RestaurantResolver:
                 keyed[key] = coord
 
         # 贪心聚簇：与簇内任一锚点距离 < 阈值即并入（简单/无需预设簇数）。
-        clusters: List[List[str]] = []
+        cluster_keys: List[List[str]] = []
         for key, coord in keyed.items():
-            for cluster in clusters:
+            for cluster in cluster_keys:
                 if any(
                     _haversine_km(coord, keyed[member]) < self.CLUSTER_RADIUS_KM
                     for member in cluster
@@ -263,11 +269,12 @@ class RestaurantResolver:
                     cluster.append(key)
                     break
             else:
-                clusters.append([key])
+                cluster_keys.append([key])
 
         # 每簇一次查询（质心 + 扩大 radius 覆盖簇内全部锚点的 2km 圈），簇间节流。
-        cluster_results: Dict[str, List[Restaurant]] = {}
-        for i, cluster in enumerate(clusters):
+        anchor_results: Dict[str, List[Restaurant]] = {}
+        clusters: List[Dict[str, Any]] = []
+        for i, cluster in enumerate(cluster_keys):
             if i:
                 time.sleep(self.CLUSTER_QUERY_INTERVAL)
             members = {key: keyed[key] for key in cluster}
@@ -292,9 +299,10 @@ class RestaurantResolver:
                 ranked = sorted(
                     candidates, key=lambda r: _haversine_km(coord, r.location)
                 )[:k]
-                cluster_results[key] = ranked
+                anchor_results[key] = ranked
                 self._nearby_cache[key] = ranked
-        return cluster_results
+            clusters.append({"members": list(members), "restaurants": candidates})
+        return anchor_results, clusters
 
     def _candidates_for(self, anchor_spot_id: str) -> List[Restaurant]:
         """select 的候选集：附近模式取锚点附近候选，失败/空 → 全池兜底。"""
