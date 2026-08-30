@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -81,6 +82,9 @@ def _collect_plan_spot_names(plan: Dict[str, Any]) -> List[str]:
 
 # 每个用餐锚点进真源矩阵的附近餐厅数：top1 进时间轴 + 去重换选的余量。
 _NEARBY_MATRIX_K = 3
+# 锚点附近查询间隔（秒）：免费 key QPS≈2-3/s，20 锚点无间隔连发必触发 10021
+# 限流（实测 14/20 失败 → 大部分锚点回退全池，归属制连边失效）。
+_NEARBY_QUERY_INTERVAL = 0.4
 # haversine 估算系数（直线 km → 驾车分钟；与 transport/restaurants.py 同口径，
 # 圈层外餐厅边/矩阵失败兜底用——真源边只给归属圈层）。
 _ESTIMATED_MINUTES_PER_KM = 3.4
@@ -570,7 +574,9 @@ class BPlannerHook:
             if name not in hotel_names
         ]
         nearby_by_anchor: Dict[str, List[Any]] = {}
-        for anchor_name in candidate_anchor_names:
+        for i, anchor_name in enumerate(candidate_anchor_names):
+            if i:
+                time.sleep(_NEARBY_QUERY_INTERVAL)  # 免费key QPS≈2-3/s：20锚点连发必 10021
             nearby_by_anchor[anchor_name] = resolver.nearby(anchor_name)
 
         # 真源矩阵终点：全部候选锚点的 top-K 附近餐厅（按锚点→餐厅距离圈层）。
