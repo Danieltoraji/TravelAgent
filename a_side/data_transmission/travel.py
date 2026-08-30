@@ -239,18 +239,26 @@ def _resolve_intercity_route(
         # I-11：直达判断与总时长都按**完整耗时**（air 含值机缓冲），不按裸运行时长
         return IntercityRoute((direct,), direct_minutes, direct.cost_per_person)
 
-    # 空铁联运候选（§4.2）：铁路走 provider 的 train 分支（免费真源），
-    # 航段走 air_routes 拓扑（班期按 date_str 过滤）。
+    # 空铁联运候选（§4.2）：铁路走 provider 的**无预算通道**（候选生成器有
+    # 自带的总量纪律 MAX_TRAIN_CALLS=12，与主链路共享 per-mode 预算会互相
+    # 饿死——8.30 demo1 返程实测：去程邻居查询吃光 train 预算，返程 train
+    # 级全跳过只剩 flight 0 条 → 退化 driving）。旧 provider 无此通道时
+    # 回退 mode='train' 通道（兼容纯 Mock 测试）。
     if provider is not None:
         try:
             from data_transmission.intercity_candidates import (
                 generate_intercity_candidates,
             )
 
+            unbudgeted = getattr(provider, "train_edge_unbudgeted", None)
+            if callable(unbudgeted) and date_str:
+                train_query = lambda a, b: unbudgeted(a, b, date_str)  # noqa: E731
+            else:
+                train_query = lambda a, b: provider(a, b, mode="train")  # noqa: E731
             candidates = generate_intercity_candidates(
                 origin, destination,
                 date_str=date_str,
-                train_provider=lambda a, b: provider(a, b, mode="train"),
+                train_provider=train_query,
                 priority=priority,
             )
             if candidates:

@@ -1084,6 +1084,31 @@ def make_live_intercity_provider(
 
     map_provider = make_live_city_travel_provider(tool_provider, mode="train")
 
+    # 候选生成通道：绕过 per-mode 预算（候选生成器有自己的总量纪律）。
+    raw_tool_provider = tool_provider._inner
+
+    def train_edge_unbudgeted(o: str, d: str, date_str: str = "") -> Optional[CityTravelEdge]:
+        """预算外铁路查询（空铁候选生成器专用）。
+
+        候选生成器有自己的总量纪律（MAX_TRAIN_CALLS=12 + 同对缓存），不应与
+        主链路（直达/BFS）共享 per-mode 预算——共享时去程邻居查询会吃光
+        train_trip/train_ticket 各 6 次预算，返程方向 train 级直接跳过、
+        只剩 flight 0 条 → 退化 driving（8.30 demo1 返程实测双杀）。
+        """
+        try:
+            edge = make_live_train_trip_provider(raw_tool_provider, date_str)(
+                o, d, mode="train"
+            )
+            if edge is None:
+                edge = make_live_train_provider(raw_tool_provider, date_str)(
+                    o, d, mode="train"
+                )
+            if edge is not None and edge.mode in ("train", "rail"):
+                return edge
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
     def intercity_provider(
         o: str, d: str, *, mode: Optional[str] = None
     ) -> Optional[CityTravelEdge]:
@@ -1116,6 +1141,10 @@ def make_live_intercity_provider(
                     return edge
         return map_provider(o, d, mode=mode or "train")
 
+    # 候选生成器专用通道（属性挂载，调用方按需取用）：无 per-mode 预算的铁路
+    # 查询。候选生成器内部有自己的总量纪律（MAX_TRAIN_CALLS=12 + 同对缓存），
+    # 与主链路共享预算会互相饿死（8.30 demo1 返程实测）。
+    intercity_provider.train_edge_unbudgeted = train_edge_unbudgeted
     return intercity_provider
 
 
