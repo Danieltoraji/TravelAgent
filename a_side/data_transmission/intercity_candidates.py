@@ -20,6 +20,14 @@
 每侧邻居最多 ``MAX_NEIGHBORS`` 个进入铁路查询（拓扑先按班期筛）；总量
 延迟保护 ``MAX_TRAIN_CALLS``。
 
+类型 C/D 的邻居枚举上限与铁路预算（8.31 贵港→北京 修复）：北京类枢纽的
+``AirIn`` 邻居达 33 个，南宁这类「小城坐高铁 44min 即可达」的邻居排位靠后
+（第 17 位）会被旧 ``MAX_NEIGHBORS=10`` 直接截断；且前序无车邻居会吃掉
+``MAX_TRAIN_CALLS=12`` 预算，轮到南宁时已无查询额度 → 贵港→北京 候选
+恒为空、退化自驾 33h。修复：邻居上限与铁路预算同步放宽到 24，且类型 C/D
+改为**先收集铁路命中邻居、按铁路时长升序生成候选**（铁路可达优先：
+贵港→南宁 44min 必然排在无车邻居之前出链，枢纽场景受益）。
+
 Day 3 提前（8.30 拍板，用户要求真价提前）：``verify_flight_legs`` 对入围
 候选的**航段城市对**调 juhe（flight_search，付费）拿真实价格/时刻——
 真价覆盖拓扑提示（段升级为 live），无航班/失败保持 estimated 不阻断。
@@ -33,7 +41,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from data_transmission.air_routes import AirRoutes, load_air_routes
+from data_transmission.air_routes import AirRouteHint, AirRoutes, load_air_routes
 from data_transmission.city_travel import (
     AIR_BUFFER_MIN,
     DEFAULT_MAX_TOTAL_MINUTES,
@@ -43,10 +51,11 @@ from data_transmission.city_travel import (
 
 logger = logging.getLogger("data_transmission.intercity_candidates")
 
-# 每侧进入铁路查询的航空邻居上限（§4.3：每侧 10~20，取下限保守）
-MAX_NEIGHBORS = 10
-# 单次候选生成的铁路查询总量保护（延迟口径，§4.3）
-MAX_TRAIN_CALLS = 12
+# 每侧进入铁路查询的航空邻居上限（§4.3 每侧 10~20；8.31 贵港→北京 起
+# 放宽到 24——北京类枢纽 AirIn 邻居 33 个，南宁排第 17，旧 10 直接截断）
+MAX_NEIGHBORS = 24
+# 单次候选生成的铁路查询总量保护（延迟口径，§4.3；12→24 见 docstring 修复说明）
+MAX_TRAIN_CALLS = 24
 # 班期/有效期外的邻居直接跳过（§4.3 先按班期筛）
 
 
@@ -137,7 +146,11 @@ def generate_intercity_candidates(
     if direct_train is not None:
         _add((direct_train,))
 
-    # 类型 C：飞机→火车  AirOut(O) 的每个邻居 C 查 Train(C, D)
+    # 类型 C：飞机→火车  AirOut(O) 的每个邻居 C 查 Train(C, D)。
+    # 8.31 修复（铁路可达优先）：先把邻居查过铁路的命中（tail 非 None）收集
+    # 起来，按铁路时长升序生成候选——「C 坐高铁多久能到 D」决定出链顺序，
+    # 让可达优先的邻居尽早进入候选，枢纽长尾邻居不再靠数据文件顺序排位。
+    rail_hits_c: List[Tuple[int, CityTravelEdge, AirRouteHint]] = []
     for city in routes.out_cities(origin, date_str)[:MAX_NEIGHBORS]:
         if city == destination:
             continue
@@ -145,11 +158,16 @@ def generate_intercity_candidates(
         if tail is None:
             continue  # 铁路过滤不通过 → 候选不成立（§4.2 类型 C 纪律）
         hint = routes.hint(origin, city, date_str)
-        if hint is None:
-            continue
+        if hint is not None:
+            rail_hits_c.append((tail.transport_minutes, tail, hint))
+    for _mins, tail, hint in sorted(rail_hits_c, key=lambda x: x[0]):
         _add((_air_edge(hint), tail))
 
-    # 类型 D：火车→飞机  AirIn(D) 的每个邻居 C 查 Train(O, C)
+    # 类型 D：火车→飞机  AirIn(D) 的每个邻居 C 查 Train(O, C)。
+    # 同样铁路可达优先（8.31 贵港→北京 修复核心）：贵港→南宁 高铁 44min
+    # 这类「小城 → 就近枢纽」的邻居即使排位靠后（北京 AirIn 第 17 位）也
+    # 会因铁路命中而排前出链；无车邻居不参与候选。
+    rail_hits_d: List[Tuple[int, CityTravelEdge, AirRouteHint]] = []
     for city in routes.in_cities(destination, date_str)[:MAX_NEIGHBORS]:
         if city == origin or city == destination:
             continue
@@ -157,8 +175,9 @@ def generate_intercity_candidates(
         if head is None:
             continue
         hint = routes.hint(city, destination, date_str)
-        if hint is None:
-            continue
+        if hint is not None:
+            rail_hits_d.append((head.transport_minutes, head, hint))
+    for _mins, head, hint in sorted(rail_hits_d, key=lambda x: x[0]):
         _add((head, _air_edge(hint)))
 
     # 排序：cost 口径按总费用（无价格航段的候选排后），其余按总时长
@@ -191,6 +210,11 @@ def verify_flight_legs(
       无航班 / provider 未实现 air 分支 / 额度尽，无法区分，误杀代价大于
       保留代价；明确证伪淘汰留给 Day 4 接续校验，届时以具体班次空列表
       为准）；
+    - **回落边防护（8.31 贵港→北京 实测）**：B 侧组合 provider 的 air
+      分支在 flight 查询无果时回落 map **估算边**（mode != "air"，如
+      driving 1389m）——那不是航段真价，若替换会把 292m 联运链降级成
+      1431m driving。非 air 的返回值一律视为「未命中」，保持 estimated
+      不升级不淘汰；
     - 查询异常 → 保持 estimated 档（工具故障 ≠ 航段不存在，不误杀）；
     - 无航段的候选（纯铁路直达）原样返回（零 juhe 消耗）。
 
@@ -230,9 +254,11 @@ def verify_flight_legs(
                 new_edges.append(edge)
                 continue
             live_edge = _air(edge.origin, edge.destination)
-            if live_edge is None:
-                # None 语义过载（无航班/air 分支未实现/额度尽）→ 保持
-                # estimated 不淘汰（误杀代价 > 保留代价，见 docstring）。
+            if live_edge is None or live_edge.mode != "air":
+                # None 语义过载 + 回落边防护（8.31 贵港→北京）：B 侧组合
+                # provider 的 air 分支在 flight 无果时会回落 map 估算边
+                # （mode != "air"，driving 1389m）——不是航段真价，保持
+                # estimated 不升级不淘汰（误杀/降级代价 > 保留代价）。
                 new_edges.append(edge)
                 continue
             new_edges.append(live_edge)

@@ -1087,14 +1087,31 @@ def make_live_intercity_provider(
     # 候选生成通道：绕过 per-mode 预算（候选生成器有自己的总量纪律）。
     raw_tool_provider = tool_provider._inner
 
+    # 真源节律守卫（8.31 贵港→北京 实测）：候选生成器对 AirIn(北京) 24 个
+    # 邻居连续查询（含 train_trip + train_ticket 双通道、失败 4 次重试退避），
+    # 无间隔连发会触发 12306 限流风暴（Remote end closed）→ 整批候选全 None
+    # → 候选生成 0 条 → 回落老 BFS driving（贵港→南宁→北京 应 292m 却 1432m）。
+    # 按 AGENTS.md「免费 key 查询循环加 0.3~0.4s 间隔」纪律，相邻真源查询
+    # 间隔 ≥0.35s（跨 provider 实例共享，去程/返程同一次生成共用）。
+    _last_train_query_at = [0.0]
+
+    def _train_query_pace() -> None:
+        now = time.monotonic()
+        wait = 0.35 - (now - _last_train_query_at[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_train_query_at[0] = time.monotonic()
+
     def train_edge_unbudgeted(o: str, d: str, date_str: str = "") -> Optional[CityTravelEdge]:
         """预算外铁路查询（空铁候选生成器专用）。
 
-        候选生成器有自己的总量纪律（MAX_TRAIN_CALLS=12 + 同对缓存），不应与
-        主链路（直达/BFS）共享 per-mode 预算——共享时去程邻居查询会吃光
-        train_trip/train_ticket 各 6 次预算，返程方向 train 级直接跳过、
+        候选生成器有自己的总量纪律（MAX_TRAIN_CALLS=24 + 同对缓存，8.31
+        由 12 放宽——北京类枢纽 AirIn 33 城、南宁排第 17 位，旧 12 会截断），
+        不应与主链路（直达/BFS）共享 per-mode 预算——共享时去程邻居查询会
+        吃光 train_trip/train_ticket 各 6 次预算，返程方向 train 级直接跳过、
         只剩 flight 0 条 → 退化 driving（8.30 demo1 返程实测双杀）。
         """
+        _train_query_pace()
         try:
             edge = make_live_train_trip_provider(raw_tool_provider, date_str)(
                 o, d, mode="train"
