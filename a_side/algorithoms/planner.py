@@ -439,21 +439,32 @@ def _plan_multi_day_with_prealloc(
         # 末日窗口（9.2 两段式完整化）：返程日可用时长 = min(每日时长, 截止−起点)。
         # 把末日 daily_limit 缩短即等价——单日管线（knapsack/fit/refill/fine-tune）
         # 全以 daily_limit 为时长预算、事件流从起点连续推进（结束 ≈ 起点 + elapsed
-        # ≤ 起点 + daily_limit），可选项/餐饮自然收在返程出发前；首景点开门等待的
-        # 边界偏差 ≤ 等待时长可接受，must 精确截止由分配器 day_accept 把关。
+        # ≤ 起点 + daily_limit），可选项/餐饮收在返程出发前；must 精确截止由
+        # 分配器 day_accept 把关。注意 include_meal_time=False 时餐段占墙钟不占
+        # 预算，末日最后景点可能比截止晚一顿饭（实测 +12min）——不产生倒挂，
+        # 由餐窗过滤（下）防"已上车还在吃晚餐"的绝对倒挂。
+        meal_windows_for_day = meal_windows
         if last_day_end_minutes is not None and day_index == day_count:
             window = last_day_end_minutes - _parse_time(effective_start)
             if window > 0:
                 daily_requirement["content"]["constraints"]["daily_travel_time"] = min(
                     daily_limit, window
                 )
+            # 末日餐窗过滤：整窗完全落在返程截止之后 → 不插餐（17:30 晚餐窗
+            # 对 15:10 返程必须在截止前结束才保留）。跨界的窗也跳过（吃到一半
+            # 赶车不合格）。
+            meal_windows_for_day = tuple(
+                w
+                for w in meal_windows
+                if w.window_end_minutes <= last_day_end_minutes
+            )
         daily_result = plan_one_day(
             daily_requirement,
             daily_candidates,
             graph_dir=graph_dir,
             day_start_time=effective_start,
             travel_time_provider=provider,
-            meal_windows=meal_windows,
+            meal_windows=meal_windows_for_day,
             restaurants=restaurants,
             repair_hard_constraints=repair_hard_constraints,
             min_spots=min_spots,
