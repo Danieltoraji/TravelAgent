@@ -14,6 +14,7 @@ for _p in (os.path.join(_B_ROOT, "django_server"), os.path.join(_B_ROOT, "a_side
         sys.path.insert(0, _p)
 
 from data_transmission.live_data import (  # noqa: E402
+    _fake_spot_duration_map,
     _normalize_live_hotel,
     _normalize_live_restaurant,
     normalize_live_spot,
@@ -89,6 +90,18 @@ class TestNormalizeLiveRestaurant(unittest.TestCase):
 
     def test_no_coordinates_dropped(self) -> None:
         self.assertIsNone(_normalize_live_restaurant({"id": "F3", "name": "店"}))
+
+
+class TestFakeSpotDurationMap(unittest.TestCase):
+    """8.31 demo2：真源候选时长补全——独立表 spot_durations.json，
+    命中按名字覆盖（故宫=360），未命中保持默认，未知城市空表。"""
+
+    def test_beijing_gugong_360(self) -> None:
+        table = _fake_spot_duration_map("北京")
+        self.assertEqual(table.get("故宫博物院"), 360)
+
+    def test_unknown_city_empty(self) -> None:
+        self.assertEqual(_fake_spot_duration_map("不存在城市_xyz"), {})
 
 
 if __name__ == "__main__":

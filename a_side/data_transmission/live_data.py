@@ -19,8 +19,10 @@ B 的 tool-not-found / 解析失败 → 转成 ``LiveDataError``，属预期行�
 
 from __future__ import annotations
 
+import json
 import os
 import re
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from data_transmission.city_travel import CityTravelEdge
@@ -312,12 +314,57 @@ def _sanitize_time(value: Any, default: str) -> str:
     return f"{hour:02d}:{mm_text}"
 
 
+def _fake_spot_duration_map(city: str) -> Dict[str, int]:
+    """真源候选的人工标注时长表：``{景点名 → duration}``（供 true-source 候选补全）。
+
+    高德 POI 不提供「建议游玩时长」（8.31 demo2 结论）——B 侧 scenic 工具给每个
+    候选固定 ``suggest_duration=120``，故宫也按 2h 排。独立时长表
+    ``data_transmission/spot_durations.json``（A 侧 repo / B 侧 a_side 各一份）
+    按城市别名索引（``city_graph.CITY_DIRECTORY_ALIASES``：北京→beijing），存放
+    人工标好的差异化时长（故宫=360min）——真源候选按名字覆盖，命中用表值、
+    未命中保持工具默认（120）；表缺失/损坏/城市未收录 → 空表（不覆盖不报错）。
+
+    用**独立表而非假池 spots.json**：假池是 A 侧 400+ 测试的共享输入（replanner
+    等按 BJ_001 故宫 180 断言），直接改会波及其他分支——时长补全只影响真源链。
+    """
+    from data_transmission.city_graph import (
+        CITY_DIRECTORY_ALIASES,
+        normalize_city_name,
+    )
+
+    alias = CITY_DIRECTORY_ALIASES.get(city) or CITY_DIRECTORY_ALIASES.get(
+        normalize_city_name(city)
+    )
+    durations_json = Path(__file__).resolve().parent / "spot_durations.json"
+    if not durations_json.is_file():
+        return {}
+    try:
+        with open(durations_json, "r", encoding="utf-8") as fh:
+            table = json.load(fh)
+    except (OSError, ValueError) as exc:
+        logger.warning("spot_durations.json 读取失败（%s）：%s", durations_json, exc)
+        return {}
+    if not isinstance(table, dict):
+        return {}
+    rows = table.get(alias or city)
+    if not isinstance(rows, dict):
+        return {}
+    durations: Dict[str, int] = {}
+    for name, raw_duration in rows.items():
+        duration = _as_int(raw_duration)
+        if name and duration and duration > 0:
+            durations[str(name)] = int(duration)
+    return durations
+
+
 class LiveSpotsSource:
     """包裹 ``tool_provider`` 的景点候选提供器：``fn(city, limit=None) -> List[spot dict]``。
 
     - 调用 ``tool_provider.call("scenic", place=city, limit=...)`` 拉候选并逐条规范化；
     - 一个可用景点都没有 → ``LiveDataError``（由调用方回退假源）；
     - ``names`` 属性：{spot_id/name: spot_name}，供交通 provider 建 id→名称映射。
+    - 时长补全（8.31 demo2）：高德 POI 无「建议游玩时长」字段 → 按景点名取同城
+      假池人工标注时长覆盖（``_fake_spot_duration_map``）；未命中保持工具默认。
 
     候选池宽度（8.30 扩容）：``limit`` 缺省 10（历史行为）；调用方可传
     ``max(10, days×5)`` 让池子随行程天数联动——B 侧 scenic 工具 / amap_client
@@ -357,6 +404,15 @@ class LiveSpotsSource:
                 spots.append(spot)
         if not spots:
             raise LiveDataError(f"scenic 工具未返回可用的景点（city={city}）")
+        # 时长补全（8.31 demo2）：高德 POI 无建议游玩时长 → 取同城假池人工标注
+        # duration 覆盖（如 故宫=360min）；未命中保持工具默认（120）。假池缺失/
+        # 损坏返回空表 → 不覆盖不报错（真源链路不受影响）。
+        fake_durations = _fake_spot_duration_map(city)
+        if fake_durations:
+            for spot in spots:
+                known = fake_durations.get(spot.get("name") or "")
+                if known:
+                    spot["duration"] = int(known)
         self.names = {
             str(spot.get("id") or spot["name"]): spot["name"] for spot in spots
         }
