@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -25,6 +26,8 @@ from data_transmission.city_travel import (
     load_city_travel_options,
     mode_text,
 )
+
+logger = logging.getLogger("data_transmission.travel")
 
 # 标准日期：2026-08-21 / 2026/8/21 / 2026年8月21日（必须带 4 位年份）
 _DATE_PATTERN = r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?"
@@ -209,28 +212,56 @@ def _resolve_intercity_route(
     provider: Optional[Callable[[str, str], Optional[Any]]],
     options: Dict[Tuple[str, str], Dict[str, Any]],
     priority: Optional[str] = None,
+    date_str: str = "",
 ) -> Optional[IntercityRoute]:
-    """城际路线解析（单段直达 或 多段联运），返回 ``IntercityRoute`` 或 None：
+    """城际路线解析（单段直达 → 空铁候选 → 老 BFS → 直达兜底），返回
+    ``IntercityRoute`` 或 None：
 
-    1. 直达（provider 真源优先；本地 options 按 ``priority`` 偏好选方式）且 ≤ 12h
-       → 单段 route；
-    2. 直达超 12h 或不存在 → 多式联运 BFS（``find_intercity_route``，**本批接入
-       provider 真源**：BFS 每一段都优先用真实班次/航班边，查不到回落估算表）；
-    3. BFS 无解 → 回落 provider/本地直达 如实给出（如表外 driving 兜底 19h）。
+    1. 直达（provider 真源优先；本地 options 按 ``priority`` 偏好选方式）且
+       完整耗时 ≤ 12h → 单段 route（I-11：air 含值机缓冲）；
+    2. 直达超 12h/不存在 → **空铁联运候选生成**（方案 §4.2 类型 A/C/D：
+       航空拓扑正反向邻居 + 免费铁路过滤；铁路段 live、航段拓扑提示
+       estimated——demo1 教训：老 BFS 的探索范围被 58 边估算表圈死，
+       锦州→北京→张掖的联运链永远够不着）；
+    3. 候选生成无果 → 老 BFS（估算表邻接 + 段级真源升级）兜底；
+    4. 全部无解 → 直达如实给出（如表外 driving 19h；超 12h 的兜底边
+       不再参与「软直达优先」基准——它是被迫选项不是优选）。
     """
     direct = find_city_travel_preferred(
         origin, destination, options=options, provider=provider, priority=priority
     )
-    if direct is not None and (
-        direct.transport_minutes
-        + (AIR_BUFFER_MIN if direct.mode == "air" else 0)
-    ) <= DEFAULT_MAX_TOTAL_MINUTES:
+    direct_minutes = (
+        direct.transport_minutes + (AIR_BUFFER_MIN if direct.mode == "air" else 0)
+        if direct is not None
+        else None
+    )
+    if direct is not None and direct_minutes <= DEFAULT_MAX_TOTAL_MINUTES:
         # I-11：直达判断与总时长都按**完整耗时**（air 含值机缓冲），不按裸运行时长
-        return IntercityRoute(
-            (direct,),
-            direct.transport_minutes + (AIR_BUFFER_MIN if direct.mode == "air" else 0),
-            direct.cost_per_person,
-        )
+        return IntercityRoute((direct,), direct_minutes, direct.cost_per_person)
+
+    # 空铁联运候选（§4.2）：铁路走 provider 的 train 分支（免费真源），
+    # 航段走 air_routes 拓扑（班期按 date_str 过滤）。
+    if provider is not None:
+        try:
+            from data_transmission.intercity_candidates import (
+                generate_intercity_candidates,
+            )
+
+            candidates = generate_intercity_candidates(
+                origin, destination,
+                date_str=date_str,
+                train_provider=lambda a, b: provider(a, b, mode="train"),
+                priority=priority,
+            )
+            if candidates:
+                best = candidates[0]
+                # 候选必须优于「被迫直达」（超 12h 的 driving 之类才有意义
+                # 被替换；直达缺失时任何候选都更好）
+                if direct_minutes is None or best.total_minutes < direct_minutes:
+                    return best
+        except Exception as exc:  # noqa: BLE001  候选生成失败不阻断老链路
+            logger.warning("空铁候选生成失败，回落老 BFS：%s", exc)
+
     route = find_intercity_route(
         origin, destination, options=options, priority=priority,
         provider=provider, direct=direct,
@@ -239,11 +270,7 @@ def _resolve_intercity_route(
         return route
     if direct is not None:
         # BFS 无解 → 回落直达如实给出；同样计完整耗时
-        return IntercityRoute(
-            (direct,),
-            direct.transport_minutes + (AIR_BUFFER_MIN if direct.mode == "air" else 0),
-            direct.cost_per_person,
-        )
+        return IntercityRoute((direct,), direct_minutes, direct.cost_per_person)
     return None
 
 
@@ -326,7 +353,8 @@ def build_trip_segments(
         }
 
     outbound = _resolve_intercity_route(
-        origin, destination, travel_provider, options, priority
+        origin, destination, travel_provider, options, priority,
+        date_str=(schedule.get("departure_date") or "").strip(),
     )
     if outbound is not None and schedule.get("departure_date") and schedule.get("departure_time"):
         start = hhmm_to_minutes(schedule["departure_time"])
@@ -342,7 +370,8 @@ def build_trip_segments(
     # I-08：返程**独立解析** destination→origin，查不到就诚实无返程方案
     # （绝不复用去程方向 origin→destination 伪造反向段；去程可能只有单向数据）
     homeward = _resolve_intercity_route(
-        destination, origin, travel_provider, options, priority
+        destination, origin, travel_provider, options, priority,
+        date_str=(schedule.get("return_date") or "").strip(),
     )
     if homeward is not None and schedule.get("return_date") and schedule.get("return_time"):
         start = hhmm_to_minutes(schedule["return_time"])
