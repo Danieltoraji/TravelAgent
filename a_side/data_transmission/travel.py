@@ -463,8 +463,23 @@ def build_trip_segments(
         budget_per_leg=budget_per_leg,
     )
     if homeward is not None and schedule.get("return_date") and schedule.get("return_time"):
+        # ⚠️ travel_schedule 时刻语义（9.2 用户拍板，勿再混淆）：
+        #   departure_time = **从家出发**时刻（去程段 = [离家, 到目的地]）；
+        #   return_time   = **最晚到家**时刻（返程段 = [离开目的地, 到家]）——
+        #   绝不是「返程出发时刻」！把 return_time 直接当出发是常见错误
+        #   （时间轴会显示 [20:00, 24:50] 而用户 20:00 就该到家，违反约束）。
+        # 此处反推出发：start = return_time − 总耗时（真源历时含值机/转场缓冲）。
+        # 班次级精排（从 intercity leg 的 candidates 里按「末段到家 ≤ return_time」
+        # 且出发最晚选真实班次）由上层 b_planner_hook 在**末日行程排完后**按实际
+        # 离开时间重建 return 段——本段是占位/兜底（无候选或候选不可达时使用）。
         start = hhmm_to_minutes(schedule["return_time"])
         if start is not None:
+            start -= homeward.total_minutes
+            if start < 0:
+                # 到家时间早于「出发+历时」反推值 → 当天出发即超约束：置 0 点
+                # 占位，让「返程日无游玩窗口」由后续窗口约束（last_day_end）
+                # 显式暴露，不在这里静默抹平。
+                start = 0
             segments.append(make_segment(
                 homeward,
                 _route_name(destination, origin, homeward, "返程"),

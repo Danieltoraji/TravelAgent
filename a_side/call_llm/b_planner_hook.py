@@ -132,21 +132,181 @@ def _last_day_end_from_segments(
 ) -> Optional[int]:
     """返程段出发时刻 − 离开缓冲 → 末日游玩截止分钟（无返程段 → None）。
 
-    与 ``_first_day_start_from_segments`` 同源（travel.py make_segment：return
-    段 ``start_minutes`` = 返程出发时刻）；返程过早（截止早于当天开始）时
-    保底 09:00（当天游玩不早开始——极早返程属行程设计问题，不在此处理）。
+    return 段 start_minutes 语义（9.2 修正）：**从目的地出发的时刻**（=
+    最晚到家 return_time − 返程总耗时，见 travel.build_trip_segments 注释），
+    不是 return_time 本身；返程过早就保底 09:00（极早返程属行程设计问题）。
     """
+    return_seg = _find_return_segment(segments)
+    if return_seg is None:
+        return None
+    start = return_seg.get("start_minutes")
+    if not isinstance(start, (int, float)) or start <= 0:
+        return None
+    return max(9 * 60, int(start) - int(buffer_minutes))
+
+
+def _find_return_segment(
+    segments: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     for seg in segments or []:
         if not isinstance(seg, dict) or seg.get("type") != "transport":
             continue
-        if (seg.get("details") or {}).get("kind") != "return":
-            continue
-        start = seg.get("start_minutes")
-        if not isinstance(start, (int, float)) or start <= 0:
-            continue
-        end = int(start) - int(buffer_minutes)
-        return max(9 * 60, end)
+        if (seg.get("details") or {}).get("kind") == "return":
+            return seg
     return None
+
+
+def _intercity_leg_candidates(return_seg: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
+    """return 段 legs 里各 intercity 段的真源候选（train: code/depart_time/
+    arrive_time/price…；air: flight_no/depart_time/arrive_time…），无 → []。"""
+    out: List[List[Dict[str, Any]]] = []
+    for leg in (return_seg.get("details") or {}).get("legs") or []:
+        if leg.get("kind") != "intercity":
+            continue
+        cands = [c for c in (leg.get("candidates") or []) if isinstance(c, dict)]
+        if cands:
+            out.append(cands)
+    return out
+
+
+def _hhmm_to_minutes_loose(text: Any) -> Optional[int]:
+    """候选时刻（'HH:MM' 或 'YYYY-MM-DD HH:MM[:SS]'）→ 分钟；不可解析 → None。"""
+    if not text:
+        return None
+    token = str(text).strip()
+    if " " in token:
+        token = token.split(" ")[-1]  # 带日期的形式取时间部分
+    try:
+        hour, minute = token.split(":", 2)[:2]
+        value = int(hour) * 60 + int(minute)
+        return value if 0 <= value < 24 * 60 else None
+    except (ValueError, AttributeError):
+        return None
+
+
+def _select_return_combination(
+    return_seg: Dict[str, Any],
+    earliest_departure: int,
+    transfer_buffer_minutes: int = 60,
+) -> Optional[Tuple[int, int, float]]:
+    """按「到家 ≤ return_time」从真源候选选「出发 ≥ earliest 的最晚班次组合」。
+
+    - return_time = ``return_seg["end_minutes"]``（travel.py 修正后 end = 最晚到家）；
+    - 组合为段级粗选 + 换乘粗卡（前段到达 ≤ 后段出发 − transfer_buffer），
+      **不做 Day 4 级真实接续校验**（G164 赶到赶不去大兴那类，交接 §四.2）；
+    - 跨日班次（arrive < depart）当天到不了家 → 直接排除；
+    - 返回 (首段出发分钟, 末段到达分钟, 组合票价和)；无可行 → None。
+    """
+    per_leg = _intercity_leg_candidates(return_seg)
+    if not per_leg:
+        return None
+    return_time = return_seg.get("end_minutes")
+    if not isinstance(return_time, (int, float)) or return_time <= 0:
+        return None
+    best: Optional[Tuple[int, int, float]] = None
+
+    def walk(
+        leg_index: int,
+        prev_arrive: Optional[int],
+        dep_first: Optional[int],
+        arr_last: Optional[int],
+        cost: float,
+    ) -> None:
+        nonlocal best
+        if leg_index == len(per_leg):
+            if (
+                dep_first is not None
+                and dep_first >= earliest_departure
+                and (best is None or dep_first > best[0])
+            ):
+                best = (dep_first, int(arr_last or 0), cost)
+            return
+        is_last = leg_index == len(per_leg) - 1
+        for cand in per_leg[leg_index]:
+            dep = _hhmm_to_minutes_loose(cand.get("depart_time"))
+            arr = _hhmm_to_minutes_loose(cand.get("arrive_time"))
+            if dep is None or arr is None:
+                continue
+            if arr < dep:  # 跨日（凌晨到）→ 当天到不了家，排除
+                continue
+            if leg_index == 0:
+                if dep < earliest_departure:
+                    continue
+                dep_first = dep
+            elif prev_arrive is not None and dep < prev_arrive + transfer_buffer_minutes:
+                continue  # 换乘粗卡：下段出发 ≥ 上段到达 + 缓冲
+            if is_last and arr > return_time:
+                continue  # 到家 ≤ 最晚到家时间
+            price = cand.get("price") or cand.get("cost_per_person")
+            walk(
+                leg_index + 1,
+                arr,
+                dep_first,
+                arr if is_last else arr_last,
+                cost + (float(price) if isinstance(price, (int, float)) else 0.0),
+            )
+
+    walk(0, None, None, None, 0.0)
+    return best
+
+
+def _windowed_last_day_end(
+    segments: List[Dict[str, Any]],
+    buffer_minutes: int = _DEPARTURE_BUFFER_MINUTES,
+) -> Optional[int]:
+    """末日截止：优先用返程真源候选「最晚可行班次出发 − 缓冲」，否则反推兜底。
+
+    反推（return_time − 总耗时）把返程当连续可选；真源候选是**离散班次**——
+    「末段到家 ≤ return_time 中首段出发最晚」的班次决定末日最晚能玩到几点，
+    通常比反推松弛（如返程 19:30 有班 → 末日可玩到 18:30，而非 14:10）。
+    """
+    return_seg = _find_return_segment(segments)
+    if return_seg is not None:
+        combo = _select_return_combination(return_seg, earliest_departure=0)
+        if combo is not None:
+            dep_min = combo[0]
+            return max(9 * 60, dep_min - buffer_minutes)
+    return _last_day_end_from_segments(segments, buffer_minutes)
+
+
+def _rebuild_return_with_schedule(
+    plan: Dict[str, Any],
+    segments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """末日行程排定后按「实际离开目的地时间」从真源候选重选返程班次。
+
+    - 最早可离开 = 末日最后事件结束 + 离开缓冲（60min，用户 9.2 拍板）；
+    - 选中班次 → 重建 return 段真实发到时刻（替换反推占位）；
+    - 无候选 / 候选都不满足 → 保留原段（反推占位兜底），不谎报班次。
+    """
+    return_seg = _find_return_segment(segments)
+    if return_seg is None:
+        return segments
+    plan_days = plan.get("days") or []
+    if not plan_days:
+        return segments
+    nodes = plan_days[-1].get("route_details") or []
+    ends = [
+        n.get("end_minutes")
+        for n in nodes
+        if isinstance(n.get("end_minutes"), (int, float)) and n.get("type") != "meal"
+    ]
+    if not ends:
+        return segments
+    earliest_departure = int(max(ends)) + _DEPARTURE_BUFFER_MINUTES
+    combo = _select_return_combination(return_seg, earliest_departure)
+    if combo is None:
+        return segments
+    dep_min, arr_min, cost = combo
+    return_seg["start_minutes"] = dep_min
+    return_seg["end_minutes"] = arr_min
+    return_seg["duration_minutes"] = arr_min - dep_min
+    details = dict(return_seg.get("details") or {})
+    if cost > 0:
+        details["cost_per_person"] = round(cost, 2)
+        details["source"] = "live"
+    return_seg["details"] = details
+    return segments
 
 
 def _haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
@@ -575,7 +735,8 @@ class BPlannerHook:
         # 只在真源规划路径执行。
         segments = self._build_trip_segments()
         first_day_start_time = _first_day_start_from_segments(segments)
-        last_day_end_minutes = _last_day_end_from_segments(segments)
+        # 末日截止优先真源离散班次（最晚可行班出发 − 缓冲），无候选走反推兜底
+        last_day_end_minutes = _windowed_last_day_end(segments)
         base_matrix: Dict[Tuple[str, str], Tuple[float, int]] = {}
         live_hotels = self._live_hotel_pool()  # 8.29：假池酒店候选（坐标并入矩阵 → 通勤真源）
         try:
@@ -653,7 +814,10 @@ class BPlannerHook:
         self._current_plan = plan
         self.last_error = None
         self.last_data_source = "live"
-        self._inject_trip_segments(plan, segments)
+        # 末日行程排定后按实际离开时间重选返程班次（无候选保留反推占位）
+        self._inject_trip_segments(
+            plan, _rebuild_return_with_schedule(plan, segments)
+        )
         self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
             plan,
@@ -949,7 +1113,7 @@ class BPlannerHook:
         # + 90min 接驳 → 首日起点、返程出发 − 60min → 末日截止。
         segments = self._build_trip_segments()
         first_day_start_time = _first_day_start_from_segments(segments)
-        last_day_end_minutes = _last_day_end_from_segments(segments)
+        last_day_end_minutes = _windowed_last_day_end(segments)
         try:
             plan = self._planner(
                 self.requirement,
@@ -972,7 +1136,9 @@ class BPlannerHook:
         self._current_plan = plan
         self.last_error = None
         self.last_data_source = source
-        self._inject_trip_segments(plan, segments)
+        self._inject_trip_segments(
+            plan, _rebuild_return_with_schedule(plan, segments)
+        )
         self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
             plan,

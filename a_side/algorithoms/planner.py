@@ -392,6 +392,7 @@ def _plan_multi_day_with_prealloc(
     repair_hard_constraints: bool,
     min_spots: int,
     first_day_start_time: Optional[str] = None,
+    last_day_end_minutes: Optional[int] = None,
 ) -> Dict[str, Any]:
     """给定必去分天 + 可选预分配池，逐天走完整 plan_one_day 管线并汇总。
 
@@ -435,6 +436,17 @@ def _plan_multi_day_with_prealloc(
             if day_index == 1 and first_day_start_time is not None
             else day_start_time
         )
+        # 末日窗口（9.2 两段式完整化）：返程日可用时长 = min(每日时长, 截止−起点)。
+        # 把末日 daily_limit 缩短即等价——单日管线（knapsack/fit/refill/fine-tune）
+        # 全以 daily_limit 为时长预算、事件流从起点连续推进（结束 ≈ 起点 + elapsed
+        # ≤ 起点 + daily_limit），可选项/餐饮自然收在返程出发前；首景点开门等待的
+        # 边界偏差 ≤ 等待时长可接受，must 精确截止由分配器 day_accept 把关。
+        if last_day_end_minutes is not None and day_index == day_count:
+            window = last_day_end_minutes - _parse_time(effective_start)
+            if window > 0:
+                daily_requirement["content"]["constraints"]["daily_travel_time"] = min(
+                    daily_limit, window
+                )
         daily_result = plan_one_day(
             daily_requirement,
             daily_candidates,
@@ -962,6 +974,7 @@ def plan_multi_day(
         repair_hard_constraints,
         min_spots,
         first_day_start_time,
+        last_day_end_minutes,
     )
     if plan.get("feasible"):
         plan["minimum_required_visit_minutes"] = allocation[
