@@ -154,13 +154,30 @@ class TrainTripSkillLive(TrainTripSkill):
 
         from_code, to_code, _, _ = self._resolve_stations(from_city, to_city)
         trains = self._bookable_trains(from_code, to_code, date)
-        best, price = self._select(trains, from_code, to_code, date, preference)
+        best, price, price_map = self._select(trains, from_code, to_code, date, preference)
 
         logger.info("train_trip: %s(%s)→%s(%s) %s [%s] → %s %s",
                     from_city, from_code, to_city, to_code, date,
                     preference, best["code"], best["duration"])
         # 12306 会把同城其他车站的车次一并返回（查北京南可能命中北京站发车
         # 的 D 字头过路车）——展示以实际班次的到发站为准，请求城市对仅作入参回显
+        # ``trains``（9.2 b 新增）：全量可预订班次清单（按历时升序）——A 侧
+        # provider 组装成 ``Edge.candidates``（code/时刻/历时/票价/站点），
+        # 供返程「按到家时刻选最晚班次」（_select_return_combination）使用；
+        # 此前只返回最佳一条，选班无候选可择（0 条）。
+        trains_out = []
+        for t in sorted(trains, key=_duration_minutes):
+            f_code = t.get("from_station_code") or best.get("from_station_code", "")
+            e_code = t.get("to_station_code") or best.get("to_station_code", "")
+            trains_out.append({
+                "code": t["code"], "train_no": t.get("train_no", ""),
+                "from_station": station_name(f_code), "to_station": station_name(e_code),
+                "from_station_code": f_code, "to_station_code": e_code,
+                "depart_time": t["depart_time"], "arrive_time": t["arrive_time"],
+                "duration": t["duration"], "transport_minutes": _duration_minutes(t),
+                "price": price_map.get(t["code"]),
+                "seats": t.get("seats", ""),
+            })
         return {
             "origin": from_city, "destination": to_city,
             "from_station": station_name(best["from_station_code"]),
@@ -175,6 +192,7 @@ class TrainTripSkillLive(TrainTripSkill):
             "seats": best["seats"],
             "preference": preference,
             "source": "live",
+            "trains": trains_out,
         }
 
     # -- 内部 --------------------------------------------------------------
@@ -222,14 +240,18 @@ class TrainTripSkillLive(TrainTripSkill):
         return prices
 
     def _select(self, trains: List[Dict[str, Any]], from_code: str, to_code: str,
-                date: str, preference: str) -> Tuple[Dict[str, Any], Optional[float]]:
-        """按偏好选班次并取二等座价（cheapest 按价选，earliest 按历时选）。"""
+                date: str, preference: str) -> Tuple[Dict[str, Any], Optional[float], Dict[str, float]]:
+        """按偏好选班次并取二等座价（cheapest 按价选，earliest 按历时选）。
+
+        9.2 b：返回 (best, price, price_map) 三元组——price_map 供 _run 组装
+        全量 ``trains`` 候选（每条带真实票价）时复用，避免二次查询票价。
+        """
         price_map = self._second_class_prices(from_code, to_code, date)
         if preference == "cheapest":
             priced = [t for t in trains if t["code"] in price_map]
             if priced:
                 best = min(priced, key=lambda t: price_map[t["code"]])
-                return best, price_map[best["code"]]
+                return best, price_map[best["code"]], price_map
             logger.info("train_trip: 票价接口无可用价格，回落 earliest")
         best = min(trains, key=_duration_minutes)
-        return best, price_map.get(best["code"])
+        return best, price_map.get(best["code"]), price_map

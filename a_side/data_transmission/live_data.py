@@ -1221,6 +1221,57 @@ def make_live_intercity_provider(
     return intercity_provider
 
 
+def _train_candidates_from_payload(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], ...]:
+    """train_trip payload → 班次候选（city_travel.py 候选结构约定）。
+
+    优先 ``payload["trains"]``（9.2 b：train_trip 全量可预订班次，已含
+    code/时刻/历时/票价/站点）；旧 payload 无 ``trains`` 时兜底单条最佳
+    （code/depart_time/arrive_time 组装 1 条）——保证「按到家时刻选最晚
+    班次」（_select_return_combination）在真源铁路候选总有米可择。
+    """
+
+    def _minutes_int(value: Any) -> int:
+        text = str(value or "").strip()
+        return int(text) if text.isdigit() else 0
+
+    rows = payload.get("trains")
+    if isinstance(rows, list) and rows:
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            dep, arr = r.get("depart_time"), r.get("arrive_time")
+            if not dep or not arr:
+                continue
+            price = r.get("price")
+            out.append({
+                "code": r.get("code", ""), "train_no": r.get("train_no", ""),
+                "depart_time": dep, "arrive_time": arr,
+                "duration": r.get("duration", ""),
+                "price": price, "cost_per_person": price,
+                "seats": r.get("seats", ""),
+                "from_station": r.get("from_station", ""),
+                "to_station": r.get("to_station", ""),
+                "transport_minutes": _minutes_int(r.get("transport_minutes")),
+            })
+        if out:
+            return tuple(out)
+    dep, arr = payload.get("depart_time"), payload.get("arrive_time")
+    if dep and arr:
+        price = payload.get("cost_per_person")
+        return ({
+            "code": payload.get("code", ""), "train_no": payload.get("train_no", ""),
+            "depart_time": dep, "arrive_time": arr,
+            "duration": payload.get("duration", ""),
+            "price": price, "cost_per_person": price,
+            "seats": payload.get("seats", ""),
+            "from_station": payload.get("from_station", ""),
+            "to_station": payload.get("to_station", ""),
+            "transport_minutes": _minutes_int(payload.get("transport_minutes")),
+        },)
+    return ()
+
+
 def make_live_train_trip_provider(tool_provider: Any, date: str = ""):
     """train_trip 技能 → CityTravelEdge provider（P2b 城际真源化，0829）。
 
@@ -1260,6 +1311,7 @@ def make_live_train_trip_provider(tool_provider: Any, date: str = ""):
             from_station=payload.get("from_station", ""),
             to_station=payload.get("to_station", ""),
             source=payload.get("source", "live"),
+            candidates=_train_candidates_from_payload(payload),
         )
 
     return provider

@@ -156,16 +156,30 @@ def _find_return_segment(
     return None
 
 
-def _intercity_leg_candidates(return_seg: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
-    """return 段 legs 里各 intercity 段的真源候选（train: code/depart_time/
-    arrive_time/price…；air: flight_no/depart_time/arrive_time…），无 → []。"""
-    out: List[List[Dict[str, Any]]] = []
+def _intercity_leg_candidates(return_seg: Dict[str, Any]) -> List[Tuple[int, List[Dict[str, Any]]]]:
+    """return 段 legs 里各 intercity 段的真源候选 → [(前缀耗时, 候选列表), …]。
+
+    - 候选：train: code/depart_time/arrive_time/price…；air:
+      flight_no/depart_time/arrive_time…；
+    - 前缀耗时 = 该段之前所有 intercity 段的 (duration_min + buffer_min) 之和
+      （如 北京飞南宁 3h10+90 值机缓冲 后接 南宁高铁段 → 高铁段前缀 280min），
+      用于把「段内发车时刻」倒推成「整链起点 = 离开目的地时刻」；
+    - 候选为空的段（如 estimated 航段无班次）跳过——选班只在实际有班次的段上发生。
+    """
+    out: List[Tuple[int, List[Dict[str, Any]]]] = []
+    prefix = 0
     for leg in (return_seg.get("details") or {}).get("legs") or []:
         if leg.get("kind") != "intercity":
             continue
         cands = [c for c in (leg.get("candidates") or []) if isinstance(c, dict)]
         if cands:
-            out.append(cands)
+            out.append((prefix, cands))
+        dur = leg.get("duration_min") or 0
+        buf = leg.get("buffer_min") or 0
+        try:
+            prefix += int(dur) + int(buf)
+        except (TypeError, ValueError):
+            prefix += 0
     return out
 
 
@@ -192,10 +206,15 @@ def _select_return_combination(
     """按「到家 ≤ return_time」从真源候选选「出发 ≥ earliest 的最晚班次组合」。
 
     - return_time = ``return_seg["end_minutes"]``（travel.py 修正后 end = 最晚到家）；
-    - 组合为段级粗选 + 换乘粗卡（前段到达 ≤ 后段出发 − transfer_buffer），
-      **不做 Day 4 级真实接续校验**（G164 赶到赶不去大兴那类，交接 §四.2）；
+    - **组合语义（9.2 b 多段链修正）**：选班段可能是链的中/尾段（贵港链 =
+      北京飞南宁 estimated + 南宁东→贵港高铁 live，真实班次只在高铁段）——
+      整链起点（= 离开目的地时刻）= 选班段发车 − 该段前缀耗时（含值机缓冲），
+      保证倒推出的起飞时刻与所选高铁接得上（反链推导，而非把高铁发车当
+      整链起点）；
+    - 段级粗选 + 换乘粗卡（前段到达 ≤ 后段发车 − transfer_buffer），
+      **不做 Day 4 级真实接续校验**（交接 §四.2）；
     - 跨日班次（arrive < depart）当天到不了家 → 直接排除；
-    - 返回 (首段出发分钟, 末段到达分钟, 组合票价和)；无可行 → None。
+    - 返回 (整链起点分钟, 到家分钟, 组合票价和)；无可行 → None。
     """
     per_leg = _intercity_leg_candidates(return_seg)
     if not per_leg:
@@ -208,45 +227,49 @@ def _select_return_combination(
     def walk(
         leg_index: int,
         prev_arrive: Optional[int],
-        dep_first: Optional[int],
+        dep_first_chain: Optional[int],
         arr_last: Optional[int],
         cost: float,
+        prefix: int,
     ) -> None:
         nonlocal best
         if leg_index == len(per_leg):
             if (
-                dep_first is not None
-                and dep_first >= earliest_departure
-                and (best is None or dep_first > best[0])
+                dep_first_chain is not None
+                and dep_first_chain >= earliest_departure
+                and (best is None or dep_first_chain > best[0])
             ):
-                best = (dep_first, int(arr_last or 0), cost)
+                best = (dep_first_chain, int(arr_last or 0), cost)
             return
         is_last = leg_index == len(per_leg) - 1
-        for cand in per_leg[leg_index]:
+        for cand in per_leg[leg_index][1]:
             dep = _hhmm_to_minutes_loose(cand.get("depart_time"))
             arr = _hhmm_to_minutes_loose(cand.get("arrive_time"))
             if dep is None or arr is None:
                 continue
             if arr < dep:  # 跨日（凌晨到）→ 当天到不了家，排除
                 continue
+            dep_chain = dep - prefix  # 整链起点 = 离开目的地时刻
             if leg_index == 0:
-                if dep < earliest_departure:
+                if dep_chain < earliest_departure:
                     continue
-                dep_first = dep
+                dep_first_chain = dep_chain
             elif prev_arrive is not None and dep < prev_arrive + transfer_buffer_minutes:
-                continue  # 换乘粗卡：下段出发 ≥ 上段到达 + 缓冲
+                continue  # 换乘粗卡：下段发车 ≥ 上段到达 + 缓冲
             if is_last and arr > return_time:
                 continue  # 到家 ≤ 最晚到家时间
             price = cand.get("price") or cand.get("cost_per_person")
             walk(
                 leg_index + 1,
                 arr,
-                dep_first,
+                dep_first_chain,
                 arr if is_last else arr_last,
                 cost + (float(price) if isinstance(price, (int, float)) else 0.0),
+                per_leg[leg_index + 1][0]
+                if leg_index + 1 < len(per_leg) else 0,
             )
 
-    walk(0, None, None, None, 0.0)
+    walk(0, None, None, None, 0.0, per_leg[0][0])
     return best
 
 
