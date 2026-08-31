@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -744,3 +745,109 @@ def config_reload(request: HttpRequest) -> JsonResponse:
         "use_real_api": settings.use_real_api,
         "use_real_map_api": settings.use_real_map_api,
     })
+
+
+# ── C 端对话（旅行助手，2026-09-01 新增）───────────────────────────────
+# 面向 C 的对话接口：C 端维护会话历史（服务端无状态），请求带当前消息 +
+# 历史；服务端把行程上下文（行程摘要 / 需求 / 最近重规划原因）注入系统
+# 提示词，让助手能回答「我的行程」类问题。v1 纯对话（无工具调用）。
+
+CHAT_HISTORY_LIMIT = 20
+
+
+def _chat_system_prompt() -> str:
+    """构建带行程上下文的系统提示词（C 端对话用）。"""
+    parts = [
+        "你是 TravelAgent 的旅行助手，负责回答用户关于行程与旅行的问题。",
+        "只回答与旅行、行程、景点、天气、交通、酒店、餐饮相关的问题；"
+        "无关问题请礼貌拒绝。回答使用简体中文，简洁准确，不要使用 Markdown 标题。",
+    ]
+    tl = runtime.timeline
+    if tl is not None:
+        lines = [f"当前行程：{tl.city}，{tl.start_date} 至 {tl.end_date}"]
+        for day in tl.days:
+            items = " → ".join(
+                f"{it.name}({it.arrival})" for it in day.items if it.name
+            )
+            lines.append(f"第{day.day}天（{day.date}）：{items}")
+        parts.append("\n".join(lines))
+    req = runtime.requirement or {}
+    content = req.get("content") or {}
+    if isinstance(content, dict):
+        pref = content.get("preferences") or {}
+        cons = content.get("constraints") or {}
+        bits = []
+        if content.get("destination"):
+            bits.append(f"目的地 {content['destination']}")
+        if content.get("days"):
+            bits.append(f"{content['days']} 天")
+        if cons.get("budget") is not None:
+            bits.append(f"预算 {cons['budget']} 元")
+        if pref.get("preferred_tags"):
+            bits.append(f"偏好 {'、'.join(pref['preferred_tags'])}")
+        if cons.get("must_visit"):
+            bits.append(f"必去 {'、'.join(cons['must_visit'])}")
+        if bits:
+            parts.append("用户需求：" + "，".join(bits))
+    if runtime.replan_history:
+        last = runtime.replan_history[-1]
+        d = last.get("decision") or {}
+        if d.get("reason"):
+            parts.append(f"最近一次行程调整：{str(d['reason'])[:200]}")
+    return "\n\n".join(parts)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def chat(request: HttpRequest) -> JsonResponse:
+    """面向 C 的旅行助手对话：``POST /api/chat/``。
+
+    body::
+
+        {"message": "故宫几点关门？",
+         "history": [{"role": "user|assistant", "content": "..."}, ...]}
+
+    ``history`` 由 C 端维护（服务端无状态），仅最近 ``CHAT_HISTORY_LIMIT``
+    条生效。返回 ``{"reply": "...", "elapsed_ms": 123}``。
+    错误：400 参数不合法；502 LLM 未配置或调用失败。
+    """
+    payload = _json_body(request)
+    if not isinstance(payload, dict) or not payload:
+        return _error("JSON body required")
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        return _error("message is required")
+    history = payload.get("history") or []
+    if not isinstance(history, list):
+        return _error("history must be a list")
+    cleaned: List[Dict[str, str]] = []
+    for item in history[-CHAT_HISTORY_LIMIT:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "")
+        content = str(item.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            cleaned.append({"role": role, "content": content})
+    messages = [
+        {"role": "system", "content": _chat_system_prompt()},
+        *cleaned,
+        {"role": "user", "content": message},
+    ]
+    try:
+        from call_llm.client_factory import create_llm_client
+
+        client = create_llm_client(ask_user_if_missing=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("chat: create_llm_client failed: %s", exc)
+        return _error(
+            "LLM 未配置（检查 DEEPSEEK_API_KEY / GLM_API_KEY 环境变量）",
+            status=502,
+        )
+    started = time.monotonic()
+    try:
+        reply = client.chat_text(messages)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("chat failed: %s", exc)
+        return _error(f"LLM 调用失败: {exc}", status=502)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    return JsonResponse({"reply": reply, "elapsed_ms": elapsed_ms})

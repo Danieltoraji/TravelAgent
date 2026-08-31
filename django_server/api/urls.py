@@ -50,4 +50,7 @@ urlpatterns = [
 
     path("config/", views.config_info, name="config_info"),
     path("config/reload/", views.config_reload, name="config_reload"),
+
+    # C 端对话（旅行助手），见 docs/chat_api.md
+    path("chat/", views.chat, name="chat"),
 ]
