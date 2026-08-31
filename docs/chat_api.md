@@ -8,6 +8,40 @@
 → 服务端校验 → 应用 → 记入 `/api/replans`（source=chat）。C 端**零改动**：
 App 的轮询逻辑检测到 replan 数量变化即自动刷新 `/api/timeline/`。
 
+**v2.2（2026-09-01）**：① 对话可查**真源只读工具**（weather/weather_brief/
+air_quality/food/traffic/train_trip/flight_search/web_search 精选 8 个）；
+② 改时间轴前做**深度可行性校验**（闭馆 / 每日时长 / 预算），不通过拒绝并
+回填模型自动调整重试。
+
+## 〇.1 v2.2 真源查询
+
+对话中模型可调用精选只读工具获取真实数据后回答：
+
+```
+用户：明天北京天气怎么样？适合户外吗？
+模型：→ 调 weather(city=北京)（QWeather 真源）→ 基于结果回答
+```
+
+- 工具与既有 LLM 白名单同源（`ToolProvider.to_openai_tools`），全部只读；
+- `update_timeline` 仍是对话私有（写工具）；其余走 `provider.call_json`；
+- 工具结果超 8000 字符自动截断（BaseClient 内置）。
+
+## 〇.2 v2.2 深度可行性校验
+
+`update_timeline` 应用前执行 `api/timeline_validator.validate_timeline`：
+
+| 校验项 | 规则 | 估算口径 |
+| --- | --- | --- |
+| 闭馆 | scenic 到达/结束时间须在 `open_time` 内 | 结束时间 = `end_time`，缺失用候选池 duration（名称/别名匹配），再缺失默认 90 分钟 |
+| 每日时长 | 每天 ≤ `constraints.daily_travel_time` | 游览 = `end_time-arrival` 或候选池 duration；交通 30 分钟/段；餐饮 60 分钟 |
+| 预算 | 总价（景点+酒店等）≤ `constraints.budget` | 按 `Place.price` 求和 |
+
+不通过 → 返回结构化错误（精确到「第X天 景点名 原因」+ 估算口径说明）
+→ 回填模型自动调整重试（`max_tool_rounds=3` 内）。**时间轴始终可行。**
+
+未做（v2.3 候选）：交通矩阵校验（仅北京/上海假图覆盖）、scenic 工具进
+对话白名单、改动前 C 端确认按钮。
+
 ## 〇、v2 对话改时间轴
 
 ### 工作方式

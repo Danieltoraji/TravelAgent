@@ -76,11 +76,13 @@ class FakeClient:
         reply: str = "好的",
         tool_rounds: int = 0,
         tool_arguments: dict | None = None,
+        tool_name: str = "update_timeline",
         error: str | None = None,
     ) -> None:
         self.reply = reply
         self.tool_rounds = tool_rounds
         self.tool_arguments = tool_arguments or _timeline_payload()
+        self.tool_name = tool_name
         self.error = error
         self.calls: list[dict] = []
 
@@ -104,7 +106,7 @@ class FakeClient:
         # 模拟模型先调用工具、再总结
         for _ in range(self.tool_rounds):
             if tool_executor is not None:
-                tool_executor("update_timeline", self.tool_arguments)
+                tool_executor(self.tool_name, self.tool_arguments)
         return {
             "content": self.reply,
             "tool_rounds": self.tool_rounds,
@@ -126,8 +128,8 @@ def _make_context() -> None:
     day = SimpleNamespace(
         day=1, date=date(2026, 8, 1),
         items=[
-            SimpleNamespace(name="故宫博物院", arrival="09:00"),
-            SimpleNamespace(name="景山公园", arrival="14:00"),
+            SimpleNamespace(name="故宫博物院", arrival="09:00", price=60.0),
+            SimpleNamespace(name="景山公园", arrival="14:00", price=2.0),
         ],
     )
     runtime.timeline = SimpleNamespace(
@@ -244,6 +246,39 @@ class TestChatApi(unittest.TestCase):
 
     # -- v2 工具路径 -------------------------------------------------------
 
+    def test_chat_tools_include_readonly_subset(self) -> None:
+        fake = FakeClient()
+        with mock.patch(
+            "call_llm.client_factory.create_llm_client", return_value=fake
+        ):
+            views.chat(_post({"message": "hi"}))
+        names = [t["function"]["name"] for t in fake.calls[0]["tools"]]
+        self.assertIn("update_timeline", names)
+        # 精选只读子集在列
+        for expected in ("weather", "food", "traffic", "web_search"):
+            self.assertIn(expected, names)
+        # 非精选工具（如 train_price）不在列
+        self.assertNotIn("train_price", names)
+
+    def test_chat_readonly_tool_dispatches_to_provider(self) -> None:
+        fake = FakeClient(tool_rounds=1, tool_arguments={"city": "北京"})
+        fake.tool_name = "weather"   # 模拟模型调用 weather 而非 update_timeline
+        captured: dict = {}
+
+        def fake_call_json(name, arguments=None):  # noqa: ANN001
+            captured["name"] = name
+            captured["arguments"] = arguments
+            return {"data": {"condition": "晴"}}
+
+        with mock.patch("tools.ToolProvider.call_json", side_effect=fake_call_json):
+            with mock.patch(
+                "call_llm.client_factory.create_llm_client", return_value=fake
+            ):
+                resp = views.chat(_post({"message": "北京天气怎么样？"}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(captured["name"], "weather")
+        self.assertEqual(captured["arguments"], {"city": "北京"})
+
     def test_chat_tool_updates_timeline(self) -> None:
         _make_context()
         fake = FakeClient(
@@ -301,6 +336,36 @@ class TestChatApi(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         # 时间轴未被修改，无 replan 记录
         self.assertEqual(runtime.timeline.days[0].items[0].name, "故宫博物院")
+        self.assertEqual(runtime.replan_history, [])
+
+    def test_chat_tool_rejects_infeasible_timeline(self) -> None:
+        """v2.2：结构合法但深度校验不通过（超预算）→ 拒绝且不改状态。"""
+        _make_context()
+        fake = FakeClient(
+            reply="抱歉，预算超支无法调整。",
+            tool_rounds=1,
+            tool_arguments={
+                "city": "北京",
+                "start_date": "2026-08-01",
+                "end_date": "2026-08-02",
+                "days": [{"day": 1, "date": "2026-08-01", "items": [
+                    {"name": "故宫博物院", "category": "scenic",
+                     "arrival": "09:00", "end_time": "15:00",
+                     "open_time": "09:00-17:00", "price": 99999},
+                    {"name": "景山公园", "category": "scenic",
+                     "arrival": "15:18", "end_time": "16:18",
+                     "open_time": "06:30-21:00", "price": 99999},
+                ]}],
+            },
+        )
+        with mock.patch(
+            "call_llm.client_factory.create_llm_client", return_value=fake
+        ):
+            resp = views.chat(_post({"message": "贵一点没关系"}))
+        self.assertEqual(resp.status_code, 200)
+        # 预算 2000 被超 → 拒绝应用
+        self.assertEqual(runtime.timeline.days[0].items[0].name, "故宫博物院")
+        self.assertEqual(runtime.timeline.days[0].items[0].price, 60.0)
         self.assertEqual(runtime.replan_history, [])
 
     def test_chat_tool_requires_timeline(self) -> None:

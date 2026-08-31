@@ -810,9 +810,33 @@ CHAT_TIMELINE_TOOL: Dict[str, Any] = {
     },
 }
 
+# 对话可用的只读真源工具（v2.2 精选子集；来自既有 LLM 白名单，只读安全）
+CHAT_READONLY_TOOLS = (
+    "weather", "weather_brief", "air_quality",
+    "food", "traffic", "train_trip", "flight_search", "web_search",
+)
+
+
+def _chat_tools() -> List[Dict[str, Any]]:
+    """对话工具列表：update_timeline（私有写）+ 精选只读真源工具。"""
+    tools: List[Dict[str, Any]] = [CHAT_TIMELINE_TOOL]
+    try:
+        provider = ToolProvider(runtime.registry)
+        for tool in provider.to_openai_tools():
+            name = tool.get("function", {}).get("name")
+            if name in CHAT_READONLY_TOOLS:
+                tools.append(tool)
+    except Exception:  # noqa: BLE001  工具元数据加载失败只留 update_timeline
+        logger.warning("chat: 只读工具元数据加载失败，仅保留 update_timeline")
+    return tools
+
 
 def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """chat v2 私有工具执行器：校验并应用新时间轴（结果回填给 LLM）。"""
+    """chat v2 私有工具执行器：校验并应用新时间轴（结果回填给 LLM）。
+
+    v2.2：应用前先跑深度可行性校验（闭馆/每日时长/预算，
+    ``timeline_validator``），不通过返回结构化错误由 LLM 调整重试。
+    """
     if name != "update_timeline":
         return {"status": "error", "message": f"未知工具 {name}"}
     if not isinstance(arguments, dict):
@@ -822,6 +846,22 @@ def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         timeline_obj = runtime.parse_timeline_payload(arguments)
     except (RuntimeError, ValueError) as exc:
         return {"status": "error", "message": f"时间轴不合法：{exc}"}
+    from api.timeline_validator import validate_timeline
+
+    validation_errors = validate_timeline(
+        timeline_obj, runtime.requirement or {}
+    )
+    if validation_errors:
+        logger.warning(
+            "chat update_timeline 校验拒绝: %s",
+            "；".join(validation_errors[:5]),
+        )
+        return {
+            "status": "error",
+            "message": "时间轴不可行：" + "；".join(validation_errors[:5])
+            + "（估算口径：景点时长取候选池、交通 30 分钟/段、餐饮 60 分钟，"
+            "请调整方案后重试）",
+        }
     try:
         result = runtime.apply_timeline_from_chat(timeline_obj, reason="对话调整")
     except Exception as exc:  # noqa: BLE001
@@ -833,6 +873,21 @@ def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         "diff_summary": result["diff_summary"],
         "timeline": to_dict(timeline_obj),
     }
+
+
+def _exec_chat_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """对话工具统一分发：update_timeline 走私有逻辑，其余走只读白名单。"""
+    if name == "update_timeline":
+        return _exec_chat_timeline(name, arguments)
+    try:
+        provider = ToolProvider(runtime.registry)
+        result = provider.call_json(name, arguments or {})
+        return {"status": "ok", "result": result}
+    except KeyError as exc:
+        return {"status": "error", "message": f"工具不可用：{exc}"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chat tool %s failed: %s", name, exc)
+        return {"status": "error", "message": f"工具调用失败：{exc}"}
 
 
 def _chat_system_prompt() -> str:
@@ -927,14 +982,22 @@ def chat(request: HttpRequest) -> JsonResponse:
     try:
         result = client.generate(
             messages,
-            tools=[CHAT_TIMELINE_TOOL],
-            tool_executor=_exec_chat_timeline,
-            max_tool_rounds=3,
+            tools=_chat_tools(),
+            tool_executor=_exec_chat_tool,
+            max_tool_rounds=5,   # v2.2：查询真源 + 改行程 + 校验重试需要更多轮
             expect_json=False,   # 对话模式：工具回路后返回自然语言
         )
         reply = str(result.get("content") or "").strip()
         if not reply:
             reply = "已处理你的请求。"
+    except ValueError as exc:
+        # 工具轮次超限等「流程性」失败：给用户友好提示而非 502
+        logger.warning("chat flow rejected: %s", exc)
+        return JsonResponse({
+            "reply": "抱歉，这次调整没有完成（操作步骤过多）。"
+                     "请简化需求或分步提出，例如只调整一个景点。",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        })
     except Exception as exc:  # noqa: BLE001
         logger.error("chat failed: %s", exc)
         return _error(f"LLM 调用失败: {exc}", status=502)
