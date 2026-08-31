@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -15,7 +17,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from config.settings import settings
-from core.schemas import ActionStatus, to_dict
+from core.schemas import ActionStatus, EventType, MonitorEvent, to_dict
 from itinerary.ics_exporter import build_ics
 from itinerary.markdown_exporter import render_markdown
 from runtime.agent_runtime import runtime
@@ -484,6 +486,183 @@ def execution_lookahead(request: HttpRequest) -> JsonResponse:
         "status": "ok",
         "events": [to_dict(e) for e in events],
         "count": len(events),
+    })
+
+
+# ── 突发事件注入（演示专用）──────────────────────────────────────────────
+# 真链路注入：构造 MonitorEvent → agent.handle_event() → 影响判定 →
+# 决策（A 侧 BDecisionHook）→ 重规划 → 回填 /api/replans 与 /api/timeline。
+# App 零改动：/api/events、/api/replans、/api/timeline 照常轮询即可看到。
+# 公网（穿透）演示时建议设环境变量 DEBUG_INJECT_TOKEN，请求带 X-Debug-Token 头。
+
+PRESET_EVENTS: Dict[str, Dict[str, Any]] = {
+    "storm": {
+        "description": "天气转暴雨（降雨概率 10% → 85%）",
+        "event_type": EventType.WEATHER,
+        "data": {"condition": "暴雨", "rain_probability": 85, "uv_index": 2},
+    },
+    "queue": {
+        "description": "景点排队暴涨（20 → 120 分钟）",
+        "event_type": EventType.SCENIC,
+        "data": {"queue_min": 120},
+    },
+    "traffic_jam": {
+        "description": "交通拥堵延误 45 分钟",
+        "event_type": EventType.TRAFFIC,
+        "data": {"delay_min": 45, "congestion": "拥堵"},
+    },
+    "hotel_full": {
+        "description": "酒店满房（触发换宿决策）",
+        "event_type": EventType.BOOKING,
+        "data": {"hotel_full": True},
+    },
+}
+
+
+def _split_traffic_place(place: str) -> tuple:
+    """把 "北京→故宫" / "北京-故宫" / "北京 故宫" 拆成 (origin, destination)。"""
+    for sep in ("→", "->", "-", " "):
+        if sep in place:
+            parts = [p.strip() for p in place.split(sep, 1)]
+            if parts[0] and parts[1]:
+                return parts[0], parts[1]
+    return place, place
+
+
+def _build_inject_event(payload: Dict[str, Any], timeline: Any) -> MonitorEvent:
+    """payload → MonitorEvent（校验失败抛 ValueError）。
+
+    body（二选一）：
+      {"scenario": "storm|queue|traffic_jam|hotel_full", "place": "故宫", ...}
+      {"event_type": "weather|scenic|traffic|food|booking", "place": "...",
+       "data": {...}}
+    """
+    preset = payload.get("scenario")
+    if preset is not None:
+        spec = PRESET_EVENTS.get(str(preset))
+        if spec is None:
+            raise ValueError(
+                f"unknown scenario: {preset}（可选：{', '.join(PRESET_EVENTS)}）"
+            )
+        event_type = spec["event_type"]
+        data: Dict[str, Any] = dict(spec["data"])
+        place = str(payload.get("place") or "")
+    else:
+        try:
+            event_type = EventType(str(payload.get("event_type", "")))
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid event_type: {payload.get('event_type')!r}"
+            ) from exc
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            raise ValueError("data must be an object")
+        data = dict(data)
+        place = str(payload.get("place") or "")
+    # place 缺省：天气/交通事件挂城市（与轮询规则语义一致），其余类型必填
+    if not place:
+        city = getattr(timeline, "city", None) or "北京"
+        if event_type in (EventType.WEATHER, EventType.TRAFFIC):
+            place = city
+        else:
+            raise ValueError(f"place is required for event_type={event_type.value}")
+    # 预订满房：hotel_id 是 _significant 判定的必填键，按名称映射
+    # （与 _on_booking_failed 的 fallback 同风格）
+    if event_type == EventType.BOOKING and not data.get("hotel_id"):
+        data["hotel_id"] = place
+    return MonitorEvent(
+        event_id=f"inject-{uuid.uuid4().hex[:8]}",
+        event_type=event_type,
+        place=place,
+        observed_at=datetime.now(),
+        rule_name=str(payload.get("rule_name") or "debug-inject"),
+        spot_id=str(payload.get("spot_id") or ""),
+        data=data,
+    )
+
+
+def _apply_persist_world(world: Any, event: MonitorEvent) -> None:
+    """把注入状态写进假池（MockWorld）：后续轮询持续看到异常，而非一次性事件。
+
+    Live 模式下 MockWorld 是 override 层（WeatherToolLive 等在 API 数据上
+    叠加），因此该写入对 mock / live 两种数据模式都生效。
+    """
+    data = event.data or {}
+    if event.event_type == EventType.WEATHER:
+        world.set_weather(
+            condition=str(data.get("condition", "暴雨")),
+            rain_probability=int(data.get("rain_probability", 85)),
+            uv_index=int(data.get("uv_index", 2)),
+        )
+    elif event.event_type == EventType.SCENIC:
+        world.set_queue(event.place, int(data.get("queue_min", 120)))
+    elif event.event_type == EventType.TRAFFIC:
+        origin, destination = _split_traffic_place(event.place)
+        world.set_traffic_delay(
+            origin, destination,
+            int(data.get("delay_min", 45)),
+            congestion=str(data.get("congestion", "拥堵")),
+        )
+    # BOOKING / FOOD：无 world 状态可写
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def debug_inject(request: HttpRequest) -> JsonResponse:
+    """演示专用：注入突发事件，走真实链路（监控 → 影响判定 → 决策 → 重规划）。
+
+    body（二选一）：
+      {"scenario": "storm|queue|traffic_jam|hotel_full", "place": "故宫", ...}
+      {"event_type": "weather|scenic|traffic|food|booking", "place": "...",
+       "data": {...}}
+    可选字段：
+      "persist_world": true → 同步写进假池（MockWorld），后续轮询持续可见
+        （默认 false：一次性事件，避免轮询再次触发重复决策）；
+      "rule_name" / "spot_id" / "observed_at" 透传给 MonitorEvent。
+    鉴权：环境变量 DEBUG_INJECT_TOKEN 非空时，要求 X-Debug-Token 请求头。
+    前置：必须先 POST /api/plan/（或 /api/timeline/）建好时间轴。
+    """
+    token = settings.debug_inject_token
+    if token and request.headers.get("X-Debug-Token") != token:
+        return _error("invalid or missing X-Debug-Token", status=401)
+    payload = _json_body(request)
+    if not isinstance(payload, dict) or not payload:
+        return _error("JSON body required")
+    try:
+        agent = runtime.require_agent()
+        event = _build_inject_event(payload, runtime.timeline)
+    except (RuntimeError, ValueError) as exc:
+        return _error(str(exc), status=400)
+    if not token:
+        logger.warning("debug_inject 未设 DEBUG_INJECT_TOKEN，公网可达时建议配置")
+    # 可选：同步写进假池（Live 模式同样叠加 override）
+    if payload.get("persist_world") and getattr(runtime, "world", None) is not None:
+        try:
+            _apply_persist_world(runtime.world, event)
+        except Exception:  # noqa: BLE001
+            logger.exception("persist_world failed")
+    # 真链路：缓冲进 /api/events → 影响判定 → DecisionRequest → 重规划
+    n_before = len(runtime.replan_history)
+    try:
+        req = asyncio.run(agent.handle_event(event))
+    except Exception:  # noqa: BLE001
+        logger.exception("handle_event failed")
+        return _error("handle_event failed（见服务端日志）", status=500)
+    recorded = len(runtime.replan_history) > n_before
+    entry = runtime.replan_history[-1] if recorded else None
+    decision = entry.get("decision") if entry else None
+    return JsonResponse({
+        "status": "ok",
+        "scenario": payload.get("scenario"),
+        "event": to_dict(event),
+        "significant": req is not None,
+        "decision": (
+            "replanned" if (decision and decision.get("new_timeline"))
+            else ("recorded" if recorded
+                  else ("hook_error" if req is not None else "not_significant"))
+        ),
+        "replan": entry,
+        "timeline_changed": bool(decision and decision.get("new_timeline")),
     })
 
 

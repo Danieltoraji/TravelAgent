@@ -62,6 +62,11 @@ class Settings:
     booking_persist_path: str = field(default_factory=lambda: os.environ.get(
         "BOOKING_PERSIST_PATH", ""))
 
+    # 演示注入端点鉴权：DEBUG_INJECT_TOKEN 环境变量；空 = 开放（单用户 Demo
+    # 风格）并在注入时记警告日志。公网（穿透）演示务必设置。
+    debug_inject_token: str = field(default_factory=lambda: os.environ.get(
+        "DEBUG_INJECT_TOKEN", ""))
+
     # ── M5 生产化配置 ──────────────────────────────────────────────
     api_timeout: float = 10.0              # API 请求超时（秒）
     max_retries: int = 3                  # 最大重试次数（首次 + 重试）
@@ -141,6 +146,7 @@ class Settings:
             os.environ.get("ROLLINGGO_MCP_RETRY_BACKOFF_BASE", "1.0"))
         self.juhe_flight_key = os.environ.get("JUHE_FLIGHT_KEY", "")
         self.aviationstack_key = os.environ.get("AVIATIONSTACK_KEY", "")
+        self.debug_inject_token = os.environ.get("DEBUG_INJECT_TOKEN", "")
         try:
             from config.local_settings import apply_local_settings
             apply_local_settings(self)

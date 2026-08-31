@@ -42,6 +42,9 @@ urlpatterns = [
     path("execution/poll/", views.execution_poll, name="execution_poll"),
     path("execution/lookahead/", views.execution_lookahead, name="execution_lookahead"),
 
+    # 演示专用：突发事件注入（真链路 → 决策 → 重规划），见 docs/demo_event_injection.md
+    path("debug/inject/", views.debug_inject, name="debug_inject"),
+
     path("export/ics/", views.export_ics, name="export_ics"),
     path("export/markdown/", views.export_markdown, name="export_markdown"),
 

@@ -59,7 +59,7 @@ jobs:
         #   必填：DEEPSEEK_API_KEY
         #   可选：DEMO_MODE / LLM_PROVIDER / DEEPSEEK_MODEL / QWEATHER_API_KEY /
         #         QWEATHER_API_HOST / AMAP_API_KEY / ROLLINGGO_API_KEY / USE_LIVE_DATA
-        #         JUHE_FLIGHT_KEY / AVIATIONSTACK_KEY
+        #         JUHE_FLIGHT_KEY / AVIATIONSTACK_KEY / DEBUG_INJECT_TOKEN
         #         （缺省值见 ENV_CONTENT）
         # 注意：本步会覆盖服务器上的旧 .env（维护时以 Secrets 为准）。
         env:
@@ -74,6 +74,8 @@ jobs:
             DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
             DEEPSEEK_BASE_URL=${{ secrets.DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
             DEEPSEEK_MODEL=${{ secrets.DEEPSEEK_MODEL || 'deepseek-v4-flash' }}
+            # 演示注入端点鉴权（公网必须设置；请求需带 X-Debug-Token 头）
+            DEBUG_INJECT_TOKEN=${{ secrets.DEBUG_INJECT_TOKEN }}
             QWEATHER_API_KEY=${{ secrets.QWEATHER_API_KEY }}
             QWEATHER_API_HOST=${{ secrets.QWEATHER_API_HOST }}
             AMAP_API_KEY=${{ secrets.AMAP_API_KEY }}

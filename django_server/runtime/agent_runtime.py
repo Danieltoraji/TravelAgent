@@ -28,7 +28,7 @@ from core.schemas import (
 )
 from execution.execution_agent import ExecutionAgent
 from runtime.a_interface import build_decision_hook, build_planner_hook
-from tools import ToolProvider, ToolRegistry, build_registry
+from tools import MockWorld, ToolProvider, ToolRegistry, build_registry
 
 logger = logging.getLogger("runtime.agent")
 
@@ -78,7 +78,10 @@ class AgentRuntime:
     """Django 进程内的单例 AB Runtime（单用户 Demo 用）。"""
 
     def __init__(self) -> None:
-        self.registry: ToolRegistry = build_registry()
+        # 共享 MockWorld：假池数据源，同时是 Live 模式下的突发事件 override 层。
+        # /api/debug/inject/ 的 persist_world 直接操作它，让注入状态对后续轮询持续可见。
+        self.world: MockWorld = MockWorld()
+        self.registry: ToolRegistry = build_registry(self.world)
         self.tool_provider = ToolProvider(self.registry)
         # E5：动作/预约持久化（BOOKING_PERSIST_PATH 开启，默认关闭避免测试/本地污染）
         self.booking_manager = BookingManager(
