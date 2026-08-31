@@ -522,16 +522,52 @@ class AmapClient:
 
     @staticmethod
     def _extract_transit_route(resp: Dict[str, Any]) -> Dict[str, Any]:
-        """从公交路线规划响应中提取距离和耗时。"""
+        """从公交路线规划响应中提取距离/耗时/票价 + 具体线路导航。
+
+        2026-09-01：新增 ``transit_text``（如「步行858m → 124路 2站 → 步行398m」，
+        逐段拼接公交线路与步行距离）与 ``walking_m``（步行总距离），
+        供 C 端展示公共交通具体信息与路程。
+        """
         route = resp.get("route", {})
         transit = route.get("transits", [])
         if not transit:
             raise ValueError("高德公交路线规划返回为空")
         first = transit[0]
+        segments = first.get("segments") or []
+        text_parts: List[str] = []
+        walking_total = 0
+        for seg in segments:
+            walking = seg.get("walking") or {}
+            walk_m = int(float(walking.get("distance", 0) or 0))
+            if walk_m > 0:
+                walking_total += walk_m
+                text_parts.append(f"步行{walk_m}m")
+            bus = seg.get("bus") or {}
+            for bl in bus.get("buslines") or []:
+                name = str(bl.get("name") or "").strip()
+                if not name:
+                    continue
+                part = name
+                try:
+                    via = int(bl.get("via_num", 0) or 0)
+                    if via > 0:
+                        part += f" {via + 1}站"
+                except (TypeError, ValueError):
+                    pass  # via_num 异常时不显示站数
+                text_parts.append(part)
+        transit_text = " → ".join(text_parts) if text_parts else ""
+        try:
+            walking_m = int(float(first.get("walking_distance", 0) or 0))
+        except (TypeError, ValueError):
+            walking_m = walking_total
+        if walking_m <= 0:
+            walking_m = walking_total
         return {
             "distance": int(float(first.get("distance", 0) or 0)),
             "duration": int(float(first.get("duration", 0) or 0)),
             "cost": int(float(first.get("cost", 0) or 0)),
+            "transit_text": transit_text,
+            "walking_m": walking_m,
         }
 
     @staticmethod

@@ -262,6 +262,8 @@ def plan(request: HttpRequest) -> JsonResponse:
     if not timeline_obj.days:
         err = getattr(runtime, "_last_planner_error", None) or "planner produced empty timeline"
         return _error(f"规划失败：{err}")
+    # 2026-09-01：规划后补充真源公交导航（并发3、失败静默，约 +2~8s）
+    runtime.enrich_transport_details(timeline_obj)
     return JsonResponse({
         "status": "ok",
         "message": "Timeline generated from requirement",

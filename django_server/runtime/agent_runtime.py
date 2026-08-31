@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -475,6 +476,8 @@ class AgentRuntime:
             )
         else:
             self.init_timeline(timeline)
+        # 2026-09-01：对话改行程后同样补充真源公交导航（失败静默）
+        self.enrich_transport_details(timeline)
         diff = _timeline_diff(old_timeline, timeline) if old_timeline is not None else []
         entry = {
             "id": f"replan-{len(self.replan_history) + 1}",
@@ -502,6 +505,64 @@ class AgentRuntime:
         return {"diff_summary": diff, "entry_id": entry["id"]}
 
     # -- 执行入口（Django 同步视图内包 asyncio） --------------------------
+
+    def enrich_transport_details(self, timeline: Any, max_workers: int = 3) -> None:
+        """对时间轴 transport 段并发查询真源公交导航（map.route transit）。
+
+        2026-09-01（C 端反馈：交通段只有时长、前端兜底渲染）：
+        成功后把 ``{mode, distance_km, duration_min, fare, transit,
+        transit_text, walking_m, source:"live"}`` 合并进 ``Place.details``
+        供 C 端展示公共交通具体信息与路程；失败/无真源静默降级
+        （保留矩阵时长与透传的 from/to/distance_km）。
+
+        并发 max_workers=3 对齐高德免费 key QPS（~3/s）：每线程同一时刻
+        最多 1 个在途请求（geocode → route 顺序依赖），并发意义是重叠
+        网络等待；瞬时超限由 amap_client 10021 退避重试兜底。
+        """
+        if not getattr(settings, "use_real_map_api", False):
+            return
+        segments = [
+            item for day in timeline.days for item in day.items
+            if getattr(item, "category", "") == "transport"
+        ]
+        if not segments:
+            return
+        city = getattr(timeline, "city", "") or ""
+
+        def _split_name(name: str):
+            for sep in ("→", "->", "-"):
+                if sep in name:
+                    parts = [p.strip() for p in name.split(sep, 1)]
+                    if parts[0] and parts[1]:
+                        return parts[0], parts[1]
+            return "", ""
+
+        def _enrich(item: Any) -> None:
+            try:
+                origin = str((item.details or {}).get("from") or "").strip()
+                destination = str((item.details or {}).get("to") or "").strip()
+                if not origin or not destination:
+                    origin, destination = _split_name(item.name)
+                if not origin or not destination:
+                    return
+                result = self.registry.call(
+                    "map", action="route",
+                    origin=origin, destination=destination,
+                    city=city, mode="transit",
+                )
+                if result.status.value != "ok" or not isinstance(result.data, dict):
+                    return
+                merged = dict(item.details or {})
+                for key in ("mode", "distance_km", "duration_min", "fare",
+                            "transit", "transit_text", "walking_m", "source"):
+                    if result.data.get(key) is not None:
+                        merged[key] = result.data[key]
+                item.details = merged
+            except Exception:  # noqa: BLE001  单段失败静默降级，不阻断
+                pass
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            list(pool.map(_enrich, segments))
 
     def poll(self) -> List[MonitorEvent]:
         return asyncio.run(self.require_agent().poll_once())

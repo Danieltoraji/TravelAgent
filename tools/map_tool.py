@@ -369,7 +369,7 @@ class MapToolLive(MapTool):
             fare = 0.0
 
         duration_min = round(duration_s / 60)          # 秒 → 分钟
-        return {
+        result: Dict[str, Any] = {
             "from": origin,
             "to": destination,
             "mode": mode,
@@ -380,6 +380,13 @@ class MapToolLive(MapTool):
             "fare": fare,
             "source": "live",
         }
+        # 2026-09-01：公交模式附带具体线路导航（amap_client 提取），
+        # 供 C 端展示「地铁8号线 3站 → 步行300m」。
+        if mode == "transit" and route_data.get("transit_text"):
+            result["transit_text"] = route_data["transit_text"]
+        if mode == "transit" and route_data.get("walking_m"):
+            result["walking_m"] = route_data["walking_m"]
+        return result
 
     def _batch_route(self, origins: List[str], destinations: List[str],
                      mode: str = "driving", city: str = "北京") -> List[Dict[str, Any]]:

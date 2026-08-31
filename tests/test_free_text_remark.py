@@ -149,6 +149,9 @@ def test_plan_view_feeds_parsed_payload_to_runtime(monkeypatch):
             captured.append(payload)
             return _FakeTimeline()
 
+        def enrich_transport_details(self, timeline):  # 2026-09-01：no-op
+            return None
+
     fake_runtime = _FakeRuntime()
     # views.py 顶层 `from runtime.agent_runtime import runtime` 持有引用，
     # 直接换 views 命名空间里的名字。
@@ -208,6 +211,9 @@ def test_plan_view_rejects_missing_budget(monkeypatch):
         def init_from_requirement(self, payload):
             self.calls += 1  # 正常预算路径才应进规划
             return type("TL", (), {"days": [{"day": 1}]})()
+
+        def enrich_transport_details(self, timeline):  # 2026-09-01：no-op
+            return None
 
     fake = _FakeRuntime()
     monkeypatch.setattr(views, "runtime", fake)
