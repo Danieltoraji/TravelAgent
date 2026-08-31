@@ -183,6 +183,10 @@ def _node_to_place(node: Dict[str, Any]) -> Place:
         average_cost=float(details.get("average_cost") or 0.0),
         # 8.30 预算口径：讲解费明细（人均 × 人数 的汇总在 TripTimeline.cost_breakdown）
         guide_price=float(details.get("guide_price") or 0.0),
+        # 2026-08-31：is_must_visit 透传进 Place.details——B 侧发起的 replan
+        # （current_timeline 往返）依赖它在 RePlanner 中恢复 must 保护，
+        # 此前该字段在 A→B 转换时丢失导致 live 计划重规划时必去景点可被删。
+        details=({"is_must_visit": True} if details.get("is_must_visit") else {}),
     )
 
 
@@ -343,13 +347,18 @@ def trip_timeline_to_plan(
                 end = start
             if not item.name:
                 continue
+            node_details: Dict[str, Any] = {"spot_id": str(item.id or "")}
+            # 2026-08-31：B Place.details 里的 must 标记还原进节点，
+            # RePlanner 的 must 保护在 current_timeline 往返链路中生效。
+            if (item.details or {}).get("is_must_visit"):
+                node_details["is_must_visit"] = True
             route_details.append(
                 build_itinerary_node(
                     node_type,
                     item.name,
                     start,
                     end,
-                    {"spot_id": str(item.id or "")},
+                    node_details,
                 )
             )
         days.append(

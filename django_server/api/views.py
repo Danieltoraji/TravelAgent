@@ -529,6 +529,33 @@ def _split_traffic_place(place: str) -> tuple:
     return place, place
 
 
+def _resolve_hotel_id(place: str, timeline: Any) -> str:
+    """按名称从酒店池解析 hotel_id（与 runtime._on_booking_failed 同款映射）。
+
+    假池（DEMO_MODE）路径：place 名称 → 假池 Hotel.id（BJ_HXXX）；
+    live 路径：live 酒店不在假池，映射失败原样返回名称——调用方可显式传
+    ``data.hotel_id``（如从 /api/timeline/ 的 Place.id 取值，live 换宿才生效）。
+    """
+    try:
+        from data_transmission.hotel import load_hotels
+
+        city = getattr(timeline, "city", None) or ""
+        place_key = str(place).replace("（满房）", "").replace("满房", "").strip()
+        for h in load_hotels(city):
+            if h.name == place_key or str(h.id) == place_key:
+                return str(h.id)
+        match = next(
+            (h for h in load_hotels(city)
+             if place_key.startswith(h.name) or h.name.startswith(place_key)),
+            None,
+        )
+        if match is not None:
+            return str(match.id)
+    except Exception:  # noqa: BLE001  池映射失败回退原名称
+        pass
+    return place
+
+
 def _build_inject_event(payload: Dict[str, Any], timeline: Any) -> MonitorEvent:
     """payload → MonitorEvent（校验失败抛 ValueError）。
 
@@ -566,10 +593,10 @@ def _build_inject_event(payload: Dict[str, Any], timeline: Any) -> MonitorEvent:
             place = city
         else:
             raise ValueError(f"place is required for event_type={event_type.value}")
-    # 预订满房：hotel_id 是 _significant 判定的必填键，按名称映射
-    # （与 _on_booking_failed 的 fallback 同风格）
+    # 预订满房：hotel_id 是 _significant 判定的必填键；未显式传时按名称解析
+    # 酒店池 id（2026-08-31：live 酒店映射失败回退名称，可显式传 data.hotel_id）
     if event_type == EventType.BOOKING and not data.get("hotel_id"):
-        data["hotel_id"] = place
+        data["hotel_id"] = _resolve_hotel_id(place, timeline)
     return MonitorEvent(
         event_id=f"inject-{uuid.uuid4().hex[:8]}",
         event_type=event_type,

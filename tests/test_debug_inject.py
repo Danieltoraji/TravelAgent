@@ -192,7 +192,24 @@ class TestDebugInject(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         ev = agent.calls[0]
         self.assertEqual(ev.event_type, EventType.BOOKING)
-        self.assertEqual(ev.data["hotel_id"], "皇城景观酒店")
+        # 2026-08-31：place 名称解析为酒店池真实 id（换宿排除必须用池 id）
+        self.assertEqual(ev.data["hotel_id"], "BJ_H001")
+
+    def test_booking_hotel_id_fallback_to_name(self) -> None:
+        """live 酒店（不在假池）名称解析失败 → 回退原名称（可显式传 data.hotel_id）。"""
+        agent = FakeAgent()
+        runtime.agent = agent
+        resp = self._run({"scenario": "hotel_full", "place": "布丁酒店(北京西站店)"})
+        self.assertEqual(resp.status_code, 200)
+        ev = agent.calls[0]
+        self.assertEqual(ev.data["hotel_id"], "布丁酒店(北京西站店)")
+        # 显式传 hotel_id 优先
+        resp2 = self._run({
+            "event_type": "booking", "place": "布丁酒店(北京西站店)",
+            "data": {"hotel_full": True, "hotel_id": "577984"},
+        })
+        ev2 = agent.calls[1]
+        self.assertEqual(ev2.data["hotel_id"], "577984")
 
     def test_replanned_response_mapping(self) -> None:
         agent = FakeAgent(significant=True, record_replan=True)

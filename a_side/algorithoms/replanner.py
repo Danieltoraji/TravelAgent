@@ -162,23 +162,33 @@ def _translate_closed_event(
 def _translate_weather_event(
     event: Dict[str, Any], translation: Dict[str, Any]
 ) -> None:
-    """weather 事件 → 事件显式指定景点时扣 match_score；否则无法精准翻译。"""
-    spot_name = event.get("spot")
-    if not spot_name:
-        translation["notes"].append(_NOTE_WEATHER_NO_SPOT)
-        return
+    """weather 事件 → 显式指定景点时扣该景点 match_score；未指定景点
+    （城市级天气，B 侧 weather 事件 spot 为城市名）时对候选池全部景点降权
+    （2026-08-31：城市级暴雨影响所有户外安排，fallback 全量重跑时生效）。"""
     penalty = _severity_penalty(event.get("severity"))
     if penalty <= 0:
         translation["notes"].append("weather 事件缺少有效 severity，已忽略")
         return
-    spot = _match_spot_in_pool(spot_name, translation["candidate_spots"])
-    if spot is None:
-        translation["notes"].append(_NOTE_SPOT_NOT_FOUND)
+    spot_name = event.get("spot")
+    if spot_name:
+        spot = _match_spot_in_pool(spot_name, translation["candidate_spots"])
+        if spot is None:
+            translation["notes"].append(_NOTE_SPOT_NOT_FOUND)
+            return
+        key = _spot_key(spot)
+        translation["spot_score_penalties"][key] = penalty
+        translation["notes"].append(
+            f"{spot.get('name')} 受天气影响，match_score 扣减 {penalty} 分"
+        )
         return
-    key = _spot_key(spot)
-    translation["spot_score_penalties"][key] = penalty
+    for group in translation["candidate_spots"]:
+        for spot in group:
+            key = _spot_key(spot)
+            translation["spot_score_penalties"][key] = max(
+                translation["spot_score_penalties"].get(key, 0), penalty
+            )
     translation["notes"].append(
-        f"{spot.get('name')} 受天气影响，match_score 扣减 {penalty} 分"
+        f"城市级天气影响，候选池全部景点 match_score 扣减 {penalty} 分"
     )
 
 
@@ -269,13 +279,30 @@ def _day_spot_nodes(day: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [node for node in day.get("route_details", []) if node.get("type") == "spot"]
 
 
-def _day_must_keys(day: Dict[str, Any]) -> Set[str]:
-    """某天 is_must_visit=True 的 spot_id 集合（修复时不可移除）。"""
-    return {
-        node.get("details", {}).get("spot_id")
-        for node in _day_spot_nodes(day)
-        if node.get("details", {}).get("is_must_visit")
-    }
+def _day_must_keys(
+    day: Dict[str, Any],
+    pool_by_key: Optional[Dict[str, Spot]] = None,
+    name_index: Optional[Dict[str, str]] = None,
+) -> Set[str]:
+    """某天 is_must_visit=True 的景点 key 集合（修复时不可移除）。
+
+    key 优先取计划 spot_id；spot_id 不在候选池（live 计划 id ``scenic_N`` 与
+    假图池 key ``BJ_XXX`` 两套体系，2026-08-31 修复）时按节点名/别名映射到
+    候选池 key，保证 must 保护在 id 对齐失败时仍然生效。
+    """
+    keys: Set[str] = set()
+    for node in _day_spot_nodes(day):
+        if not node.get("details", {}).get("is_must_visit"):
+            continue
+        sid = node.get("details", {}).get("spot_id")
+        if sid and (pool_by_key is None or sid in pool_by_key):
+            keys.add(sid)
+            continue
+        if name_index is not None:
+            alt = name_index.get(str(node.get("name") or ""))
+            if alt is not None:
+                keys.add(alt)
+    return keys
 
 
 def _pool_by_key(candidate_spots: Sequence[Sequence[Spot]]) -> Dict[str, Spot]:
@@ -284,23 +311,54 @@ def _pool_by_key(candidate_spots: Sequence[Sequence[Spot]]) -> Dict[str, Spot]:
     }
 
 
+def _pool_name_index(pool_by_key: Dict[str, Spot]) -> Dict[str, str]:
+    """候选池「名称/别名 → 池 key」索引。
+
+    live 计划节点 spot_id（``scenic_N``）与假图候选池 key（``BJ_XXX``）
+    不一致时，用节点名称/别名对齐（2026-08-31 修复：queue/closed 增量修复
+    此前因 id 交集为空而整体空转）。
+    """
+    index: Dict[str, str] = {}
+    for key, spot in pool_by_key.items():
+        index.setdefault(str(spot.get("name") or ""), key)
+        for alias in spot.get("alias") or []:
+            index.setdefault(str(alias), key)
+    return index
+
+
 def _restore_day_spots(
     day: Dict[str, Any],
     pool_by_key: Dict[str, Spot],
     removed_keys: Set[str],
+    name_index: Optional[Dict[str, str]] = None,
+    deltas: Optional[Dict[str, int]] = None,
 ) -> List[Spot]:
     """把某天 route_details 的 spot 节点还原成完整 spot dict 序列。
 
     closed 移除的景点（removed_keys）直接跳过；计划里找不到对应 spot dict
     （不在修改后候选池）的节点也跳过，避免修复时引用已失效的景点。
+    ``spot_id`` 在候选池查不到时按名称/别名兜底（``name_index``），
+    对齐 live 计划与假图池两套 id 体系；兜底景点若不在排队增量内
+    （``deltas``）则保留 live 计划的原始时长，避免大景点时长被假池数据突变。
     """
     restored: List[Spot] = []
     for node in _day_spot_nodes(day):
         key = node.get("details", {}).get("spot_id")
-        if key in removed_keys:
-            continue
         spot = pool_by_key.get(key)
-        if spot is None:
+        if spot is None and name_index is not None:
+            alt = name_index.get(str(node.get("name") or ""))
+            if alt is not None:
+                spot = pool_by_key.get(alt)
+                if spot is not None and (
+                    deltas is None or _spot_key(spot) not in deltas
+                ):
+                    node_dur = node.get("duration_minutes") or (
+                        node.get("details", {}) or {}
+                    ).get("duration_minutes")
+                    if node_dur:
+                        spot = dict(spot)
+                        spot["duration"] = int(node_dur)
+        if spot is None or _spot_key(spot) in removed_keys:
             continue
         restored.append(spot)
     return restored
@@ -630,7 +688,13 @@ def _repair_affected_days(
     pool_by_key = _pool_by_key(pool)
 
     # 定位受影响天：queue 增量 / closed 移除 的景点所在天。
+    # spot_id 与候选池 key 两套体系（live scenic_N vs 假图 BJ_XXX）时，
+    # 用名称/别名兜底对齐（2026-08-31 修复：此前交集为空导致修复整体跳过）。
+    name_index = _pool_name_index(pool_by_key)
     affected_keys = set(deltas) | removed_keys
+    affected_names = {
+        pool_by_key[key].get("name") for key in affected_keys if key in pool_by_key
+    }
     affected_indexes = {
         index
         for index, day in enumerate(raw_days)
@@ -639,16 +703,20 @@ def _repair_affected_days(
             for node in _day_spot_nodes(day)
         }
         & affected_keys
+        or ({
+            node.get("name") for node in _day_spot_nodes(day)
+        } & {n for n in affected_names if n})
     }
 
     day_spots = [
-        _restore_day_spots(day, pool_by_key, removed_keys) for day in raw_days
+        _restore_day_spots(day, pool_by_key, removed_keys, name_index, deltas)
+        for day in raw_days
     ]
 
     notes = list(translation["notes"])
 
     def day_must_keys_of(index: int) -> Set[str]:
-        return _day_must_keys(raw_days[index])
+        return _day_must_keys(raw_days[index], pool_by_key, name_index)
 
     # 第一遍：逐个修复受影响天（含事件感知错峰，见 _repair_day）。
     # day_results：index -> (ordered, elapsed, refilled, removed_for_time)
@@ -948,6 +1016,16 @@ def _build_changes(
     deltas = translation["spot_duration_deltas"]
     penalties = translation["spot_score_penalties"]
     removed_keys = {_spot_key(spot) for spot in translation["removed_spots"]}
+
+    # 2026-08-31：live 计划 id（scenic_N）与假图候选池 key（BJ_XXX）两套体系，
+    # 同名景点在新计划里 key 可能变化——按名称归并后再 diff，避免
+    # 「同一景点」被误报为 removed + added。
+    old_by_name: Dict[str, str] = {s["name"]: k for k, s in old_spots.items()}
+    new_by_name: Dict[str, str] = {s["name"]: k for k, s in new_spots.items()}
+    for name in set(old_by_name) & set(new_by_name):
+        old_key, new_key = old_by_name[name], new_by_name[name]
+        if old_key != new_key:
+            new_spots[old_key] = new_spots.pop(new_key)
 
     changes: List[Dict[str, Any]] = []
     for spot_key in sorted(set(old_spots) | set(new_spots)):
