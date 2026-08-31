@@ -201,6 +201,37 @@ class LLMClient:
         conversation.append({"role": "assistant", "content": raw_content or ""})
         conversation.append({"role": "user", "content": feedback})
 
+    def chat_text(
+        self,
+        messages: List[Dict[str, str]],
+        max_retries: int = 2,
+    ) -> str:
+        """纯文本对话（无 JSON Schema / 无工具）：返回模型回复文本。
+
+        2026-09-01：面向 C 端对话接口（POST /api/chat/）新增。
+        ``generate()`` 是 JSON 强制模式，对话场景用本方法直接取
+        ``choice.message.content``；系统指令由调用方作为消息列表首条传入。
+        """
+        conversation = list(messages)
+        for attempt in range(max_retries):
+            try:
+                response = self._request_completion(
+                    self._build_request_params(conversation, None, None)
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"LLM request failed: model={self.model_name}, "
+                    f"base_url={self.base_url}, detail={exc}"
+                ) from exc
+            if not getattr(response, "choices", None):
+                raise RuntimeError("LLM response contains no choices")
+            content = getattr(response.choices[0].message, "content", None)
+            if content and str(content).strip():
+                return str(content)
+        raise RuntimeError(
+            f"LLM returned empty content after {max_retries} retries"
+        )
+
     def generate(
         self,
         messages,

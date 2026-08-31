@@ -171,6 +171,12 @@ class AgentRuntime:
             def hook(req: Any) -> Any:
                 replan = raw_hook(req)
                 self._record_decision(req, replan)
+                # 2026-08-31：apply_replan 只更新 agent.timeline（决策链路），
+                # 这里同步 runtime.timeline（/api/timeline/ 展示端）——
+                # 条件与 execution_agent.apply_replan 一致（new_timeline 非空）。
+                # 此前重规划后 C 端拉 /api/timeline/ 仍是旧路线。
+                if replan is not None and getattr(replan, "new_timeline", None) is not None:
+                    self.timeline = replan.new_timeline
                 return replan
 
             self._decision_hook = hook
