@@ -3,6 +3,44 @@
 面向 C（React + Capacitor 前端）的旅行助手对话接口，由 B 端调用大模型
 （DeepSeek/GLM，复用 `a_side/call_llm` 设施）并返回回复文本。
 
+**v2（2026-09-01）**：对话中模型可调用私有工具 `update_timeline`
+**直接修改后端时间轴**——用户说「把故宫挪到下午」，模型输出结构化新时间轴
+→ 服务端校验 → 应用 → 记入 `/api/replans`（source=chat）。C 端**零改动**：
+App 的轮询逻辑检测到 replan 数量变化即自动刷新 `/api/timeline/`。
+
+## 〇、v2 对话改时间轴
+
+### 工作方式
+
+1. 用户消息进入对话（带行程上下文系统提示词 + `update_timeline` 工具描述）；
+2. 模型判断需要调整行程时，输出完整新时间轴（与 `GET /api/timeline/`
+   返回结构同构，Schema 见代码 `views.CHAT_TIMELINE_TOOL`）；
+3. 服务端校验（必填字段 / 日期 / 时间格式 / 景点非空），失败则把错误
+   回填给模型自动重试（最多 3 轮工具调用）；
+4. 校验通过 → `runtime.apply_timeline_from_chat`：替换时间轴、重建监控
+   规则、**保留已预约状态**，并记录：
+   - `/api/replans/` 新增一条（`source: "chat"`、`decision.diff_summary` 含
+     `[added] / [removed] / [rescheduled]` 改动点）——App 据此自动刷新；
+   - `/api/timeline/history/` 新增一条（reason=对话调整）；
+5. 模型继续生成自然语言总结（如「已把景山公园挪到 15:00」）。
+
+### C 端说明
+
+- **无需任何改动**：对话请求/响应契约不变（仍是 `{message, history}` →
+  `{reply, elapsed_ms}`）；时间轴变化经既有 replan 轮询自动呈现。
+- 可选增强：通知中心可展示 `source="chat"` 的调整卡片（读 `/api/replans/`
+  的 `diff_summary`），非必须。
+
+### 限制（v2 范围）
+
+- 服务端只做**结构 + 基础语义校验**（时间格式/日期连续/景点非空）；
+  闭馆、交通可行性等深度校验留待 v2.2；
+- `update_timeline` 是**对话私有工具**（不进通用工具面，其他接口不可调用）；
+- 模型可能拒绝修改（如需求冲突）→ 正常对话回复，不调工具；
+- 未建行程时工具返回错误，模型会告知用户先规划。
+
+---
+
 ## 一、接口契约
 
 ```
@@ -54,7 +92,8 @@ Content-Type: application/json
 
 ### 限制
 
-- **v1 纯对话**：无工具调用（后续 v2 可接入只读工具真源）；
+- **v2 支持对话改时间轴**（见上文「〇」节）；工具调用仅限 `update_timeline`
+  私有工具，无其它工具（真源查询留 v2.2）；
 - 非流式：3–10 秒返回（取决于模型），**C 端必须展示 loading 态**；
 - 无鉴权（与现有单用户 demo 一致）；公网部署时注意成本，后续可加 token。
 

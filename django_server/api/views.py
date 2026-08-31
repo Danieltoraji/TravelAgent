@@ -750,9 +750,89 @@ def config_reload(request: HttpRequest) -> JsonResponse:
 # ── C 端对话（旅行助手，2026-09-01 新增）───────────────────────────────
 # 面向 C 的对话接口：C 端维护会话历史（服务端无状态），请求带当前消息 +
 # 历史；服务端把行程上下文（行程摘要 / 需求 / 最近重规划原因）注入系统
-# 提示词，让助手能回答「我的行程」类问题。v1 纯对话（无工具调用）。
+# 提示词。v2：对话可调用私有工具 ``update_timeline`` 直接修改时间轴
+# （LLM 输出结构化新时间轴 → 服务端校验 → 应用 → 记 replan_history，
+# App 轮询自动刷新，前端零改动）。工具不进 registry，仅本会话内生效。
 
 CHAT_HISTORY_LIMIT = 20
+
+# update_timeline 的参数 Schema（与 GET /api/timeline/ 返回结构同构）
+_TIMELINE_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "city": {"type": "string", "description": "城市，如 北京"},
+        "start_date": {"type": "string", "description": "开始日期 YYYY-MM-DD"},
+        "end_date": {"type": "string", "description": "结束日期 YYYY-MM-DD"},
+        "days": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "day": {"type": "integer"},
+                    "date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "category": {
+                                    "type": "string",
+                                    "enum": ["scenic", "food", "hotel", "transport"],
+                                },
+                                "arrival": {"type": "string", "description": "到达时间 HH:MM"},
+                                "end_time": {"type": "string", "description": "HH:MM，可空"},
+                                "queue_min": {"type": "integer"},
+                                "ticket_required": {"type": "boolean"},
+                                "price": {"type": "number"},
+                            },
+                            "required": ["name", "arrival"],
+                        },
+                    },
+                },
+                "required": ["day", "date", "items"],
+            },
+        },
+    },
+    "required": ["city", "start_date", "end_date", "days"],
+}
+
+CHAT_TIMELINE_TOOL: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "update_timeline",
+        "description": (
+            "按用户要求修改当前行程时间轴。参数为完整的新时间轴对象"
+            "（结构见 parameters）。仅当用户明确要求调整行程（增删景点、"
+            "改时间、换顺序）时调用；调用后向用户简要说明改动内容。"
+        ),
+        "parameters": _TIMELINE_SCHEMA,
+    },
+}
+
+
+def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """chat v2 私有工具执行器：校验并应用新时间轴（结果回填给 LLM）。"""
+    if name != "update_timeline":
+        return {"status": "error", "message": f"未知工具 {name}"}
+    if not isinstance(arguments, dict):
+        return {"status": "error", "message": "参数必须为对象"}
+    try:
+        runtime.require_agent()  # 未建行程时拒绝
+        timeline_obj = runtime.parse_timeline_payload(arguments)
+    except (RuntimeError, ValueError) as exc:
+        return {"status": "error", "message": f"时间轴不合法：{exc}"}
+    try:
+        result = runtime.apply_timeline_from_chat(timeline_obj, reason="对话调整")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("chat update_timeline failed")
+        return {"status": "error", "message": f"应用失败：{exc}"}
+    return {
+        "status": "applied",
+        "message": "行程已更新",
+        "diff_summary": result["diff_summary"],
+        "timeline": to_dict(timeline_obj),
+    }
 
 
 def _chat_system_prompt() -> str:
@@ -845,7 +925,16 @@ def chat(request: HttpRequest) -> JsonResponse:
         )
     started = time.monotonic()
     try:
-        reply = client.chat_text(messages)
+        result = client.generate(
+            messages,
+            tools=[CHAT_TIMELINE_TOOL],
+            tool_executor=_exec_chat_timeline,
+            max_tool_rounds=3,
+            expect_json=False,   # 对话模式：工具回路后返回自然语言
+        )
+        reply = str(result.get("content") or "").strip()
+        if not reply:
+            reply = "已处理你的请求。"
     except Exception as exc:  # noqa: BLE001
         logger.error("chat failed: %s", exc)
         return _error(f"LLM 调用失败: {exc}", status=502)

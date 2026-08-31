@@ -240,6 +240,7 @@ class LLMClient:
         max_retries: int = 2,
         tool_executor=None,
         max_tool_rounds: int = 3,
+        expect_json: bool = True,
     ) -> Dict[str, Any]:
         """P4：支持 function calling 的生成入口。
 
@@ -248,6 +249,10 @@ class LLMClient:
         已在 ``list_for_llm`` 收口）。模型返回 ``finish_reason=="tool_calls"``
         时逐个执行并回填 ``role=tool`` 消息后续问，最多 ``max_tool_rounds`` 轮；
         轮次超限或请求表明不支持 tools 时降级为纯文本 JSON 模式。
+
+        ``expect_json=False``（2026-09-01，chat v2）：工具回路结束后直接返回
+        模型的自然语言回复（不再强制 JSON 解析）——用于对话 + 私有工具场景；
+        默认 True 保持原行为（JSON Schema 抽取）。
         """
         conversation = list(messages)
         last_message = None
@@ -320,6 +325,19 @@ class LLMClient:
                         )[:8000],
                     })
                 continue
+
+            if not expect_json:
+                # 对话 + 私有工具模式（chat v2）：工具回路结束后直接返回
+                # 自然语言回复，跳过 JSON Schema 解析（generate 默认仍是
+                # JSON 模式，此处仅当调用方显式关闭时生效）。
+                return {
+                    "content": str(raw_content or "").strip(),
+                    "tool_calls": getattr(last_message, "tool_calls", None),
+                    "finish_reason": getattr(choice, "finish_reason", None),
+                    "tool_rounds": tool_rounds,
+                    "tools_degraded": tools_degraded,
+                    "raw": {"model_output": getattr(last_message, "content", None)},
+                }
 
             parsed = self._extract_json_payload(raw_content)
             if parsed is None:

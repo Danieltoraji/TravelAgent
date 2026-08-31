@@ -23,6 +23,7 @@ from core.schemas import (
     MonitorEvent,
     PermissionLevel,
     Place,
+    ReplanRequest,
     TripTimeline,
     to_dict,
 )
@@ -31,6 +32,34 @@ from runtime.a_interface import build_decision_hook, build_planner_hook
 from tools import MockWorld, ToolProvider, ToolRegistry, build_registry
 
 logger = logging.getLogger("runtime.agent")
+
+
+def _timeline_diff(old_tl: Any, new_tl: Any) -> List[str]:
+    """对话改时间轴的简化 diff（对齐 replan 的 diff_summary 展示形态）。
+
+    按景点名称对比新旧时间轴的（天, 到达时间）：added / removed / rescheduled。
+    """
+    def slots(tl: Any) -> Dict[str, tuple]:
+        out: Dict[str, tuple] = {}
+        for day in tl.days:
+            for it in day.items:
+                name = str(it.name or "").strip()
+                if name and name not in out:
+                    out[name] = (day.day, it.arrival)
+        return out
+
+    old_slots, new_slots = slots(old_tl), slots(new_tl)
+    diffs: List[str] = []
+    for name, (day, arrival) in new_slots.items():
+        if name not in old_slots:
+            diffs.append(f"[added] {name}：第{day}天 {arrival}")
+    for name, (day, arrival) in old_slots.items():
+        if name not in new_slots:
+            diffs.append(f"[removed] {name}（原第{day}天 {arrival}）")
+        elif (day, arrival) != new_slots[name]:
+            nd, n_arrival = new_slots[name]
+            diffs.append(f"[rescheduled] {name}：第{day}天 {arrival} → 第{nd}天 {n_arrival}")
+    return diffs or ["[updated] 行程已按对话调整"]
 
 
 def _replan_to_actions(replan: Any) -> List[ActionItem]:
@@ -368,37 +397,50 @@ class AgentRuntime:
 
     # -- 时间轴解析（与旧 FastAPI app/service.py 保持兼容） ---------------
 
-    def set_timeline_from_payload(self, payload: Dict[str, Any]) -> TripTimeline:
+    def parse_timeline_payload(self, payload: Dict[str, Any]) -> TripTimeline:
+        """payload → TripTimeline 对象（只解析不应用；校验失败抛异常）。
+
+        2026-09-01：从 ``set_timeline_from_payload`` 抽取，供 chat v2
+        （update_timeline 工具）复用同一套解析/校验逻辑。
+        """
         city = payload.get("city", "")
         start = payload.get("start_date", "")
         end = payload.get("end_date", "")
         days_data = payload.get("days", [])
+        if not city or not start or not end or not isinstance(days_data, list):
+            raise ValueError("city/start_date/end_date/days 均为必填")
 
         start_date = date.fromisoformat(start) if isinstance(start, str) else start
         end_date = date.fromisoformat(end) if isinstance(end, str) else end
 
         days: List[Any] = []
         for d in days_data:
+            if not isinstance(d, dict) or not d.get("items"):
+                raise ValueError(f"第 {len(days) + 1} 天缺少 items")
             d_date = d.get("date", "")
             d_date_val = date.fromisoformat(d_date) if isinstance(d_date, str) else d_date
             items = []
             for it in d.get("items", d.get("activities", [])):
+                name = str(it.get("name", "")).strip()
+                arrival = str(it.get("arrival", "")).strip()
+                if not name or not arrival:
+                    raise ValueError(f"第 {len(days) + 1} 天存在缺 name/arrival 的项目")
                 items.append(Place(
                     id=it.get("id", ""),
-                    name=it.get("name", ""),
+                    name=name,
                     lat=it.get("lat", 0.0),
                     lng=it.get("lng", 0.0),
                     category=it.get("category", "scenic"),
-                    arrival=it.get("arrival", "09:00"),
+                    arrival=arrival,
                     end_time=it.get("end_time", ""),
                     open_time=it.get("open_time", "09:00-17:00"),
                     queue_min=it.get("queue_min", 0),
                     ticket_required=it.get("ticket_required", False),
                     price=it.get("price", 0.0),
                 ))
-            days.append(DayPlan(day=d.get("day", 1), date=d_date_val, items=items))
+            days.append(DayPlan(day=d.get("day", len(days) + 1), date=d_date_val, items=items))
 
-        timeline = TripTimeline(
+        return TripTimeline(
             id=payload.get("id", ""),
             city=city,
             start_date=start_date,
@@ -407,8 +449,57 @@ class AgentRuntime:
             total_cost=payload.get("total_cost", 0.0),
             walking_distance=payload.get("walking_distance", 0.0),
         )
+
+    def set_timeline_from_payload(self, payload: Dict[str, Any]) -> TripTimeline:
+        timeline = self.parse_timeline_payload(payload)
         self.init_timeline(timeline)
         return timeline
+
+    def apply_timeline_from_chat(
+        self, timeline: TripTimeline, reason: str = ""
+    ) -> Dict[str, Any]:
+        """对话（chat v2）直接修改时间轴：替换 + 重建监控规则 + 记录。
+
+        与 A 侧 replan 的 ``apply_replan`` 同语义（保留已预约状态），并把改动
+        记入 ``replan_history`` / ``timeline_history``（source=chat）——
+        C 端轮询因 replan 数量变化自动刷新时间轴，前端零改动。
+        返回 ``{"diff_summary": [...], "entry_id": ...}``。
+        """
+        old_timeline = self.timeline
+        self.timeline = timeline
+        reason = reason or "对话调整"
+        if self.agent is not None:
+            # 重建监控规则 + 保留已预约状态（apply_replan 内部逻辑）
+            self.agent.apply_replan(
+                ReplanRequest(new_timeline=timeline, reason=reason)
+            )
+        else:
+            self.init_timeline(timeline)
+        diff = _timeline_diff(old_timeline, timeline) if old_timeline is not None else []
+        entry = {
+            "id": f"replan-{len(self.replan_history) + 1}",
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "source": "chat",
+            "events": [],
+            "current_timeline": to_dict(old_timeline) if old_timeline is not None else None,
+            "context": {"impact_threshold": 0, "origin": "chat"},
+            "decision": {
+                "need_replan": True,
+                "impact": 0.0,
+                "reason": reason,
+                "diff_summary": diff,
+                "new_timeline": to_dict(timeline),
+            },
+        }
+        self.replan_history.append(entry)
+        self.timeline_history.append({
+            "id": f"tl-{len(self.timeline_history) + 1}",
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "reason": reason,
+            "timeline": to_dict(timeline),
+        })
+        logger.info("chat 调整时间轴: %s | diff=%s", reason, diff)
+        return {"diff_summary": diff, "entry_id": entry["id"]}
 
     # -- 执行入口（Django 同步视图内包 asyncio） --------------------------
 
