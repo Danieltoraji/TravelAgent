@@ -93,6 +93,18 @@ def _build_schedule_events(
             return restaurants.travel_edge(from_id, to_id)
         return matrix.get(from_id, to_id)
 
+    def _mark_onsite_dining(spot_key: str) -> bool:
+        """给 events 里指定景点的 spot 事件打「景区内就餐」备注（2026-09-01）。
+
+        返回是否找到并标记成功；找不到（如当前节点是餐厅/酒店）返回 False。
+        游客游览该景点时恰好错过午餐窗口，备注就近在景区内解决，取消独立午餐段。
+        """
+        for event in reversed(events):
+            if event["type"] == "spot" and event["details"].get("spot_id") == spot_key:
+                event["details"]["dining_note"] = "景区内就餐"
+                return True
+        return False
+
     def add_meal(meal: MealWindow):
         nonlocal current_minutes, current_node
         anchor_id = current_node[0] if current_node is not None else None
@@ -119,6 +131,16 @@ def _build_schedule_events(
             )
 
         if start_minutes + transport_minutes > meal.window_end_minutes + MEAL_GRACE_MINUTES:
+            # 2026-09-01：午餐错过窗口（>窗口+宽限期）时不再「跳过不吃」，而是
+            # 改为在游客正游览的景点备注「景区内就餐」——取消独立午餐段（不占
+            # 时长、不计餐费），就近在景区内解决；仅对午餐生效，晚餐保持原「未安排」。
+            if meal.name == "午餐":
+                anchor_id = current_node[0] if current_node is not None else None
+                if anchor_id is not None and _mark_onsite_dining(anchor_id):
+                    warnings.append(
+                        f"{meal.name}改为景区内就餐：游览占用用餐窗口，就近在景区内解决"
+                    )
+                    return
             warnings.append(f"{meal.name}未安排：到达餐厅时已超过用餐窗口（含宽限期）")
             return
 

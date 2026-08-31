@@ -165,13 +165,16 @@ def _node_to_place(node: Dict[str, Any]) -> Place:
         lng = float(location.get("lng") or 0.0)
     elif isinstance(location, (list, tuple)) and len(location) >= 2:
         lat, lng = float(location[0] or 0.0), float(location[1] or 0.0)
-    # 2026-09-01：transport 段透传矩阵/路线详情（from/to/distance_km/source），
-    # 此前全部丢弃导致 C 端 transport 段 details 为空、只能前端兜底渲染。
-    transport_details: Dict[str, Any] = {}
-    if node.get("type") == "transport":
-        for key in ("from", "to", "distance_km", "source", "mode"):
-            if details.get(key) is not None:
-                transport_details[key] = details[key]
+    # 2026-08-31：is_must_visit 透传进 Place.details——B 侧发起的 replan
+    # （current_timeline 往返）依赖它在 RePlanner 中恢复 must 保护，
+    # 此前该字段在 A→B 转换时丢失导致 live 计划重规划时必去景点可被删。
+    # 2026-09-01：dining_note（午餐错过窗口 → 景区内就餐）一并透传，
+    # C 端时间轴景点备注可读「景区内就餐」，A/B 往返不丢。
+    place_details: Dict[str, Any] = {}
+    if details.get("is_must_visit"):
+        place_details["is_must_visit"] = True
+    if details.get("dining_note"):
+        place_details["dining_note"] = str(details["dining_note"])
     return Place(
         id=str(details.get("spot_id") or ""),
         name=str(node.get("name") or ""),
@@ -190,13 +193,7 @@ def _node_to_place(node: Dict[str, Any]) -> Place:
         average_cost=float(details.get("average_cost") or 0.0),
         # 8.30 预算口径：讲解费明细（人均 × 人数 的汇总在 TripTimeline.cost_breakdown）
         guide_price=float(details.get("guide_price") or 0.0),
-        # 2026-08-31：is_must_visit 透传进 Place.details——B 侧发起的 replan
-        # （current_timeline 往返）依赖它在 RePlanner 中恢复 must 保护，
-        # 此前该字段在 A→B 转换时丢失导致 live 计划重规划时必去景点可被删。
-        details=(
-            transport_details
-            or ({"is_must_visit": True} if details.get("is_must_visit") else {})
-        ),
+        details=place_details,
     )
 
 
@@ -362,6 +359,10 @@ def trip_timeline_to_plan(
             # RePlanner 的 must 保护在 current_timeline 往返链路中生效。
             if (item.details or {}).get("is_must_visit"):
                 node_details["is_must_visit"] = True
+            # 2026-09-01：dining_note（午餐错过窗口 → 景区内就餐）同步还原，
+            # A/B 往返不丢，重规划后 C 端备注仍可见。
+            if (item.details or {}).get("dining_note"):
+                node_details["dining_note"] = str(item.details["dining_note"])
             route_details.append(
                 build_itinerary_node(
                     node_type,
