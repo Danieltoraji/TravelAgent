@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from algorithoms._common import (
+    LATE_ARRIVAL_DAY1_START_MINUTES,
     TARGET_DAY_UTILIZATION,
     Location,
     Spot,
@@ -288,6 +289,7 @@ def _allocate_optional_spots(
     restaurants=None,
     strategy: str = "balanced",
     perturbation: int = 0,
+    day1_skip_spots: bool = False,
 ) -> List[List[Spot]]:
     """把可选景点预分配到各天（只决定「每天可选子池」，不排程）。
 
@@ -363,7 +365,8 @@ def _allocate_optional_spots(
         feasible = [
             index
             for index in range(day_count)
-            if index not in remote_day_indexes  # 远郊日不塞市区可选
+            if not (day1_skip_spots and index == 0)  # 晚到达日：Day1 不落可选
+            and index not in remote_day_indexes  # 远郊日不塞市区可选
             and (elapsed := day_elapsed(index, spot)) is not None
             and elapsed <= daily_limit
         ]
@@ -393,12 +396,16 @@ def _plan_multi_day_with_prealloc(
     min_spots: int,
     first_day_start_time: Optional[str] = None,
     last_day_end_minutes: Optional[int] = None,
+    day1_skip_spots: bool = False,
 ) -> Dict[str, Any]:
     """给定必去分天 + 可选预分配池，逐天走完整 plan_one_day 管线并汇总。
 
     所有多日种子的「执行」都经过这里：每天的可选景点只能从当天的预分配子池里
     knapsack / refill / fine-tune，质量（repair / min_spots / 闭馆检查）统一
     由单日管线承担——平衡分配的「均匀」收益保留、质量保证不缺失。
+
+    **晚到达日空天（9.2）**：``day1_skip_spots=True`` 时 Day1 不执行单日管线，
+    直接产出一个空天（feasible、无景点），当天时间轴只剩城际段 + 酒店段。
     """
     content = requirement["content"]
     daily_limit = int(content["constraints"]["daily_travel_time"])
@@ -421,6 +428,55 @@ def _plan_multi_day_with_prealloc(
     for day_index, (mandatory_route, optional_prealloc) in enumerate(
         zip(mandatory_routes, prealloc), start=1
     ):
+        # 晚到达日空天（9.2）：Day1 不执行单日管线，直接产出空天——
+        # 当天时间轴只剩城际段 + 酒店段（均由 b_contract 层附加）。
+        if day1_skip_spots and day_index == 1:
+            planned_days.append(
+                {
+                    "day": 1,
+                    "feasible": True,
+                    "daily_travel_time": daily_limit,
+                    "include_meal_time_in_daily_limit": include_meal_time,
+                    "total_visit_minutes": 0,
+                    "total_transport_minutes": 0,
+                    "total_waiting_minutes": 0,
+                    "total_meal_minutes": 0,
+                    "total_elapsed_minutes": 0,
+                    "total_counted_minutes": 0,
+                    "remaining_minutes": daily_limit,
+                    "is_overtime": False,
+                    "time_overflow_minutes": 0,
+                    "utilization_rate": 0.0,
+                    "target_utilization_rate": TARGET_DAY_UTILIZATION,
+                    "total_route_distance_km": 0.0,
+                    "travel_matrix_spot_count": 0,
+                    "travel_matrix_pair_count": 0,
+                    "refilled_spots": [],
+                    "visitor_number": visitor_number,
+                    "budget": None,
+                    "estimated_ticket_cost": 0.0,
+                    "estimated_guide_cost": 0.0,
+                    "budget_remaining": None,
+                    "budget_overflow": 0,
+                    "budget_exceeded": False,
+                    "budget_scope": "景点门票+讲解",
+                    "hard_constraint_violations": [],
+                    "total_match_score": 0.0,
+                    "route": [],
+                    "route_details": [],
+                    "unselected_spots": [
+                        spot.get("name") for spot in optional_spots
+                    ],
+                    "conflict_spots": [
+                        spot.get("name") for spot in conflict_spots
+                    ],
+                    "warnings": [
+                        "到达日首景点起点晚于 18:00，当天不安排景点行程"
+                        "（仅城际交通 + 酒店入住）"
+                    ],
+                }
+            )
+            continue
         daily_candidates = [
             list(mandatory_route),
             conflict_spots if day_index == 1 else [],
@@ -899,6 +955,11 @@ def plan_multi_day(
     → 判不可行、自然落非窗口化天）；② 末日最后事件结束 ≤ ``last_day_end_minutes``
     （防 must 排进返程出发之后）。未窗口化的天保持原判据（只查 daily_limit），
     全部参数 ``None`` → 行为与现状完全一致。
+
+    **晚到达日空天（9.2）**：``first_day_start_time`` ≥ 18:00 时（城际到达 +
+    接驳缓冲后首日起点过晚），Day1 不排任何景点（纯交通日，只剩城际段 +
+    酒店段）：must 分天分配跳过 Day1、可选预分配排除 Day1、逐日管线 Day1
+    直接产空天。多日行程 must 自然落后续天；单日行程则整体为可行空天。
     """
     try:
         day_count = int(requirement["content"]["days"])
@@ -921,6 +982,32 @@ def plan_multi_day(
         ):
             raise ValueError("last_day_end_minutes 必须是正整数分钟")
 
+    # 晚到达日空天：首日起点（城际到达 + 接驳缓冲）晚于 18:00 → Day1 不排景点。
+    day1_skip = (
+        first_day_start_time is not None
+        and _parse_time(first_day_start_time) >= LATE_ARRIVAL_DAY1_START_MINUTES
+    )
+    # 单日 + 晚到达：当天整体为空（只剩城际 + 酒店），直接构造可行空天，
+    # 不跑 must 分天分配器（否则 must 无处可放被判不可行，不符合"不排"语义）。
+    if day1_skip and day_count == 1:
+        return _plan_multi_day_with_prealloc(
+            requirement,
+            [[]],
+            [[]],
+            [],
+            [],
+            graph_dir,
+            day_start_time,
+            travel_time_provider,
+            meal_windows,
+            restaurants,
+            repair_hard_constraints,
+            min_spots,
+            first_day_start_time,
+            last_day_end_minutes,
+            day1_skip_spots=True,
+        )
+
     allocation = assign_must_spots_to_days(
         requirement,
         candidate_spots,
@@ -932,6 +1019,7 @@ def plan_multi_day(
         meal_windows=meal_windows,
         restaurants=restaurants,
         beam_width=beam_width,
+        day1_skip_spots=day1_skip,
     )
     if not allocation["feasible"]:
         return {
@@ -970,6 +1058,7 @@ def plan_multi_day(
         restaurants,
         strategy=allocator,
         perturbation=perturbation,
+        day1_skip_spots=day1_skip,
     )
     plan = _plan_multi_day_with_prealloc(
         requirement,
@@ -986,6 +1075,7 @@ def plan_multi_day(
         min_spots,
         first_day_start_time,
         last_day_end_minutes,
+        day1_skip_spots=day1_skip,
     )
     if plan.get("feasible"):
         plan["minimum_required_visit_minutes"] = allocation[

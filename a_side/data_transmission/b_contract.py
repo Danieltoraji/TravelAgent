@@ -274,16 +274,37 @@ def plan_to_trip_timeline(
     days: List[DayPlan] = []
     for day in days_in:
         day_num = max(1, _int_or(day.get("day"), 1))
+        day_date = start + timedelta(days=day_num - 1)
         items = [_node_to_place(node) for node in (day.get("route_details") or [])]
         if bookings:
             night_index = min(day_num - 1, len(bookings) - 1)
             book = bookings[night_index]
+            # 酒店时间随行程动态（9.2，不再写死 20:00）：取「当天最后事件结束
+            # 时刻 / 城际到达时刻」的较大值，保底 20:00——空天（晚到达日）落在
+            # 到达时刻或 20:00，行程结束晚（如夜景 22:30）则酒店顺延到结束。
+            last_end_minutes = max(
+                (
+                    _safe_minutes(node.get("end_minutes"))
+                    for node in (day.get("route_details") or [])
+                ),
+                default=0,
+            )
+            for seg in plan.get("trip_segments") or []:
+                if not isinstance(seg, dict) or seg.get("type") != "transport":
+                    continue
+                if str(seg.get("day_label") or "") != day_date.isoformat():
+                    continue
+                if (seg.get("details") or {}).get("kind") == "outbound":
+                    last_end_minutes = max(
+                        last_end_minutes, _safe_minutes(seg.get("end_minutes"))
+                    )
+            hotel_arrival = format_minutes(max(last_end_minutes, 20 * 60))
             items.append(
                 Place(
                     id=str(book.get("hotel_id") or ""),
                     name=str(book.get("hotel_name") or "酒店"),
                     category="hotel",
-                    arrival="20:00",           # 晚间入住（展示用）
+                    arrival=hotel_arrival,   # 随当天行程结束动态（9.2）
                     price=float(book.get("price") or 0.0),
                     # A4 修复（8.30）：酒店真实坐标（bookings 带 lat/lng，
                     # 由 select_hotels_for_plan 产出）——C 端地图可标注酒店，
@@ -295,7 +316,7 @@ def plan_to_trip_timeline(
         days.append(
             DayPlan(
                 day=day_num,
-                date=start + timedelta(days=day_num - 1),
+                date=day_date,
                 items=items,
             )
         )

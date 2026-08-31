@@ -171,6 +171,7 @@ def assign_must_spots_to_days(
     meal_windows: Sequence[MealWindow] = DEFAULT_MEAL_WINDOWS,
     restaurants=None,
     beam_width: int = 200,
+    day1_skip_spots: bool = False,
 ) -> Dict[str, Any]:
     """Allocate every confirmed must-visit attraction across multiple days.
 
@@ -184,6 +185,9 @@ def assign_must_spots_to_days(
     （补齐 8.19 超闭馆轻量版遗漏的分配器盲区）② 末日最后事件结束 ≤
     ``last_day_end_minutes``（返程出发 − 离开缓冲）。全部 None → 原判据
     （只查 ``daily_travel_time``），行为与现状完全一致。
+
+    **晚到达日空天（9.2）**：``day1_skip_spots=True`` 时 Day1 不接受任何景点
+    （到达日 18:00 后到 → 当天纯交通日，不排行程），must 全部落后续天。
     """
     try:
         content = requirement["content"]
@@ -370,6 +374,8 @@ def assign_must_spots_to_days(
                 for option in task:
                     option_key = _spot_key(option)
                     for day_index, route_for_day in enumerate(state):
+                        if day1_skip_spots and day_index == 0:
+                            continue  # 晚到达日：Day1 不排任何景点
                         if _remote_violated(option_key, route_for_day):
                             continue
                         for position in range(len(route_for_day) + 1):

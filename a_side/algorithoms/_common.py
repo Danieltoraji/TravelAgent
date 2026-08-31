@@ -13,6 +13,11 @@ Spot = Dict[str, Any]
 Location = Tuple[float, float]
 TARGET_DAY_UTILIZATION = 0.85
 
+# 晚到达日空天阈值（用户 9.2 拍板）：首日起点（城际到达 + 接驳缓冲）晚于该时刻
+# → 到达日不排任何景点（当天只剩城际段 + 酒店段，纯交通日）。例如 18:00 到达 +
+# 90min 缓冲 = 19:30 起排，超过阈值 → 当天空。
+LATE_ARRIVAL_DAY1_START_MINUTES = 18 * 60  # 18:00
+
 
 def _route_rank(
     elapsed: int,
