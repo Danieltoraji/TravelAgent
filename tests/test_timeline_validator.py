@@ -20,9 +20,7 @@ if os.path.isdir(_site) and _site not in sys.path:
 
 from core.schemas import DayPlan, Place, TripTimeline  # noqa: E402
 from api.timeline_validator import (  # noqa: E402
-    DEFAULT_MEAL_MIN,
     DEFAULT_SPOT_MIN,
-    DEFAULT_TRANSPORT_MIN,
     validate_timeline,
 )
 
@@ -102,8 +100,9 @@ class TestTimelineValidator(unittest.TestCase):
         errors = validate_timeline(tl, REQ, candidate_pool=FAKE_POOL)
         self.assertEqual(errors, [])
 
-    def test_daily_limit_exceeded(self) -> None:
-        # 故宫360 + 景山60 + 天坛120 + 交通30 + 餐饮60×2 = 690 > 480
+    def test_daily_limit_no_longer_enforced(self) -> None:
+        # 2026-09-01：每日时长限制已取消——690 分钟的超长日程不再被拒
+        # （闭馆/预算仍校验，本日程两者都合规）
         tl = _tl([[
             ("故宫博物院", "scenic", "09:00", "15:00", "09:00-17:00", 60),
             ("景山公园", "scenic", "15:18", "16:18", "06:30-21:00", 2),
@@ -113,9 +112,7 @@ class TestTimelineValidator(unittest.TestCase):
             ("交通", "transport", "08:30", "09:00", "", 0),
         ]])
         errors = validate_timeline(tl, REQ, candidate_pool=FAKE_POOL)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("第1天超时", errors[0])
-        self.assertIn("690", errors[0])
+        self.assertEqual(errors, [])
 
     def test_budget_exceeded(self) -> None:
         tl = _tl([[

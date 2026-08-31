@@ -1,15 +1,15 @@
 """对话改时间轴的深度可行性校验（chat v2.2，2026-09-01）。
 
-L2 三项（B 侧可自算、可解释，不引入交通矩阵）：
+L2 校验项（B 侧可自算、可解释，不引入交通矩阵）：
   1. 闭馆：scenic 的到达 / 预计结束时间必须在 ``open_time`` 内；
-  2. 每日时长：游览 + 段间交通 + 餐饮 ≤ ``constraints.daily_travel_time``；
-  3. 预算：景点门票 + 酒店等价格求和 ≤ ``constraints.budget``。
+  2. 预算：景点门票 + 酒店等价格求和 ≤ ``constraints.budget``。
+
+（每日时长限制已于 2026-09-01 取消——行程可超出 daily_travel_time。）
 
 估算口径（与 A 侧 replanner 对齐，避免误判）：
-  - 景点时长：优先 ``end_time - arrival``，缺失用候选池 ``Spot.duration``
-    （select_spots 按名称/别名匹配），再缺失用默认 90 分钟；
-  - 段间交通：优先 ``end_time - arrival``，缺失默认 30 分钟/段；
-  - 餐饮：优先 ``end_time - arrival``，缺失默认 60 分钟/段。
+  - 景点结束时间：优先 ``end_time``，缺失用 ``end_time - arrival`` 估算，
+    再缺失用候选池 ``Spot.duration``（select_spots 按名称/别名匹配），
+    再缺失用默认 90 分钟。
 
 校验失败信息精确到「第X天 景点名 原因」，回填 LLM 后由模型调整重试。
 """
@@ -19,8 +19,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence
 
 DEFAULT_SPOT_MIN = 90
-DEFAULT_TRANSPORT_MIN = 30
-DEFAULT_MEAL_MIN = 60
 
 
 def _parse_hhmm(value: Any) -> Optional[int]:
@@ -71,13 +69,8 @@ def _budget_of(requirement: Dict[str, Any]) -> Optional[float]:
 
 
 def _daily_travel_time_of(requirement: Dict[str, Any]) -> Optional[int]:
-    content = (requirement or {}).get("content") or {}
-    cons = content.get("constraints") or {}
-    try:
-        value = int(cons.get("daily_travel_time") or 0)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
+    """已废弃：每日时长限制于 2026-09-01 取消，保留函数仅为兼容引用。"""
+    return None
 
 
 def _estimate_total_cost(timeline: Any) -> float:
@@ -89,19 +82,8 @@ def _estimate_total_cost(timeline: Any) -> float:
 
 
 def _estimate_day_minutes(day: Any, candidate_pool: Sequence[Sequence[dict]]) -> int:
-    total = 0
-    for item in day.items:
-        category = getattr(item, "category", "scenic")
-        seg = _segment_minutes(item)
-        if category == "scenic":
-            total += seg if seg is not None else _spot_duration_minutes(
-                str(item.name or ""), candidate_pool
-            )
-        elif category == "food":
-            total += seg if seg is not None else DEFAULT_MEAL_MIN
-        elif category == "transport":
-            total += seg if seg is not None else DEFAULT_TRANSPORT_MIN
-    return total
+    """已废弃：每日时长限制于 2026-09-01 取消，保留函数仅为兼容引用。"""
+    return 0
 
 
 def _check_closing(item: Any, candidate_pool: Sequence[Sequence[dict]]) -> Optional[str]:
@@ -155,15 +137,8 @@ def validate_timeline(
             f"预算超支：估算总花费 ¥{total:.0f} 超过预算 ¥{budget:.0f}"
         )
 
-    daily_limit = _daily_travel_time_of(requirement)
+    # 每日时长校验已于 2026-09-01 取消（行程可超出 daily_travel_time）。
     for day in timeline.days:
-        day_total = _estimate_day_minutes(day, candidate_pool)
-        if daily_limit is not None and day_total > daily_limit:
-            errors.append(
-                f"第{day.day}天超时：估算 {day_total} 分钟超过"
-                f"每日上限 {daily_limit} 分钟（景点时长取候选池、"
-                f"交通 30 分钟/段、餐饮 60 分钟）"
-            )
         for item in day.items:
             if getattr(item, "category", "") != "scenic":
                 continue

@@ -33,11 +33,12 @@ air_quality/food/traffic/train_trip/flight_search/web_search 精选 8 个）；
 | 校验项 | 规则 | 估算口径 |
 | --- | --- | --- |
 | 闭馆 | scenic 到达/结束时间须在 `open_time` 内 | 结束时间 = `end_time`，缺失用候选池 duration（名称/别名匹配），再缺失默认 90 分钟 |
-| 每日时长 | 每天 ≤ `constraints.daily_travel_time` | 游览 = `end_time-arrival` 或候选池 duration；交通 30 分钟/段；餐饮 60 分钟 |
 | 预算 | 总价（景点+酒店等）≤ `constraints.budget` | 按 `Place.price` 求和 |
 
+（每日时长限制已于 2026-09-01 取消——行程可超出 `daily_travel_time`。）
+
 不通过 → 返回结构化错误（精确到「第X天 景点名 原因」+ 估算口径说明）
-→ 回填模型自动调整重试（`max_tool_rounds=3` 内）。**时间轴始终可行。**
+→ 回填模型自动调整重试（`max_tool_rounds=5` 内）。**时间轴始终可行。**
 
 未做（v2.3 候选）：交通矩阵校验（仅北京/上海假图覆盖）、scenic 工具进
 对话白名单、改动前 C 端确认按钮。
