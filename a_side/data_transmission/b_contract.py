@@ -175,6 +175,14 @@ def _node_to_place(node: Dict[str, Any]) -> Place:
         place_details["is_must_visit"] = True
     if details.get("dining_note"):
         place_details["dining_note"] = str(details["dining_note"])
+    # 2026-09-01（b18cca4 回灌）：transport 段透传矩阵/路线详情
+    # （from/to/distance_km/source/mode），此前全部丢弃导致 C 端 transport
+    # 段 details 为空、只能前端兜底渲染；透传键与 is_must_visit/dining_note
+    # 并存（transport 节点无后两者，互不干扰）。
+    if node.get("type") == "transport":
+        for key in ("from", "to", "distance_km", "source", "mode"):
+            if details.get(key) is not None:
+                place_details[key] = details[key]
     return Place(
         id=str(details.get("spot_id") or ""),
         name=str(node.get("name") or ""),

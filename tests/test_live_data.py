@@ -20,7 +20,7 @@ from data_transmission.live_data import (  # noqa: E402
     normalize_live_spot,
 )
 
-_LIVE_LOGGER = "data_transmission.live_data"
+_LIVE_LOGGER = "data_transmission.adapters"  # P3-C:适配函数搬进 adapters.py 后日志源(2026-09-02 对齐 A 侧)
 
 
 class TestNormalizeLiveSpot(unittest.TestCase):

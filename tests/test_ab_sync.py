@@ -88,8 +88,19 @@ def test_ab_no_stale_files():
         b_dir = _B_ROOT / "a_side" / sub
         if not a_dir.is_dir() and not b_dir.is_dir():
             continue
-        a_names = {p.name for p in a_dir.iterdir() if p.is_file()} if a_dir.is_dir() else set()
-        b_names = {p.name for p in b_dir.iterdir() if p.is_file()} if b_dir.is_dir() else set()
+
+        def _file_set(root: Path) -> set:
+            """递归收集镜像目录内全部文件相对路径（rglob，含子目录）。"""
+            if not root.is_dir():
+                return set()
+            return {
+                str(p.relative_to(root)).replace("\\", "/")
+                for p in root.rglob("*")
+                if p.is_file() and "__pycache__" not in p.parts
+            }
+
+        a_names = _file_set(a_dir)
+        b_names = _file_set(b_dir)
         extras = sorted(b_names - a_names)
         missing = sorted(a_names - b_names)
         assert not extras, (
