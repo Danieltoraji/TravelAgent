@@ -91,6 +91,14 @@ _REGIONS: Dict[str, Tuple[str, ...]] = {
     "大湾区": ("香港", "澳门", "广州", "深圳", "珠海", "佛山", "惠州", "东莞", "中山", "江门", "肇庆"),
 }
 
+# 内置补充城市（事故驱动，随用随补）：
+# 估算表城市（17）∪ 航路城市（41）未收录、但 12306/juhe 真源可查的真实城市。
+# 「贵港」即贵港事故（8.30：LLM 解析出「广西贵港」→ 12306 只认「贵港」→ 全
+# error → driving 兜底）的闭环前提——若不在城市集，前后缀剥离后仍 unmatched，
+# 接线只会 warning 用原值、事故照旧。凡真源验证过、可能被用户当起讫地的城市
+# 在此补一条（B 侧 12306 站表全量 city 集留待 station_resolver 注入，不并入）。
+_BUILTIN_EXTRA_CITIES: Tuple[str, ...] = ("贵港",)
+
 
 @dataclass(frozen=True)
 class NormalizeResult:
@@ -167,6 +175,7 @@ class PlaceNormalizer:
     @staticmethod
     def _load_city_set() -> Set[str]:
         cities = set()
+        cities.update(_BUILTIN_EXTRA_CITIES)
         cities.update(
             c for pair in load_city_travel_options().keys() for c in pair
         )

@@ -619,6 +619,51 @@ class BPlannerHook:
         }
         return content
 
+    def _normalize_intercity_places(self, content: Dict[str, Any]) -> None:
+        """P3.1 接线：城际来去程 origin/destination 进工具层前过地名归一化。
+
+        贵港事故（8.30）止血的 A 侧闭环：LLM 备注解析/用户输入可能产出带
+        省级前缀的地名（「广西贵港」）→ 12306 站名解析只认「贵港」→ 城际
+        真源全 error → 静默 driving 兜底。归一化层（``PlaceNormalizer``）
+        建好后一直无生产引用（P0–P3 检验发现），此处接上主链：
+
+        - 城市级内置（估算表 ∪ 航路 ∪ 贵港补充）先行，站级 city 反查等
+          B 侧注入 ``station_resolver`` 后再补；
+        - 归一成功**写回 content**（provider 构造与 ``build_trip_segments``
+          内部同源读到干净地名），失败/未识别记 warning 用原值（不阻断
+          规划——脏地名不再静默级联，而是可追踪的 warning）；
+        - 惰性 import：normalizer 依赖估算表/航路表，仅城际段构建时加载。
+        """
+        try:
+            from data_transmission.place_normalizer import build_place_normalizer
+
+            normalizer = build_place_normalizer()
+        except Exception as exc:  # noqa: BLE001  归一化层不可用不阻断规划
+            logger.warning("PlaceNormalizer 初始化失败，城际地名不归一：%s", exc)
+            return
+        for key in ("origin", "destination"):
+            raw = (content.get(key) or "").strip()
+            if not raw:
+                continue
+            try:
+                result = normalizer.normalize(raw)
+            except Exception as exc:  # noqa: BLE001  归一化异常不阻断规划
+                logger.warning("城际地名归一化异常（%s=%s）：%s", key, raw, exc)
+                continue
+            if not result.matched:
+                candidates = "、".join(result.fuzzy_candidates or ())
+                logger.warning(
+                    "城际地名未识别（%s=%s），用原值；候选：%s",
+                    key, raw, candidates or "无",
+                )
+                continue
+            canonical = result.city or result.canonical
+            if canonical and canonical != raw:
+                logger.info(
+                    "城际地名归一：%s=%s → %s（%s）", key, raw, canonical, result.method
+                )
+                content[key] = canonical
+
     def _build_trip_segments(self) -> List[Dict[str, Any]]:
         """构建城际来去程段（**一次**查询：demo 候选 → 主链 build_trip_segments）。
 
@@ -632,6 +677,13 @@ class BPlannerHook:
         from data_transmission.travel import build_trip_segments
 
         self._ensure_default_travel_schedule()
+        # P3.1 接线：城际来去程 origin/destination 进工具层前过地名归一化
+        # （贵港事故：LLM 解析出「广西贵港」→ 剥省前缀「贵港」→ 12306 认）。
+        # 归一成功写回 content（provider 构造与 build_trip_segments 内部同源
+        # 读到干净地名）；归一失败/未识别记 warning 用原值（不阻断规划）。
+        content_ref = self.requirement.get("content")
+        if isinstance(content_ref, dict):
+            self._normalize_intercity_places(content_ref)
         provider = None
         if self._use_live and getattr(self, "_tool_provider", None) is not None:
             # 8.29 真源：组合城际 provider（train 12306 → flight juhe → map 估算兜底）。
