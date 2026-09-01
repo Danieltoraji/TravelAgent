@@ -19,14 +19,19 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from data_transmission.city_travel import (
     AIR_BUFFER_MIN,
-    DEFAULT_MAX_TOTAL_MINUTES,
     IntercityRoute,
-    find_city_travel_preferred,
-    find_intercity_route,
     load_city_travel_options,
     mode_text,
 )
 from data_transmission.enums import Mode, Source
+from data_transmission.intercity_strategy import (
+    AirRailStrategy,
+    DirectFallbackStrategy,
+    DirectStrategy,
+    GraphBfsStrategy,
+    IntercityStrategyContext,
+    resolve_intercity_chain,
+)
 
 logger = logging.getLogger("data_transmission.travel")
 
@@ -220,136 +225,45 @@ def _resolve_intercity_route(
     date_str: str = "",
     budget_per_leg: Optional[float] = None,
 ) -> Optional[IntercityRoute]:
-    """城际路线解析（单段直达 → 空铁候选 → 老 BFS → 直达兜底），返回
+    """城际路线解析（P2：显式策略链，行为与旧四级级联一致），返回
     ``IntercityRoute`` 或 None：
 
-    1. 直达（provider 真源优先；本地 options 按 ``priority`` 偏好选方式）且
-       完整耗时 ≤ 12h → 单段 route（I-11：air 含值机缓冲）；
-    2. 直达超 12h/不存在 → **空铁联运候选生成**（方案 §4.2 类型 A/C/D：
-       航空拓扑正反向邻居 + 免费铁路过滤；铁路段 live、航段拓扑提示
-       estimated——demo1 教训：老 BFS 的探索范围被 58 边估算表圈死，
-       锦州→北京→张掖的联运链永远够不着）；
-    3. 候选生成无果 → 老 BFS（估算表邻接 + 段级真源升级）兜底；
-    4. 全部无解 → 直达如实给出（如表外 driving 19h；超 12h 的兜底边
-       不再参与「软直达优先」基准——它是被迫选项不是优选）。
+    1. ``DirectStrategy``   直达（provider 真源 + 本地 options 按 priority
+       偏好选方式）且完整耗时 ≤ 12h → 单段 route（I-11：air 含值机缓冲）；
+    2. ``AirRailStrategy``  直达超 12h/不存在 → 空铁联运候选（航空拓扑正反
+       向邻居 + 免费铁路过滤；铁路段 live、航段拓扑提示 estimated）+
+       top 候选航段 juhe 真价验证；
+    3. ``GraphBfsStrategy`` 候选无果 → 老 BFS（估算表邻接 + 段级真源升级）；
+    4. ``DirectFallbackStrategy`` 全部无解 → 直达如实给出（如表外 driving
+       19h；超 12h 的兜底边不再参与「软直达优先」基准——被迫选项非优选）。
 
     ``budget_per_leg``（8.30 预算贯通）：单程人均城际预算上限（由调用方按
     总预算分摊，如 budget × 40% ÷ 2 程）。提供时**不影响候选排序**（偏好
-    优先），但选中的首选若超预算 → 回落预算内最便宜候选并打 warning；
-    预算内无可行候选 → 维持首选 + warning（速度偏好超支时如实给出而非
-    静默降级，用户可见可改）。注：航段 Day 3 前 cost=0（拓扑无价格），
-    纯航段候选的费用被低估——贯通只对含铁路段的候选精确。
+    优先），由链上的预算后处理器（``apply_budget_fallback``）按场景处理：
+    直达超预算 → 维持首选 + warning（建议上调预算）；联运候选超预算 →
+    回落预算内最便宜候选并打 warning；预算内无可行 → 维持首选 + warning
+    （速度偏好超支时如实给出而非静默降级，用户可见可改）。注：航段 Day 3
+    前 cost=0（拓扑无价格），纯航段候选的费用被低估——贯通只对含铁路段的
+    候选精确。
     """
-    direct = find_city_travel_preferred(
-        origin, destination, options=options, provider=provider, priority=priority
+    ctx = IntercityStrategyContext(
+        origin=origin,
+        destination=destination,
+        options=options,
+        provider=provider,
+        priority=priority,
+        date_str=date_str,
+        budget_per_leg=budget_per_leg,
     )
-    direct_minutes = (
-        direct.transport_minutes + (AIR_BUFFER_MIN if direct.mode == Mode.AIR.value else 0)
-        if direct is not None
-        else None
+    return resolve_intercity_chain(
+        ctx,
+        [
+            DirectStrategy(),
+            AirRailStrategy(),
+            GraphBfsStrategy(),
+            DirectFallbackStrategy(),
+        ],
     )
-    if direct is not None and direct_minutes <= DEFAULT_MAX_TOTAL_MINUTES:
-        # I-11：直达判断与总时长都按**完整耗时**（air 含值机缓冲），不按裸运行时长
-        route = IntercityRoute((direct,), direct_minutes, direct.cost_per_person)
-        if (
-            budget_per_leg is not None
-            and route.total_cost > budget_per_leg
-            and route.total_cost > 0
-        ):
-            logger.warning(
-                "城际直达 %s→%s 人均 ¥%.0f 超单程预算 ¥%.0f（速度偏好保持，"
-                "建议用户上调预算或改 cost 偏好）",
-                origin, destination, route.total_cost, budget_per_leg,
-            )
-        return route
-
-    # 空铁联运候选（§4.2）：铁路走 provider 的**无预算通道**（候选生成器有
-    # 自带的总量纪律 MAX_TRAIN_CALLS=12，与主链路共享 per-mode 预算会互相
-    # 饿死——8.30 demo1 返程实测：去程邻居查询吃光 train 预算，返程 train
-    # 级全跳过只剩 flight 0 条 → 退化 driving）。旧 provider 无此通道时
-    # 回退 mode='train' 通道（兼容纯 Mock 测试）。
-    if provider is not None:
-        try:
-            from data_transmission.intercity_candidates import (
-                generate_intercity_candidates,
-            )
-
-            unbudgeted = getattr(provider, "train_edge_unbudgeted", None)
-            if callable(unbudgeted) and date_str:
-                train_query = lambda a, b: unbudgeted(a, b, date_str)  # noqa: E731
-            else:
-                train_query = lambda a, b: provider(a, b, mode=Mode.TRAIN.value)  # noqa: E731
-            candidates = generate_intercity_candidates(
-                origin, destination,
-                date_str=date_str,
-                train_provider=train_query,
-                priority=priority,
-            )
-            if candidates:
-                # Day 3 提前（8.30）：top 候选航段 juhe 真价验证——真价覆盖
-                # 拓扑提示、无航班淘汰、故障保持 estimated（额度 ≤4 城市对，
-                # 复用 provider air 分支的 per-mode 预算 ≤6 双重保护）。
-                try:
-                    from data_transmission.intercity_candidates import (
-                        verify_flight_legs,
-                    )
-
-                    candidates = verify_flight_legs(
-                        candidates,
-                        lambda a, b: provider(a, b, mode=Mode.AIR.value),
-                    )
-                except Exception as exc:  # noqa: BLE001  验证失败不阻断候选
-                    logger.warning("航段真价验证异常，保持拓扑档：%s", exc)
-                if not candidates:
-                    logger.info(
-                        "联运候选全部被真源证伪，回落老 BFS：%s→%s",
-                        origin, destination,
-                    )
-                else:
-                    best = candidates[0]
-                    # 候选必须优于「被迫直达」（超 12h 的 driving 之类才有意义
-                    # 被替换；直达缺失时任何候选都更好）
-                    if direct_minutes is None or best.total_minutes < direct_minutes:
-                        # 预算贯通（8.30）：偏好首选超单程预算 → 回落预算内最便宜
-                        # 候选；预算内无可行 → 维持首选 + warning（不静默降级）。
-                        if (
-                            budget_per_leg is not None
-                            and best.total_cost > budget_per_leg
-                        ):
-                            affordable = [
-                                r for r in candidates
-                                if r.total_cost <= budget_per_leg
-                            ]
-                            if affordable:
-                                cheapest = min(affordable, key=lambda r: r.total_cost)
-                                logger.warning(
-                                    "城际 %s→%s 首选（%dmin ¥%.0f）超单程预算 "
-                                    "¥%.0f，回落预算内最便宜候选（%dmin ¥%.0f）",
-                                    origin, destination, best.total_minutes,
-                                    best.total_cost, budget_per_leg,
-                                    cheapest.total_minutes, cheapest.total_cost,
-                                )
-                                return cheapest
-                            logger.warning(
-                                "城际 %s→%s 全部候选超单程预算 ¥%.0f（最便宜 "
-                                "¥%.0f），维持偏好首选并提示用户",
-                                origin, destination, budget_per_leg,
-                                min(r.total_cost for r in candidates),
-                            )
-                        return best
-        except Exception as exc:  # noqa: BLE001  候选生成失败不阻断老链路
-            logger.warning("空铁候选生成失败，回落老 BFS：%s", exc)
-
-    route = find_intercity_route(
-        origin, destination, options=options, priority=priority,
-        provider=provider, direct=direct,
-    )
-    if route is not None:
-        return route
-    if direct is not None:
-        # BFS 无解 → 回落直达如实给出；同样计完整耗时
-        return IntercityRoute((direct,), direct_minutes, direct.cost_per_person)
-    return None
 
 
 def build_trip_segments(
