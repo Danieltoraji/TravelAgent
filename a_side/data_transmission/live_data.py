@@ -776,7 +776,11 @@ def make_live_intercity_provider(
     """
 
     if mode_budget is None:
-        mode_budget = {"train_trip": 6, "train_ticket": 6, "flight_search": 6}
+        # P3-E：per-mode 预算默认值改由 ToolSpec 注册表单点定义（原内联
+        # {"train_trip":6,"train_ticket":6,"flight_search":6}，见 tool_specs.py）。
+        from data_transmission.tool_specs import intercity_mode_budget
+
+        mode_budget = intercity_mode_budget()
     tool_provider = make_quota_manager(
         tool_provider, mode_budget, stats, cache=cache
     )
