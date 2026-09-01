@@ -638,11 +638,15 @@ class BPlannerHook:
             from data_transmission.live_data import make_live_intercity_provider
 
             content = self.requirement.get("content") or {}
+            # P3-D2a：主链城际真源查询共享 (name,o,d,date) 缓存——同对同日期
+            # 只查一次真源（命中不计数、正负都缓存），去程/返程 BFS 与直达段
+            # 不重复打 12306/juhe；一次规划一个 cache dict。
             provider = make_live_intercity_provider(
                 self._tool_provider,
                 content.get("travel_schedule") or {},
                 origin=(content.get("origin") or "").strip(),
                 destination=(content.get("destination") or "").strip(),
+                cache={},
             )
         # 固定 Demo 场景（锦州→上海）优先走候选链路（fixture，断网可复现）。
         demo_segments: List[Dict[str, Any]] = []

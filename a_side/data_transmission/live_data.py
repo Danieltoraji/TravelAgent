@@ -714,6 +714,31 @@ def make_live_flight_provider(
     return flight_provider
 
 
+class _CachingProvider:
+    """主链城际真源查询的缓存包装（P3-D2a 组装入口）。
+
+    把 ``.call(name, **kwargs)`` 路由到 ``QuotaManager.cached_call``——键
+    ``(name, o, d, date)`` 从 kwargs 提取（from_city/from_station → o，
+    to_city/to_station → d，date → date）。只包主链三真源
+    （train_trip / train_ticket / flight_search）；取不到完整键要素
+    （非城际查询）→ 退回普通 ``call``（不缓存、不改变行为）。
+    """
+
+    __slots__ = ("_quota",)
+
+    def __init__(self, quota: Any):
+        self._quota = quota
+
+    def call(self, name: str, **kwargs: Any) -> Any:
+        cached = getattr(self._quota, "cached_call", None)
+        if callable(cached):
+            # 键要素（from_city/from_station/to_city/to_station/date）由
+            # QuotaManager.cached_call 从 kwargs 提取；这里原样透传，真实工具
+            # 参数不受影响。键要素不全或未配置缓存 → cached_call 退化为 call。
+            return cached(name, **kwargs)
+        return self._quota.call(name, **kwargs)
+
+
 def make_live_intercity_provider(
     tool_provider: Any,
     schedule: Dict[str, Any],
@@ -721,6 +746,7 @@ def make_live_intercity_provider(
     destination: str = "",
     mode_budget: Optional[Dict[str, int]] = None,
     stats: Optional[Dict[str, int]] = None,
+    cache: Optional[Dict[Any, Any]] = None,
 ) -> Callable[..., Optional[CityTravelEdge]]:
     """返回组合城际真源 provider：train 真源 → flight 真源 → map 估算兜底。
 
@@ -741,11 +767,23 @@ def make_live_intercity_provider(
     各 ≤6），超过上限的工具调用抛 ``QuotaExceeded`` → 该模式该段回落估算——
     与 BFS 的懒查询 + (城市对)缓存构成「per-mode 预算」一层，防额度失控
     （车次对多不会挤占航班预算；反之亦然）。
+
+    ``cache``（P3-D2a）：可选外部 dict，传入后主链三真源（train_trip /
+    train_ticket / flight_search）自动经 ``QuotaManager.cached_call`` 共享
+    ``(name, o, d, date)`` 缓存——同对同日期只查一次真源（命中不计数、
+    正负都缓存），BFS 重复展开同一无班次对不再反复查询；缺省 None 不缓存
+    （行为零变化）。
     """
 
     if mode_budget is None:
         mode_budget = {"train_trip": 6, "train_ticket": 6, "flight_search": 6}
-    tool_provider = make_quota_manager(tool_provider, mode_budget, stats)
+    tool_provider = make_quota_manager(
+        tool_provider, mode_budget, stats, cache=cache
+    )
+    # 城际真源查询的缓存包装：把 .call 路由到 cached_call（(name,o,d,date) 键）。
+    # 只包主链三真源（train_trip/train_ticket/flight_search）——map 是估算兜底、
+    # 矩阵缓存留在规划层，不入此缓存；unbudgeted 通道走 _UnbudgetedProxy 穿透。
+    main_chain_provider = _CachingProvider(tool_provider)
 
     def _direction_date(o: str, d: str) -> str:
         departure = (schedule.get("departure_date") or "").strip()
@@ -802,11 +840,11 @@ def make_live_intercity_provider(
                 # train_ticket 候选版（多车次 + candidates 全量透传）。
                 edge = None
                 try:
-                    edge = make_live_train_trip_provider(tool_provider, date_str)(
+                    edge = make_live_train_trip_provider(main_chain_provider, date_str)(
                         o, d, mode=Mode.TRAIN.value
                     )
                     if edge is None:
-                        edge = make_live_train_provider(tool_provider, date_str)(
+                        edge = make_live_train_provider(main_chain_provider, date_str)(
                             o, d, mode=Mode.TRAIN.value
                         )
                 except QuotaExceeded:
@@ -814,7 +852,7 @@ def make_live_intercity_provider(
                 if edge is not None:
                     return edge
             if mode in (None, Mode.AIR.value):
-                flight_provider = make_live_flight_provider(tool_provider, date_str)
+                flight_provider = make_live_flight_provider(main_chain_provider, date_str)
                 try:
                     edge = flight_provider(o, d, mode=Mode.AIR.value)
                 except QuotaExceeded:
