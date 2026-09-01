@@ -1,8 +1,9 @@
 """额度管家 QuotaManager（架构整理方案 P3：``_BudgetedToolProvider`` 泛化）。
 
 把「真源调用纪律」从 make_live_intercity_provider 内联逻辑中抽出为工具层
-公共组件——**全部真源调用都过它**（未来 == P3 完成态；当前先覆盖城际链，
-spots/eta/酒店/餐厅逐工厂迁移见 P3-D）：
+公共组件——**全部真源调用都过它**（P3-D1 组装入口收敛：BPlannerHook 构造处
+包一层无预算 QuotaManager，spots/eta/矩阵/酒店/餐厅/城际全部经它计数；
+预算语义仍由 make_live_intercity_provider 内层 QuotaManager 承载）：
 
 1. **per-mode 预算**：按工具名计数，达上限抛 ``QuotaExceeded``（额度纪律：
    超限该模式走估算，不超额硬查）。``stats`` 为可选外部 dict，实时记录各
@@ -83,14 +84,18 @@ class QuotaManager:
     # ------------------------------------------------------------------
 
     def call(self, name: str, **kwargs: Any) -> Any:
+        # 所有真源调用都计数（stats 可观察，探针/验收用）；仅当该工具配了
+        # 预算上限（budget[name]）且已用满时才抛 QuotaExceeded。计数先自增
+        # 再放行（失败也计费，与旧 _BudgetedToolProvider 语义一致——防失败
+        # 重试打空预算窗口）。未配预算的工具计数不限流（组装入口收敛后
+        # 主链路所有调用都过管家，stats 即全量真源调用账本）。
+        used = self._stats.get(name, 0)
         cap = self._budget.get(name)
-        if cap is not None:
-            used = self._stats.get(name, 0)
-            if used >= cap:
-                raise QuotaExceeded(
-                    f"{name} 调用达上限 {cap}（额度纪律：超出该模式走估算）"
-                )
-            self._stats[name] = used + 1
+        if cap is not None and used >= cap:
+            raise QuotaExceeded(
+                f"{name} 调用达上限 {cap}（额度纪律：超出该模式走估算）"
+            )
+        self._stats[name] = used + 1
         return self._inner.call(name, **kwargs)
 
     # ------------------------------------------------------------------

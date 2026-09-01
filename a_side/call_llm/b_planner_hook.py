@@ -472,11 +472,19 @@ class BPlannerHook:
         self._use_live = bool(tool_provider) and use_live_data()
         # 工具门面无条件保存：live 分支用 USE_LIVE_DATA 门控；固定 Demo 候选链路
         # （锦州→上海 fixture，断网可复现）与开关无关，也经 _tool_provider 取工具。
+        # P3-D1 组装入口收敛：全部真源调用统一过额度管家（QuotaManager）——
+        # 无预算包一层仅计数（stats 可观察，探针/验收用）；per-mode 预算语义由
+        # make_live_intercity_provider 内层 QuotaManager 承载（预算嵌套，外层
+        # 不限量）。行为零变化：无预算时不限额、不节律，仅多一层计数。
         self._tool_provider = tool_provider
+        if tool_provider is not None:
+            from data_transmission.quota_manager import make_quota_manager
+
+            self._tool_provider = make_quota_manager(tool_provider)
         self._live_spots_provider: Optional[Callable[[str], Any]] = None
         self._travel_time_provider: Optional[LiveTravelTimeProvider] = None
         if self._use_live:
-            live_source = make_live_spots_provider(tool_provider)
+            live_source = make_live_spots_provider(self._tool_provider)
             ask = self._ask_user_on_conflict
 
             def _live_loader(_city: str) -> Any:
@@ -500,7 +508,7 @@ class BPlannerHook:
             self._live_spots_provider = _live_loader
             self._live_spots_source = live_source
             self._travel_time_provider = LiveTravelTimeProvider(
-                make_live_eta_fn(tool_provider, city=self.city),
+                make_live_eta_fn(self._tool_provider, city=self.city),
                 name_by_id={},
             )
 
