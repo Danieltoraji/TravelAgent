@@ -752,65 +752,46 @@ def config_reload(request: HttpRequest) -> JsonResponse:
 # ── C 端对话（旅行助手，2026-09-01 新增）───────────────────────────────
 # 面向 C 的对话接口：C 端维护会话历史（服务端无状态），请求带当前消息 +
 # 历史；服务端把行程上下文（行程摘要 / 需求 / 最近重规划原因）注入系统
-# 提示词。v2：对话可调用私有工具 ``update_timeline`` 直接修改时间轴
-# （LLM 输出结构化新时间轴 → 服务端校验 → 应用 → 记 replan_history，
-# App 轮询自动刷新，前端零改动）。工具不进 registry，仅本会话内生效。
+# 提示词。v2：对话可调用私有工具 ``update_timeline`` 直接修改时间轴。
+# v2.3（P5.1）：编排迁回 A 侧——``update_timeline`` 参数从「整份新时间轴」改为
+# 「修改意图」（``call_llm.chat_intents.CHAT_INTENTS_SCHEMA``），A 侧
+# ``BChatHook`` 翻译成事件/约束后走 RePlanner 增量修复/A 规划器全量重排，
+# 产出 ``ReplanRequest``，B 侧只负责应用 + 记录（方案 §六.7，C 端契约零变化）。
+# 工具不进 registry，仅本会话内生效。
 
 CHAT_HISTORY_LIMIT = 20
 
-# update_timeline 的参数 Schema（与 GET /api/timeline/ 返回结构同构）
-_TIMELINE_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "city": {"type": "string", "description": "城市，如 北京"},
-        "start_date": {"type": "string", "description": "开始日期 YYYY-MM-DD"},
-        "end_date": {"type": "string", "description": "结束日期 YYYY-MM-DD"},
-        "days": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "day": {"type": "integer"},
-                    "date": {"type": "string", "description": "YYYY-MM-DD"},
-                    "items": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {"type": "string"},
-                                "category": {
-                                    "type": "string",
-                                    "enum": ["scenic", "food", "hotel", "transport"],
-                                },
-                                "arrival": {"type": "string", "description": "到达时间 HH:MM"},
-                                "end_time": {"type": "string", "description": "HH:MM，可空"},
-                                "queue_min": {"type": "integer"},
-                                "ticket_required": {"type": "boolean"},
-                                "price": {"type": "number"},
-                            },
-                            "required": ["name", "arrival"],
-                        },
-                    },
-                },
-                "required": ["day", "date", "items"],
-            },
-        },
-    },
-    "required": ["city", "start_date", "end_date", "days"],
-}
 
-CHAT_TIMELINE_TOOL: Dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": "update_timeline",
-        "description": (
-            "按用户要求修改当前行程时间轴。参数为完整的新时间轴对象"
-            "（结构见 parameters）。仅当用户明确要求调整行程（增删景点、"
-            "改时间、换顺序）时调用；调用后向用户简要说明改动内容。"
-        ),
-        "parameters": _TIMELINE_SCHEMA,
-    },
-}
+def _chat_intent_tool() -> Dict[str, Any]:
+    """update_timeline 私有写工具（v2.3）：参数为修改意图（A 侧 schema 延迟导入）。"""
+    try:
+        from call_llm.chat_intents import CHAT_INTENTS_SCHEMA
+
+        parameters: Dict[str, Any] = CHAT_INTENTS_SCHEMA
+    except Exception:  # noqa: BLE001  a_side 未同步时降级为宽松对象
+        parameters = {
+            "type": "object",
+            "properties": {
+                "intents": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["intents"],
+        }
+    return {
+        "type": "function",
+        "function": {
+            "name": "update_timeline",
+            "description": (
+                "按用户要求调整当前行程。参数为修改意图列表（intents），"
+                "支持三种动作：remove=删除景点（spot 景点名）/ "
+                "add=新增景点（spot 景点名）/ reschedule=调整到达时段"
+                "（spot 景点名 + time HH:MM，可选 day 目标天序号）。"
+                "仅当用户明确要求调整行程（增删景点、改时间）时调用；"
+                "调用后向用户简要说明改动内容。"
+            ),
+            "parameters": parameters,
+        },
+    }
+
 
 # 对话可用的只读真源工具（v2.2 精选子集；来自既有 LLM 白名单，只读安全）
 CHAT_READONLY_TOOLS = (
@@ -821,7 +802,7 @@ CHAT_READONLY_TOOLS = (
 
 def _chat_tools() -> List[Dict[str, Any]]:
     """对话工具列表：update_timeline（私有写）+ 精选只读真源工具。"""
-    tools: List[Dict[str, Any]] = [CHAT_TIMELINE_TOOL]
+    tools: List[Dict[str, Any]] = [_chat_intent_tool()]
     try:
         provider = ToolProvider(runtime.registry)
         for tool in provider.to_openai_tools():
@@ -834,24 +815,41 @@ def _chat_tools() -> List[Dict[str, Any]]:
 
 
 def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """chat v2 私有工具执行器：校验并应用新时间轴（结果回填给 LLM）。
+    """chat v2.3 私有工具执行器：意图 → A 侧 BChatHook → 应用 ReplanRequest。
 
-    v2.2：应用前先跑深度可行性校验（闭馆/每日时长/预算，
-    ``timeline_validator``），不通过返回结构化错误由 LLM 调整重试。
+    v2.3（P5.1）：不再「解析整份时间轴 + 本地校验 + 整体替换」，而是把
+    ``{intents: [...]}`` 交给 A 侧 ``build_chat_hook`` 翻译成事件/约束并产出
+    ``ReplanRequest``；B 侧保留应用层（``apply_timeline_from_chat``，含
+    diff_summary/replan_history 记录）与最终可行性校验（``timeline_validator``）。
     """
     if name != "update_timeline":
         return {"status": "error", "message": f"未知工具 {name}"}
     if not isinstance(arguments, dict):
         return {"status": "error", "message": "参数必须为对象"}
+    intents = arguments.get("intents")
+    if not isinstance(intents, list):
+        return {"status": "error", "message": "参数缺少 intents 列表"}
     try:
         runtime.require_agent()  # 未建行程时拒绝
-        timeline_obj = runtime.parse_timeline_payload(arguments)
-    except (RuntimeError, ValueError) as exc:
+    except RuntimeError as exc:
         return {"status": "error", "message": f"时间轴不合法：{exc}"}
+
+    try:
+        from runtime.a_interface import build_chat_hook
+
+        hook = build_chat_hook(tool_provider=runtime.tool_provider)
+        replan = hook.apply(intents, current_timeline=runtime.timeline)
+    except Exception as exc:  # noqa: BLE001  A 侧编排异常回填给 LLM 调整
+        logger.exception("chat update_timeline orchestration failed")
+        return {"status": "error", "message": f"调整失败：{exc}"}
+
+    if not replan.need_replan or replan.new_timeline is None:
+        return {"status": "error", "message": str(replan.reason or "无可用修改")}
+
     from api.timeline_validator import validate_timeline
 
     validation_errors = validate_timeline(
-        timeline_obj, runtime.requirement or {}
+        replan.new_timeline, runtime.requirement or {}
     )
     if validation_errors:
         logger.warning(
@@ -865,7 +863,9 @@ def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             "请调整方案后重试）",
         }
     try:
-        result = runtime.apply_timeline_from_chat(timeline_obj, reason="对话调整")
+        result = runtime.apply_timeline_from_chat(
+            replan.new_timeline, reason=replan.reason or "对话调整"
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("chat update_timeline failed")
         return {"status": "error", "message": f"应用失败：{exc}"}
@@ -873,7 +873,7 @@ def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         "status": "applied",
         "message": "行程已更新",
         "diff_summary": result["diff_summary"],
-        "timeline": to_dict(timeline_obj),
+        "timeline": to_dict(replan.new_timeline),
     }
 
 

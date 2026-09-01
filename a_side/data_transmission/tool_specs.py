@@ -33,7 +33,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from data_transmission.enums import Mode
 
@@ -155,3 +155,113 @@ def intercity_mode_budget() -> Dict[str, int]:
         for spec in TOOL_SPECS.values()
         if spec.budget_default is not None
     }
+
+
+# ---------------------------------------------------------------------------
+# P5.2：ToolSpec 注册表 → OpenAI function calling tools（LLM agent loop 接线）
+# ---------------------------------------------------------------------------
+
+# 各工具的最小入参 Schema（P5.2 给 LLM 的工具面；城际校验子链路只暴露城际三工具，
+# 其余工具仍可经 PlannerAgent 的任意子链路使用）
+_TOOL_INPUT_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "scenic": {
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "城市名，如 北京"},
+        },
+        "required": ["city"],
+    },
+    "map": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "description": "route 单点 / batch_route 矩阵"},
+            "from": {"type": "string", "description": "起点坐标或地名"},
+            "to": {"type": "string", "description": "终点坐标或地名"},
+            "from_city": {"type": "string", "description": "起点城市（batch_route）"},
+            "to_city": {"type": "string", "description": "终点城市（batch_route）"},
+            "pairs": {"type": "array", "items": {"type": "object"},
+                      "description": "坐标对列表（batch_route）"},
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+        },
+        "required": ["action"],
+    },
+    "hotel": {
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "城市名，如 北京"},
+            "hotel_name": {"type": "string", "description": "按名称精确查找"},
+        },
+        "required": ["city"],
+    },
+    "food": {
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "城市名，如 北京"},
+            "longitude": {"type": "number"},
+            "latitude": {"type": "number"},
+            "num": {"type": "integer", "description": "返回数量"},
+        },
+        "required": ["city"],
+    },
+    "train_trip": {
+        "type": "object",
+        "properties": {
+            "from_city": {"type": "string", "description": "出发城市"},
+            "to_city": {"type": "string", "description": "到达城市"},
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+        },
+        "required": ["from_city", "to_city", "date"],
+    },
+    "train_ticket": {
+        "type": "object",
+        "properties": {
+            "from_city": {"type": "string", "description": "出发城市"},
+            "to_city": {"type": "string", "description": "到达城市"},
+            "from_station": {"type": "string", "description": "出发站名"},
+            "to_station": {"type": "string", "description": "到达站名"},
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+        },
+        "required": ["from_city", "to_city", "date"],
+    },
+    "flight_search": {
+        "type": "object",
+        "properties": {
+            "from_city": {"type": "string", "description": "出发城市"},
+            "to_city": {"type": "string", "description": "到达城市"},
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+        },
+        "required": ["from_city", "to_city", "date"],
+    },
+}
+
+
+def to_openai_tools(
+    names: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """ToolSpec 注册表 → OpenAI function calling tools 格式（P5.2）。
+
+    供 ``LLMClient.generate(tools=...)`` 直接消费（``PlannerAgent`` 的 agent
+    loop）；executor 由调用方以 ``tool_executor(name, arguments)`` 注入
+    （推荐 B 侧 ``ToolProvider.call_json``，白名单已在其 ``list_for_llm`` 收口）。
+
+    ``names`` 缺省 = 全部已注册工具；传子集名（如城际三工具）时只转这些。
+    """
+    selected = (
+        [n for n in names if n in TOOL_SPECS]
+        if names is not None
+        else list(TOOL_SPECS)
+    )
+    tools: List[Dict[str, Any]] = []
+    for name in sorted(selected):
+        spec = TOOL_SPECS[name]
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": _TOOL_INPUT_SCHEMAS.get(
+                    name, {"type": "object", "properties": {}}
+                ),
+            },
+        })
+    return tools

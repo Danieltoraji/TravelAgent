@@ -4,7 +4,10 @@
 - ``build_decision_hook`` 返回 A 的 ``call_llm.b_decision_hook.BDecisionHook``
   （LLM 影响评分 + closed/hotel 硬规则 + RePlanner，见 A 侧实现 docstring）；
 - 新增 ``build_planner_hook(requirement)`` 返回 A 的
-  ``call_llm.b_planner_hook.BPlannerHook``（requirement → TripTimeline，离线可跑）。
+  ``call_llm.b_planner_hook.BPlannerHook``（requirement → TripTimeline，离线可跑）；
+- 新增 ``build_chat_hook(tool_provider)`` 返回 A 的
+  ``call_llm.b_chat_hook.BChatHook``（P5.1：chat 修改意图 → ReplanRequest，
+  ``update_timeline`` 的编排从 B 侧 view 迁回 A 编排层，见方案 §六.7）。
 
 B/Django 其余代码零改动。风险对策（方案 §八）：
 - **循环导入**：``agent_runtime`` → ``a_interface`` 已有依赖边，本模块内对
@@ -93,4 +96,27 @@ def build_planner_hook(
         plan_id=DEFAULT_PLAN_ID,
         ask_user_on_conflict=False,
         tool_provider=tool_provider,   # 真源 provider（USE_LIVE_DATA=1 时 BPlannerHook 内部启用）
+    )
+
+
+def build_chat_hook(tool_provider: Any = None) -> Any:
+    """A 侧对话编排入口（BChatHook，P5.1）：chat 修改意图 → ``ReplanRequest``。
+
+    方案 §六.7：``update_timeline`` 的编排从 B 侧 view 迁回 A 编排层——模型
+    输出「修改意图」而非整份新时间轴，A 翻译成事件/约束后走 RePlanner 增量
+    修复或 A 规划器全量重排；C 端请求/响应契约零变化。B 侧 ``_exec_chat_timeline``
+    只做「解析 arguments → build_chat_hook() → apply() → 应用 ReplanRequest」。
+    requirement 从 runtime 单例读取（与 ``build_decision_hook`` 同款生命周期约定）。
+    """
+    from call_llm.b_chat_hook import BChatHook
+
+    requirement = _requirement_from_runtime()
+    content = _content(requirement)
+    return BChatHook(
+        requirement=requirement,
+        spots_provider=_candidate_spots_provider(requirement),
+        start_date=content.get("start_date"),
+        city=str(content.get("destination") or ""),
+        plan_id=DEFAULT_PLAN_ID,
+        tool_provider=tool_provider,   # add/reschedule 全量与增量修复的真源门面
     )

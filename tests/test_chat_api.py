@@ -1,9 +1,12 @@
-"""/api/chat/ 对话接口测试（v2）：payload 校验 + 系统提示词组装 + 工具回路。
+"""/api/chat/ 对话接口测试（v2.3）：payload 校验 + 系统提示词组装 + 工具回路。
 
 不触真实 LLM：patch ``call_llm.client_factory.create_llm_client`` 注入
 FakeClient，模拟纯对话与工具调用（update_timeline）两种模式，断言：
-消息结构 / tools 参数 / expect_json / executor 真实接线（时间轴被应用、
-replan_history 记录、非法时间轴被拒）。
+消息结构 / tools 参数 / expect_json / executor 真实接线（修改意图经 A 侧
+BChatHook 应用、replan_history 记录、非法意图被拒）。
+
+v2.3（P5.1）：update_timeline 参数从整份时间轴改为「修改意图」（intents），
+编排迁回 A 侧（call_llm.b_chat_hook.BChatHook）；C 端请求/响应契约零变化。
 """
 
 import json
@@ -40,6 +43,7 @@ django.setup()
 from django.http import HttpRequest  # noqa: E402
 
 from api import views  # noqa: E402
+from core.schemas import DayPlan, Place, TripTimeline  # noqa: E402
 from runtime.agent_runtime import runtime  # noqa: E402
 
 
@@ -51,19 +55,11 @@ def _post(body: dict) -> HttpRequest:
     return req
 
 
-def _timeline_payload() -> dict:
+def _intents_payload() -> dict:
+    """v2.3：update_timeline 的修改意图参数（替代整份时间轴）。"""
     return {
-        "city": "北京",
-        "start_date": "2026-08-01",
-        "end_date": "2026-08-02",
-        "days": [
-            {
-                "day": 1, "date": "2026-08-01",
-                "items": [
-                    {"name": "故宫博物院", "category": "scenic", "arrival": "09:00"},
-                    {"name": "景山公园", "category": "scenic", "arrival": "14:00"},
-                ],
-            },
+        "intents": [
+            {"action": "reschedule", "spot": "景山公园", "time": "15:00"},
         ],
     }
 
@@ -81,7 +77,7 @@ class FakeClient:
     ) -> None:
         self.reply = reply
         self.tool_rounds = tool_rounds
-        self.tool_arguments = tool_arguments or _timeline_payload()
+        self.tool_arguments = tool_arguments or _intents_payload()
         self.tool_name = tool_name
         self.error = error
         self.calls: list[dict] = []
@@ -125,16 +121,17 @@ class StubAgent:
 
 
 def _make_context() -> None:
-    day = SimpleNamespace(
-        day=1, date=date(2026, 8, 1),
-        items=[
-            SimpleNamespace(name="故宫博物院", arrival="09:00", price=60.0),
-            SimpleNamespace(name="景山公园", arrival="14:00", price=2.0),
+    runtime.timeline = TripTimeline(
+        id="plan_001",
+        city="北京",
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 2),
+        days=[
+            DayPlan(day=1, date=date(2026, 8, 1), items=[
+                Place(name="故宫博物院", arrival="09:00", price=60.0, category="scenic"),
+                Place(name="景山公园", arrival="14:00", price=2.0, category="scenic"),
+            ]),
         ],
-    )
-    runtime.timeline = SimpleNamespace(
-        city="北京", start_date=date(2026, 8, 1), end_date=date(2026, 8, 2),
-        days=[day],
     )
     runtime.requirement = {
         "content": {
@@ -285,17 +282,8 @@ class TestChatApi(unittest.TestCase):
             reply="已把景山公园调整到下午。",
             tool_rounds=1,
             tool_arguments={
-                "city": "北京",
-                "start_date": "2026-08-01",
-                "end_date": "2026-08-02",
-                "days": [
-                    {
-                        "day": 1, "date": "2026-08-01",
-                        "items": [
-                            {"name": "故宫博物院", "category": "scenic", "arrival": "09:00"},
-                            {"name": "景山公园", "category": "scenic", "arrival": "15:00"},
-                        ],
-                    },
+                "intents": [
+                    {"action": "reschedule", "spot": "景山公园", "time": "15:00"},
                 ],
             },
         )
@@ -305,67 +293,58 @@ class TestChatApi(unittest.TestCase):
             resp = views.chat(_post({"message": "把景山公园挪到下午"}))
         self.assertEqual(resp.status_code, 200)
         self.assertIn("景山公园", json.loads(resp.content.decode())["reply"])
-        # 时间轴已被应用
-        self.assertEqual(runtime.timeline.days[0].items[1].arrival, "15:00")
+        # 修改意图经 A 侧 BChatHook 应用：景山公园到达时段变为 15:00
+        timeline = runtime.timeline
+        jingshan = [it for it in timeline.days[0].items if it.name == "景山公园"][0]
+        self.assertEqual(jingshan.arrival, "15:00")
         # replan_history 有 source=chat 记录 + diff
         self.assertEqual(len(runtime.replan_history), 1)
         entry = runtime.replan_history[0]
         self.assertEqual(entry["source"], "chat")
-        self.assertIn("[rescheduled] 景山公园", entry["decision"]["diff_summary"][0])
-        # timeline_history 同步记录
-        self.assertEqual(runtime.timeline_history[-1]["reason"], "对话调整")
+        diff = "；".join(entry["decision"]["diff_summary"])
+        self.assertIn("景山公园", diff)
+        # timeline_history 同步记录（reason 含「对话调整」前缀/A 侧说明）
+        self.assertEqual(runtime.timeline_history[-1]["reason"][:4], "对话调整")
 
-    def test_chat_tool_rejects_invalid_timeline(self) -> None:
+    def test_chat_tool_rejects_invalid_intent(self) -> None:
         _make_context()
         fake = FakeClient(
             reply="抱歉，调整失败。",
             tool_rounds=1,
             tool_arguments={
-                "city": "北京",
-                "start_date": "2026-08-01",
-                "end_date": "2026-08-02",
-                "days": [{"day": 1, "date": "2026-08-01", "items": [
-                    {"name": "", "arrival": "09:00"},   # 缺 name → 校验失败
-                ]}],
+                # reschedule 缺 time → A 侧翻译器报错拒绝
+                "intents": [{"action": "reschedule", "spot": "景山公园"}],
             },
         )
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            resp = views.chat(_post({"message": "乱改行程"}))
+            resp = views.chat(_post({"message": "改时间"}))
         self.assertEqual(resp.status_code, 200)
         # 时间轴未被修改，无 replan 记录
-        self.assertEqual(runtime.timeline.days[0].items[0].name, "故宫博物院")
+        timeline = runtime.timeline
+        self.assertEqual(timeline.days[0].items[0].name, "故宫博物院")
         self.assertEqual(runtime.replan_history, [])
 
-    def test_chat_tool_rejects_infeasible_timeline(self) -> None:
-        """v2.2：结构合法但深度校验不通过（超预算）→ 拒绝且不改状态。"""
+    def test_chat_tool_rejects_unknown_spot(self) -> None:
+        """v2.3：意图引用计划中不存在的景点 → A 侧拒绝且不改状态。"""
         _make_context()
         fake = FakeClient(
-            reply="抱歉，预算超支无法调整。",
+            reply="抱歉，找不到这个景点。",
             tool_rounds=1,
             tool_arguments={
-                "city": "北京",
-                "start_date": "2026-08-01",
-                "end_date": "2026-08-02",
-                "days": [{"day": 1, "date": "2026-08-01", "items": [
-                    {"name": "故宫博物院", "category": "scenic",
-                     "arrival": "09:00", "end_time": "15:00",
-                     "open_time": "09:00-17:00", "price": 99999},
-                    {"name": "景山公园", "category": "scenic",
-                     "arrival": "15:18", "end_time": "16:18",
-                     "open_time": "06:30-21:00", "price": 99999},
-                ]}],
+                "intents": [
+                    {"action": "reschedule", "spot": "不存在的景点", "time": "15:00"},
+                ],
             },
         )
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            resp = views.chat(_post({"message": "贵一点没关系"}))
+            resp = views.chat(_post({"message": "把不存在的景点挪到下午"}))
         self.assertEqual(resp.status_code, 200)
-        # 预算 2000 被超 → 拒绝应用
-        self.assertEqual(runtime.timeline.days[0].items[0].name, "故宫博物院")
-        self.assertEqual(runtime.timeline.days[0].items[0].price, 60.0)
+        timeline = runtime.timeline
+        self.assertEqual(timeline.days[0].items[0].name, "故宫博物院")
         self.assertEqual(runtime.replan_history, [])
 
     def test_chat_tool_requires_timeline(self) -> None:
