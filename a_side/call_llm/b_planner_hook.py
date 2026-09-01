@@ -55,6 +55,7 @@ from data_transmission.b_contract import (  # noqa: E402
     plan_to_trip_timeline,
     requirement_to_planner_output,
 )
+from data_transmission.enums import PipelineSource, Source  # noqa: E402
 
 
 def _collect_plan_spot_names(plan: Dict[str, Any]) -> List[str]:
@@ -327,7 +328,7 @@ def _rebuild_return_with_schedule(
     details = dict(return_seg.get("details") or {})
     if cost > 0:
         details["cost_per_person"] = round(cost, 2)
-        details["source"] = "live"
+        details["source"] = Source.LIVE.value
     return_seg["details"] = details
     return segments
 
@@ -418,7 +419,8 @@ class BPlannerHook:
         - 候选池：``live_data.LiveSpotsSource``（scenic 工具）→ 失败回退假数据；
         - 交通矩阵：``LiveTravelTimeProvider``（map 工具 ETA，双向缓存）；
         - 餐厅/未映射节点（如本地假餐厅 id）不发真实请求，按 0 通勤降级；
-        - 结果通过 ``last_data_source`` 记录（"live" / "fake" / "live_fallback"）。
+        - 结果通过 ``last_data_source`` 记录（live / fake / live_fallback，见
+          ``data_transmission.enums.PipelineSource``）。
         未传 ``tool_provider`` 或 ``USE_LIVE_DATA`` 关闭时，行为与既往完全一致（假数据）。
         """
         self.requirement = requirement if isinstance(requirement, dict) else {}
@@ -433,8 +435,9 @@ class BPlannerHook:
         self._ask_user_on_conflict = bool(ask_user_on_conflict)
         self._planner_fn = planner_fn
         self.last_error: Optional[str] = None
-        # 数据源记录：fake（假数据）/ live（真实数据）/ live_fallback（真源失败回退假）
-        self.last_data_source: str = "fake"
+        # 数据源记录（PipelineSource）：fake（假数据）/ live（真实数据）/
+        # live_fallback（真源失败回退假）
+        self.last_data_source: str = PipelineSource.FAKE.value
         # A 侧内部计划缓存：首次规划后保留，可被决策钩子（replan）复用
         self._current_plan: Optional[Dict[str, Any]] = None
         self._current_timeline: Optional[TripTimeline] = None
@@ -730,7 +733,9 @@ class BPlannerHook:
             return self._current_timeline
         if self._use_live:
             return self._generate_live_or_fallback()
-        return self._run_pipeline(self._spots_provider, None, source="fake")
+        return self._run_pipeline(
+            self._spots_provider, None, source=PipelineSource.FAKE.value
+        )
 
     def _generate_live_or_fallback(self) -> TripTimeline:
         """真源优先：候选池 / 规划任一步失败 → 回退假数据管线（保留失败原因）。
@@ -748,8 +753,10 @@ class BPlannerHook:
             spots = self._live_spots_provider(self.city)
         except Exception as exc:  # noqa: BLE001
             reason = f"真实数据接入失败，已回退假数据：{exc}"
-            timeline = self._run_pipeline(self._spots_provider, None, source="fake")
-            self.last_data_source = "live_fallback"
+            timeline = self._run_pipeline(
+                self._spots_provider, None, source=PipelineSource.FAKE.value
+            )
+            self.last_data_source = PipelineSource.LIVE_FALLBACK.value
             self.last_error = reason
             return timeline
         # 到达日重叠修复（方案 A）：规划前构建城际段**一次**（不重复查询
@@ -823,20 +830,24 @@ class BPlannerHook:
                 )
         except Exception as exc:  # noqa: BLE001
             reason = f"真实数据接入失败，已回退假数据：{exc}"
-            timeline = self._run_pipeline(self._spots_provider, None, source="fake")
-            self.last_data_source = "live_fallback"
+            timeline = self._run_pipeline(
+                self._spots_provider, None, source=PipelineSource.FAKE.value
+            )
+            self.last_data_source = PipelineSource.LIVE_FALLBACK.value
             self.last_error = reason
             return timeline
         if not isinstance(plan, dict) or not plan.get("days"):
             reason = "真实数据接入失败（规划未产出可用计划），已回退假数据"
-            timeline = self._run_pipeline(self._spots_provider, None, source="fake")
-            self.last_data_source = "live_fallback"
+            timeline = self._run_pipeline(
+                self._spots_provider, None, source=PipelineSource.FAKE.value
+            )
+            self.last_data_source = PipelineSource.LIVE_FALLBACK.value
             self.last_error = reason
             return timeline
 
         self._current_plan = plan
         self.last_error = None
-        self.last_data_source = "live"
+        self.last_data_source = PipelineSource.LIVE.value
         # 末日行程排定后按实际离开时间重选返程班次（无候选保留反推占位）
         self._inject_trip_segments(
             plan, _rebuild_return_with_schedule(plan, segments)

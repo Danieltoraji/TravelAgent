@@ -1,5 +1,7 @@
 """JSON Schema for structured travel requirements."""
 
+from data_transmission.enums import Preference
+
 nullable_string = {"type": ["string", "null"]}
 nullable_integer = {"type": ["integer", "null"]}
 nullable_boolean = {"type": ["boolean", "null"]}
@@ -140,7 +142,7 @@ requirement_schema = {
                 },
                 "travel_priority": {
                     "type": ["string", "null"],
-                    "enum": ["rail", "air", "speed", "earliest", "cost"],
+                    "enum": [p.value for p in Preference],
                     "title": "城际交通偏好",
                     "description": "可选；用户对城际来去程的交通偏好（C 端四维：高铁优先/飞机优先/速度最快/最早到达）："
                     "rail=高铁优先（有高铁就用高铁，链式命中 train→air→driving）、"

@@ -4,7 +4,7 @@
 
 批次 2（8.28）：估算表升级车站粒度（stations 表 + options 站点对）——
 - ``CityTravelEdge`` 扩展 ``cost_per_person / from_station / to_station / source``
-  （source: "" 假表旧边 / "estimate" 估算表条目 / "live" 真源）；
+  （source: "" 假表旧边 / "estimated" 估算表条目 / "live" 真源）；
 - ``load_city_travel_options`` 返回 ``{(o,d): {mode: Edge}}`` 全 options；
   ``load_city_travel_edges`` 取 options 默认边（train 优先；旧表无 options 回退
   顶层字段）保持旧读法兼容；
@@ -20,6 +20,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from data_transmission.enums import Mode, Preference, Source
+
 logger = logging.getLogger("data_transmission.city_travel")
 
 DEFAULT_CITY_TRAVEL_PATH = (
@@ -27,16 +29,22 @@ DEFAULT_CITY_TRAVEL_PATH = (
 )
 
 # 城际方式偏好（来去程段生成时的选择顺序：高铁优先，逐项回退到命中为止）
-MODE_PREFERENCE: Tuple[str, ...] = ("train", "air", "driving")
+MODE_PREFERENCE: Tuple[str, ...] = (
+    Mode.TRAIN.value, Mode.AIR.value, Mode.DRIVING.value,
+)
 # C 端四维偏好（travel_priority）对应的模式优先链（「优先」= 链式命中，非取最短）：
-MODE_PRIORITY_RAIL: Tuple[str, ...] = ("train", "air", "driving")   # 高铁优先（= 默认链）
-MODE_PRIORITY_AIR: Tuple[str, ...] = ("air", "train", "driving")    # 飞机优先
+MODE_PRIORITY_RAIL: Tuple[str, ...] = (
+    Mode.TRAIN.value, Mode.AIR.value, Mode.DRIVING.value,
+)   # 高铁优先（= 默认链）
+MODE_PRIORITY_AIR: Tuple[str, ...] = (
+    Mode.AIR.value, Mode.TRAIN.value, Mode.DRIVING.value,
+)   # 飞机优先
 
 # mode → 中文方式名（段展示用）
 _MODE_TEXT: Dict[str, str] = {
-    "train": "高铁",
-    "air": "飞机",
-    "driving": "自驾",
+    Mode.TRAIN.value: "高铁",
+    Mode.AIR.value: "飞机",
+    Mode.DRIVING.value: "自驾",
 }
 
 
@@ -54,7 +62,7 @@ class CityTravelEdge:
     cost_per_person: float = 0.0     # 人均费用（元；估算/真源票价口径）
     from_station: str = ""           # 出发站（train/air；driving 无站点为空）
     to_station: str = ""             # 到达站（train/air）
-    source: str = ""                 # "estimate"（估算表）| "live"（真源）| ""（假表旧边）
+    source: str = ""                 # "estimated"（估算表）| "live"（真源）| ""（假表旧边）
     candidates: Tuple[Dict[str, Any], ...] = ()  # 真源候选列表（多条车次/航班 × 时刻 × 票价）；估算边恒为空
 
 
@@ -105,7 +113,7 @@ def _edge_from_option(
         cost_per_person=float(opt.get("cost_per_person") or 0.0),
         from_station=str(opt.get("from_station") or ""),
         to_station=str(opt.get("to_station") or ""),
-        source=str(opt.get("source") or "estimate"),
+        source=str(opt.get("source") or Source.ESTIMATED.value),
     )
 
 
@@ -148,7 +156,7 @@ def load_city_travel_edges(
     """
     edges: Dict[Tuple[str, str], CityTravelEdge] = {}
     for key, by_mode in load_city_travel_options(path).items():
-        first = by_mode.get("train") or next(iter(by_mode.values()), None)
+        first = by_mode.get(Mode.TRAIN.value) or next(iter(by_mode.values()), None)
         if first is not None:
             edges[key] = first
     return edges
@@ -245,22 +253,24 @@ def _pick_local_edge(
     - ``None`` / 其它（含已移除的 comfort 兜底）：按 ``modes`` 偏好链逐个命中。
     """
     by_mode = options.get((origin, destination)) or {}
-    if priority in ("rail", "air"):
-        chain = MODE_PRIORITY_RAIL if priority == "rail" else MODE_PRIORITY_AIR
+    if priority in (Preference.RAIL.value, Preference.AIR.value):
+        chain = (
+            MODE_PRIORITY_RAIL if priority == Preference.RAIL.value else MODE_PRIORITY_AIR
+        )
         for mode in chain:
             if mode in by_mode:
                 return by_mode[mode]
         return None
-    if priority in ("speed", "earliest"):
+    if priority in (Preference.SPEED.value, Preference.EARLIEST.value):
         accessible = list(by_mode.values())
         if not accessible:
             return None
         return min(
             accessible,
             key=lambda e: e.transport_minutes
-            + (AIR_BUFFER_MIN if e.mode == "air" else 0),
+            + (AIR_BUFFER_MIN if e.mode == Mode.AIR.value else 0),
         )
-    if priority == "cost":
+    if priority == Preference.COST.value:
         priced = [
             e for e in by_mode.values() if e.cost_per_person and e.cost_per_person > 0
         ]
@@ -301,45 +311,49 @@ def _pick_segment(
     a: str,
     b: str,
     options: Dict[Tuple[str, str], Dict[str, CityTravelEdge]],
-    prefer: str = "rail",
+    prefer: str = Preference.RAIL.value,
     priority: Optional[str] = None,
 ) -> Optional[CityTravelEdge]:
     """a→b 偏好段：默认（None）在 ``prefer`` 允许的方式内取**时长最短**（踩中最优）。
 
-    - ``prefer="air"``（区域间干线）：候选 air + train 取短；
-    - ``prefer="rail"``（区域内接驳）：候选 train + air 取短；
+    - ``prefer=Mode.AIR``（区域间干线）：候选 air + train 取短；
+    - ``prefer=Preference.RAIL``（区域内接驳）：候选 train + air 取短；
     - ``priority`` 覆盖（C 端四维偏好）：
-      - ``"rail"`` 高铁优先 / ``"air"`` 飞机优先：按对应链**链式命中**
+      - ``Preference.RAIL`` 高铁优先 / ``Preference.AIR`` 飞机优先：按对应链**链式命中**
         （有该模式就用，即使更慢/更贵——「优先」语义）；
-      - ``"speed"`` / ``"earliest"``：候选里取总耗时最短（air 含值机缓冲）；
-      - ``"cost"``：候选里取**人均费用最低**（0 价/无价条目视为不可比，回落时长最短）；
+      - ``Preference.SPEED`` / ``Preference.EARLIEST``：候选里取总耗时最短（air 含值机缓冲）；
+      - ``Preference.COST``：候选里取**人均费用最低**（0 价/无价条目视为不可比，回落时长最短）；
     - 候选为空 → driving 兜底；仍无 → None。
     """
     if a == b:
         return None
-    if priority == "rail":
+    if priority == Preference.RAIL.value:
         chain = MODE_PRIORITY_RAIL
-    elif priority == "air":
+    elif priority == Preference.AIR.value:
         chain = MODE_PRIORITY_AIR
     else:
-        chain = ("air", "train") if prefer == "air" else ("train", "air")
+        chain = (
+            (Mode.AIR.value, Mode.TRAIN.value)
+            if prefer == Mode.AIR.value
+            else (Mode.TRAIN.value, Mode.AIR.value)
+        )
     by_mode = options.get((a, b)) or {}
     candidates = [by_mode[m] for m in chain if m in by_mode]
     if not candidates:
-        driving = by_mode.get("driving")
+        driving = by_mode.get(Mode.DRIVING.value)
         return driving if driving is not None else None
-    if priority in ("rail", "air"):
+    if priority in (Preference.RAIL.value, Preference.AIR.value):
         # 模式优先 = 链式命中（train 或 air 存在即用，不做最短比较）
         return candidates[0]
-    if priority == "cost":
+    if priority == Preference.COST.value:
         priced = [e for e in candidates if e.cost_per_person and e.cost_per_person > 0]
         if priced:
             return min(priced, key=lambda e: e.cost_per_person)
-    if priority in ("speed", "earliest"):
+    if priority in (Preference.SPEED.value, Preference.EARLIEST.value):
         return min(
             candidates,
             key=lambda e: e.transport_minutes
-            + (AIR_BUFFER_MIN if e.mode == "air" else 0),
+            + (AIR_BUFFER_MIN if e.mode == Mode.AIR.value else 0),
         )
     return min(candidates, key=lambda e: e.transport_minutes)
 
@@ -347,7 +361,7 @@ def _pick_segment(
 def _route_minutes(edges: Tuple[CityTravelEdge, ...]) -> int:
     """段净时长 + Σ air 值机缓冲。"""
     return sum(e.transport_minutes for e in edges) + sum(
-        AIR_BUFFER_MIN for e in edges if e.mode == "air"
+        AIR_BUFFER_MIN for e in edges if e.mode == Mode.AIR.value
     )
 
 
@@ -380,9 +394,9 @@ def _segment_candidates(
     - ``cost`` / ``speed`` / ``earliest``：**全展开** —— BFS 升级点：不止段内贪心，
       更在**整条链上求全局最优**（全局最低价 / 含 air 缓冲的最短总时长）。
     """
-    if priority in ("speed", "earliest"):
+    if priority in (Preference.SPEED.value, Preference.EARLIEST.value):
         return list((options.get((a, b)) or {}).values())
-    if priority == "cost":
+    if priority == Preference.COST.value:
         by_mode = options.get((a, b)) or {}
         priced = [
             e for e in by_mode.values() if e.cost_per_person and e.cost_per_person > 0
@@ -390,15 +404,15 @@ def _segment_candidates(
         if priced:
             return priced  # 全局最低价链（多边竞争）
         # 全无价 → 偏好链兜底（与 _pick_segment cost 回落一致）
-        edge = _pick_segment(a, b, options, "rail", priority)
+        edge = _pick_segment(a, b, options, Preference.RAIL.value, priority)
         return [edge] if edge is not None else []
-    edge = _pick_segment(a, b, options, "rail", priority)
+    edge = _pick_segment(a, b, options, Preference.RAIL.value, priority)
     return [edge] if edge is not None else []
 
 
 def _edge_weight(edge: CityTravelEdge) -> int:
     """单段的「真实到达时长」：净时长 + air 值机缓冲（与 ``_route_minutes`` 口径一致）。"""
-    return edge.transport_minutes + (AIR_BUFFER_MIN if edge.mode == "air" else 0)
+    return edge.transport_minutes + (AIR_BUFFER_MIN if edge.mode == Mode.AIR.value else 0)
 
 
 def find_intercity_route_bfs(
@@ -453,7 +467,7 @@ def find_intercity_route_bfs(
     options = options if options is not None else load_city_travel_options()
     from heapq import heappop, heappush
 
-    goal_cost = priority == "cost"
+    goal_cost = priority == Preference.COST.value
 
     # 软直达优先：直达存在且 ≤ max_total → 初始最优（多跳必须更优才替换）
     best_edges: Optional[Tuple[CityTravelEdge, ...]] = None

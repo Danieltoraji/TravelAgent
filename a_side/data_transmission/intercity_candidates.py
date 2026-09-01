@@ -48,6 +48,7 @@ from data_transmission.city_travel import (
     CityTravelEdge,
     IntercityRoute,
 )
+from data_transmission.enums import Mode, Source
 
 logger = logging.getLogger("data_transmission.intercity_candidates")
 
@@ -103,7 +104,7 @@ def generate_intercity_candidates(
         except Exception as exc:  # noqa: BLE001  单段失败不炸整批候选
             logger.warning("铁路查询失败（%s→%s）：%s", a, b, exc)
             edge = None
-        if edge is not None and edge.mode not in ("train", "rail"):
+        if edge is not None and edge.mode not in (Mode.TRAIN.value,):
             # 组合 provider 的 train 分支在无车次时会落出 driving 估算边——
             # 那不是铁路结果（类型 A/C/D 都以「铁路段成立」为前提），按无车处理。
             edge = None
@@ -116,18 +117,18 @@ def generate_intercity_candidates(
             origin=hint.origin_city,
             destination=hint.destination_city,
             transport_minutes=int(hint.typical_duration_min or 0),
-            mode="air",
+            mode=Mode.AIR.value,
             cost_per_person=0.0,  # 拓扑无价格（§3.1）；Top-K 验证后补
             from_station=hint.origin_airport,
             to_station=hint.destination_airport,
-            source="estimated",
+            source=Source.ESTIMATED.value,
         )
 
     def _route_minutes(edges: Tuple[CityTravelEdge, ...]) -> int:
         total = 0
         for e in edges:
             total += e.transport_minutes
-            if e.mode == "air":
+            if e.mode == Mode.AIR.value:
                 total += AIR_BUFFER_MIN
         return total
 
@@ -244,17 +245,17 @@ def verify_flight_legs(
 
     result: List[IntercityRoute] = []
     for index, route in enumerate(routes):
-        if index >= top_k or not any(e.mode == "air" for e in route.edges):
+        if index >= top_k or not any(e.mode == Mode.AIR.value for e in route.edges):
             result.append(route)  # top 之外 / 纯铁路：原样
             continue
         new_edges: List[CityTravelEdge] = []
         upgraded = False
         for edge in route.edges:
-            if edge.mode != "air" or edge.source == "live":
+            if edge.mode != Mode.AIR.value or edge.source == Source.LIVE.value:
                 new_edges.append(edge)
                 continue
             live_edge = _air(edge.origin, edge.destination)
-            if live_edge is None or live_edge.mode != "air":
+            if live_edge is None or live_edge.mode != Mode.AIR.value:
                 # None 语义过载 + 回落边防护（8.31 贵港→北京）：B 侧组合
                 # provider 的 air 分支在 flight 无果时会回落 map 估算边
                 # （mode != "air"，driving 1389m）——不是航段真价，保持
@@ -267,7 +268,7 @@ def verify_flight_legs(
             minutes = 0
             for e in new_edges:
                 minutes += e.transport_minutes
-                if e.mode == "air":
+                if e.mode == Mode.AIR.value:
                     minutes += AIR_BUFFER_MIN
             result.append(IntercityRoute(
                 tuple(new_edges), minutes,

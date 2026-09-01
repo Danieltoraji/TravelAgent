@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from data_transmission.city_travel import CityTravelEdge
+from data_transmission.enums import Mode, Source
 from data_transmission.hotel import Hotel
 from data_transmission.restaurant import Restaurant
 
@@ -446,7 +447,7 @@ def make_live_eta_fn(
     - 绑定 ``city``：B 端 map 工具地理编码默认限定北京，不带 city 时非北京
       行程（如上海）全按北京上下文查询 → 高德 30001。BPlannerHook 传 ``self.city``。
     """
-    base_kwargs: Dict[str, Any] = {"action": "route", "mode": "driving"}
+    base_kwargs: Dict[str, Any] = {"action": "route", "mode": Mode.DRIVING.value}
     if city:
         base_kwargs["city"] = city
 
@@ -527,7 +528,7 @@ def make_live_matrix_fn(
             "action": "batch_route",
             "origins": origin_coords,
             "destinations": dest_coords,
-            "mode": "driving",
+            "mode": Mode.DRIVING.value,
         }
         if city:
             kwargs["city"] = city
@@ -841,7 +842,7 @@ def _fetch_food_items(
 
 def make_live_city_travel_provider(
     tool_provider: Any,
-    mode: str = "train",
+    mode: str = Mode.TRAIN.value,
 ) -> Callable[..., Optional[CityTravelEdge]]:
     """返回 ``provider(origin, dest, *, mode=None) -> Optional[CityTravelEdge]``（真源城际查询）。
 
@@ -849,7 +850,7 @@ def make_live_city_travel_provider(
     ``find_city_travel_preferred`` 先在本地估算表按 ``travel_priority`` 选定方式，
     再以该方式调 provider——避免 provider 短路导致偏好失效）。``mode`` 城际方式
     参数化（train/air/driving，默认 train；批次 2 A2 修复——不再硬编码死的
-    ``"train"``）。B 侧 map 工具对 train/air 查估算表（``source=estimate``，
+    ``"train"``）。B 侧 map 工具对 train/air 查估算表（``source=estimated``，
     含车站/机场对），表外自动回退 driving 真源——provider 单调用即完成
     「方式优先 → 兜底」降级，无需 A 侧重试链。
 
@@ -963,7 +964,7 @@ def _pick_representative(
         cost_per_person=best_price or _as_float(best_row.get(price_key)),
         from_station=_as_str(best_row.get("from_station") or best_row.get("from_airport")),
         to_station=_as_str(best_row.get("to_station") or best_row.get("to_airport")),
-        source="live",
+        source=Source.LIVE.value,
         candidates=tuple(candidates),
     )
 
@@ -998,7 +999,7 @@ def make_live_train_provider(
     def train_provider(
         origin: str, destination: str, *, mode: Optional[str] = None
     ) -> Optional[CityTravelEdge]:
-        if mode not in (None, "train", "rail"):
+        if mode not in (None, Mode.TRAIN.value):
             return None  # 只服务火车方式；其它 mode 交还给上游决策
         try:
             tickets = _tool_payload(tool_provider.call(
@@ -1014,7 +1015,7 @@ def make_live_train_provider(
         if tickets is None:
             return None
         return _pick_representative(
-            tickets, "duration", "price", "train", origin, destination,
+            tickets, "duration", "price", Mode.TRAIN.value, origin, destination,
         )
 
     return train_provider
@@ -1034,11 +1035,10 @@ def make_live_flight_provider(
 
     mode 契约为 ``"air"``（绝不返 ``rail``；见交接文档 §3.5 踩坑）。
     """
-
     def flight_provider(
         origin: str, destination: str, *, mode: Optional[str] = None
     ) -> Optional[CityTravelEdge]:
-        if mode not in (None, "air"):
+        if mode not in (None, Mode.AIR.value):
             return None
         try:
             flights = _tool_payload(tool_provider.call(
@@ -1054,7 +1054,7 @@ def make_live_flight_provider(
         if flights is None:
             return None
         return _pick_representative(
-            flights, "duration_min", "price", "air", origin, destination,
+            flights, "duration_min", "price", Mode.AIR.value, origin, destination,
         )
 
     return flight_provider
@@ -1138,7 +1138,7 @@ def make_live_intercity_provider(
             return ret
         return departure or ret
 
-    map_provider = make_live_city_travel_provider(tool_provider, mode="train")
+    map_provider = make_live_city_travel_provider(tool_provider, mode=Mode.TRAIN.value)
 
     # 候选生成通道：绕过 per-mode 预算（候选生成器有自己的总量纪律）。
     raw_tool_provider = tool_provider._inner
@@ -1170,13 +1170,13 @@ def make_live_intercity_provider(
         _train_query_pace()
         try:
             edge = make_live_train_trip_provider(raw_tool_provider, date_str)(
-                o, d, mode="train"
+                o, d, mode=Mode.TRAIN.value
             )
             if edge is None:
                 edge = make_live_train_provider(raw_tool_provider, date_str)(
-                    o, d, mode="train"
+                    o, d, mode=Mode.TRAIN.value
                 )
-            if edge is not None and edge.mode in ("train", "rail"):
+            if edge is not None and edge.mode in (Mode.TRAIN.value,):
                 return edge
         except Exception:  # noqa: BLE001
             return None
@@ -1187,32 +1187,32 @@ def make_live_intercity_provider(
     ) -> Optional[CityTravelEdge]:
         date_str = _direction_date(o, d)
         if date_str:
-            if mode in (None, "train", "rail"):
+            if mode in (None, Mode.TRAIN.value):
                 # P2b（PR#5）：train_trip 技能优先——站名解析更健壮（估算表城市对
                 # → 站名）+ 二等座真票价；无班次/未收录城市对返回 None → 回落本地
                 # train_ticket 候选版（多车次 + candidates 全量透传）。
                 edge = None
                 try:
                     edge = make_live_train_trip_provider(tool_provider, date_str)(
-                        o, d, mode="train"
+                        o, d, mode=Mode.TRAIN.value
                     )
                     if edge is None:
                         edge = make_live_train_provider(tool_provider, date_str)(
-                            o, d, mode="train"
+                            o, d, mode=Mode.TRAIN.value
                         )
                 except _BudgetExceeded:
                     pass  # 车次预算超限 → 该段不再查车次，转航班/估算（预算按模式独立）
                 if edge is not None:
                     return edge
-            if mode in (None, "air"):
+            if mode in (None, Mode.AIR.value):
                 flight_provider = make_live_flight_provider(tool_provider, date_str)
                 try:
-                    edge = flight_provider(o, d, mode="air")
+                    edge = flight_provider(o, d, mode=Mode.AIR.value)
                 except _BudgetExceeded:
                     edge = None  # 航班预算超限 → 该段回落估算
                 if edge is not None:
                     return edge
-        return map_provider(o, d, mode=mode or "train")
+        return map_provider(o, d, mode=mode or Mode.TRAIN.value)
 
     # 候选生成器专用通道（属性挂载，调用方按需取用）：无 per-mode 预算的铁路
     # 查询。候选生成器内部有自己的总量纪律（MAX_TRAIN_CALLS=12 + 同对缓存），
@@ -1284,7 +1284,7 @@ def make_live_train_trip_provider(tool_provider: Any, date: str = ""):
     """
 
     def provider(origin, destination, mode=None):
-        if mode not in (None, "train"):
+        if mode not in (None, Mode.TRAIN.value):
             return None
         try:
             result = tool_provider.call(
@@ -1306,11 +1306,11 @@ def make_live_train_trip_provider(tool_provider: Any, date: str = ""):
             origin=origin,
             destination=destination,
             transport_minutes=minutes,
-            mode="train",
+            mode=Mode.TRAIN.value,
             cost_per_person=_as_float(payload.get("cost_per_person")),
             from_station=payload.get("from_station", ""),
             to_station=payload.get("to_station", ""),
-            source=payload.get("source", "live"),
+            source=payload.get("source", Source.LIVE.value),
             candidates=_train_candidates_from_payload(payload),
         )
 

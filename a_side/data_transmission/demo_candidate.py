@@ -34,7 +34,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-K_TRAIN = "train"
+from data_transmission.enums import Mode, Source
+
+K_TRAIN = Mode.TRAIN.value
 K_FLIGHT = "flight"
 
 # 最小城市-车站映射（Demo 固定场景；全国目录见 01-问题清单 I-09 长期修法）
@@ -211,11 +213,11 @@ def check_leg_connection(
     transfer = transfer_minutes_fn(
         leg_a.to_station_or_airport, leg_b.from_station_or_airport
     )
-    if (leg_a.mode, leg_b.mode) == ("air", "train"):
+    if (leg_a.mode, leg_b.mode) == (Mode.AIR.value, Mode.TRAIN.value):
         # 飞 → 火：航班到达 + 出机场 30 + 转场 + 进站 30
         required = AIR_ARRIVE_BUFFER_MIN + transfer + RAIL_CHECKIN_BUFFER_MIN
         label = "出机场"
-    elif (leg_a.mode, leg_b.mode) == ("train", "air"):
+    elif (leg_a.mode, leg_b.mode) == (Mode.TRAIN.value, Mode.AIR.value):
         # 火 → 飞：火车到达 + 出站 20 + 转场 + 提前 1.5h 到机场
         required = RAIL_ARRIVE_BUFFER_MIN + transfer + AIR_CHECKIN_BUFFER_MIN
         label = "出站"
@@ -287,7 +289,7 @@ def _datetime_to_minutes(datetime_text: str) -> int:
     return _hhmm_to_minutes(parts[-1])
 
 
-def _row_source(row: Dict[str, Any], default: str = "demo_fixture") -> str:
+def _row_source(row: Dict[str, Any], default: str = Source.DEMO_FIXTURE.value) -> str:
     return str(row.get("source") or default)
 
 
@@ -340,7 +342,7 @@ class IntercityQueryCache:
 def _flight_leg(row: Dict[str, Any], origin: str, destination: str, date: str) -> CandidateLeg:
     """航班候选行 → leg（行字段见 tools/flight/tools.py，含 demo_fixture 样例）。"""
     return CandidateLeg(
-        mode="air",
+        mode=Mode.AIR.value,
         origin=origin,
         destination=destination,
         from_station_or_airport=str(
@@ -361,7 +363,7 @@ def _flight_leg(row: Dict[str, Any], origin: str, destination: str, date: str) -
 def _train_leg(row: Dict[str, Any], origin: str, destination: str, date: str) -> CandidateLeg:
     """车次候选行 → leg（行字段见 tools/train/tools.py；价格 0 表示未取到票价）。"""
     return CandidateLeg(
-        mode="train",
+        mode=Mode.TRAIN.value,
         origin=origin,
         destination=destination,
         from_station_or_airport=str(row.get("from_station") or ""),
@@ -379,10 +381,10 @@ def _aggregate_source(legs: Sequence[CandidateLeg]) -> str:
     """按 legs 简单聚合来源（I-12 起点；阶段 2 细化 live/mixed/estimated）。"""
     sources = {leg.source for leg in legs}
     if not sources:
-        return "estimated"
+        return Source.ESTIMATED.value
     if len(sources) == 1:
         return next(iter(sources))
-    return "mixed"
+    return "mixed"  # 聚合表达：不同来源段混合（方案 P1 明确保留，不进逐段 source）
 
 
 # ---------------------------------------------------------------------------
@@ -568,8 +570,12 @@ def _tool_payload_rows(result: Any) -> Optional[List[Dict[str, Any]]]:
     return None
 
 
-_SOURCE_FALLBACK = {"mock": "demo_fixture", "demo_fixture": "demo_fixture",
-                    "live": "live", "real_api": "live"}
+_SOURCE_FALLBACK = {
+    Source.MOCK.value: Source.DEMO_FIXTURE.value,
+    Source.DEMO_FIXTURE.value: Source.DEMO_FIXTURE.value,
+    Source.LIVE.value: Source.LIVE.value,
+    "real_api": Source.LIVE.value,
+}
 
 
 def _row_source_from_result(row: Dict[str, Any], result: Any) -> Dict[str, Any]:
@@ -578,7 +584,7 @@ def _row_source_from_result(row: Dict[str, Any], result: Any) -> Dict[str, Any]:
         return row
     result_source = str(getattr(result, "source", "") or "")
     out = dict(row)
-    out["source"] = _SOURCE_FALLBACK.get(result_source, result_source) or "demo_fixture"
+    out["source"] = _SOURCE_FALLBACK.get(result_source, result_source) or Source.DEMO_FIXTURE.value
     return out
 
 
@@ -642,12 +648,14 @@ def _demo_leg_to_intercity(leg: CandidateLeg) -> Dict[str, Any]:
         "kind": "intercity",
         "from": leg.from_station_or_airport,
         "to": leg.to_station_or_airport,
-        "mode": "air" if leg.mode == "air" else "train",
+        "mode": Mode.AIR.value if leg.mode == Mode.AIR.value else Mode.TRAIN.value,
         "service_no": leg.service_no,
         "depart_datetime": leg.depart_datetime,
         "arrive_datetime": leg.arrive_datetime,
         "duration_min": int(leg.duration_min),
-        "buffer_min": AIR_CHECKIN_BUFFER_MIN if leg.mode == "air" else RAIL_CHECKIN_BUFFER_MIN,
+        "buffer_min": (
+            AIR_CHECKIN_BUFFER_MIN if leg.mode == Mode.AIR.value else RAIL_CHECKIN_BUFFER_MIN
+        ),
         "cost_per_person": float(leg.price),
         "source": leg.source,
         "note": f"城际主段（{leg.mode}）",
@@ -743,7 +751,9 @@ def build_demo_trip_segments(
         "details": {
             "from": origin,
             "to": destination,
-            "mode": "联运" if best.is_chain else ("air" if first.mode == "air" else "train"),
+            "mode": "联运" if best.is_chain else (
+            Mode.AIR.value if first.mode == Mode.AIR.value else Mode.TRAIN.value
+        ),
             "from_station": first.from_station_or_airport,
             "to_station": last.to_station_or_airport,
             "cost_per_person": best.total_cost,

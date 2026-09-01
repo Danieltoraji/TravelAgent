@@ -26,6 +26,7 @@ from data_transmission.city_travel import (
     load_city_travel_options,
     mode_text,
 )
+from data_transmission.enums import Mode, Source
 
 logger = logging.getLogger("data_transmission.travel")
 
@@ -158,7 +159,7 @@ def _build_route_legs(route: Any) -> List[Dict[str, Any]]:
             "to": e.to_station or e.destination,
             "mode": e.mode,
             "duration_min": int(e.transport_minutes),
-            "buffer_min": AIR_BUFFER_MIN if e.mode == "air" else 0,
+            "buffer_min": AIR_BUFFER_MIN if e.mode == Mode.AIR.value else 0,
             "cost_per_person": float(e.cost_per_person),
             "source": e.source,
             "note": "城际主段（方式已定）",
@@ -243,7 +244,7 @@ def _resolve_intercity_route(
         origin, destination, options=options, provider=provider, priority=priority
     )
     direct_minutes = (
-        direct.transport_minutes + (AIR_BUFFER_MIN if direct.mode == "air" else 0)
+        direct.transport_minutes + (AIR_BUFFER_MIN if direct.mode == Mode.AIR.value else 0)
         if direct is not None
         else None
     )
@@ -277,7 +278,7 @@ def _resolve_intercity_route(
             if callable(unbudgeted) and date_str:
                 train_query = lambda a, b: unbudgeted(a, b, date_str)  # noqa: E731
             else:
-                train_query = lambda a, b: provider(a, b, mode="train")  # noqa: E731
+                train_query = lambda a, b: provider(a, b, mode=Mode.TRAIN.value)  # noqa: E731
             candidates = generate_intercity_candidates(
                 origin, destination,
                 date_str=date_str,
@@ -295,7 +296,7 @@ def _resolve_intercity_route(
 
                     candidates = verify_flight_legs(
                         candidates,
-                        lambda a, b: provider(a, b, mode="air"),
+                        lambda a, b: provider(a, b, mode=Mode.AIR.value),
                     )
                 except Exception as exc:  # noqa: BLE001  验证失败不阻断候选
                     logger.warning("航段真价验证异常，保持拓扑档：%s", exc)
@@ -372,7 +373,7 @@ def build_trip_segments(
            "duration_minutes": 240,
            "details": {"from": "天津", "to": "张掖", "mode": "联运",
                        "from_station": "天津站", "to_station": "张掖甘州机场",
-                       "cost_per_person": 655.0, "source": "estimate",
+                       "cost_per_person": 655.0, "source": "estimated",
                        "kind": "outbound",
                        "legs": [local, intercity, 转场local, intercity, local]}},
           ...
@@ -430,7 +431,7 @@ def build_trip_segments(
                 "from_station": first.from_station or origin,
                 "to_station": last.to_station or destination,
                 "cost_per_person": route.total_cost,
-                "source": "estimate" if chain else first.source,
+                "source": Source.ESTIMATED.value if chain else first.source,
                 "kind": kind,
                 "stops": (
                     [e.destination for e in edges[:-1]] if chain else []
