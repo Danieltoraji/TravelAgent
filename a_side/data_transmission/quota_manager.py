@@ -16,8 +16,9 @@
    工具），是**全量真源调用账本**。
 4. **``(name, o, d, date)`` 缓存**（P3-D2a）：可选 ``cache`` dict，主链城际
    真源查询（train_trip/train_ticket/flight_search）经 ``cached_call`` 自动
-   共享——**命中不计数、正负都缓存**（同对同日期只查一次真源；None 结果
-   同样缓存，BFS 重复展开同一无班次对不再反复查询）。
+   共享——**命中不计数；成功返回（含 None）才缓存**（同对同日期只查一次
+   真源；None 结果同样缓存，BFS 重复展开同一无班次对不再反复查询；
+   **异常不缓存且失败计费**，见 ``cached_call`` docstring）。
 
 双通道设计（行为与现状完全等价）：
 - ``call(name, **kwargs)``——**预算计数通道**（主链路直达 / BFS / 航班验证
@@ -115,8 +116,17 @@ class QuotaManager:
 
         键要素从 kwargs 提取（from_city/from_station → o，to_city/to_station → d，
         date → date）——主链城际真源查询（train_trip/train_ticket/flight_search）
-        经此调用：同对同日期只查一次真源（正负都缓存：None 结果同样缓存，BFS
-        重复展开同一无班次对不再反复查询；后续不重复消耗预算/额度）。
+        经此调用：同对同日期只查一次真源（None 结果同样缓存——BFS 重复展开
+        同一无班次对不再反复查询；后续不重复消耗预算/额度）。
+
+        缓存语义（与旧 ``_BudgetedToolProvider`` 一致，勿被「正负都缓存」字面
+        误导）：
+        - **成功返回才缓存**：``call`` 正常返回（含 None）→ 写入缓存；
+        - **异常不缓存且失败计费**：``call`` 抛异常（如 ``QuotaExceeded`` /
+          超时）→ 异常向上传播、不写缓存，且 ``call`` 内已先行计数（失败也
+          计费）——防失败重试打空预算窗口是有意设计，同对同日期失败后若再
+          次调用会重新查询、重新计费。
+
         键要素不全（如缺 date）或未配置 ``cache`` → 退化为直接 ``call``
         （行为零变化）。kwargs 原样透传给 ``call``，真实工具参数不受影响。
         """
@@ -170,11 +180,6 @@ class QuotaManager:
     @property
     def cache(self) -> Optional[Dict[Any, Any]]:
         return self._cache
-
-    @property
-    def inner(self) -> Any:
-        """原始 tool_provider（兼容旧 ``provider._inner`` 访问，P3-D 收尾后移除）。"""
-        return self._inner
 
 
 class _UnbudgetedProxy:

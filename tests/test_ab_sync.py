@@ -59,3 +59,44 @@ def test_ab_core_files_in_sync():
             f"  A: {a_path}\n  B: {b_path}\n"
             "请以 A 主目录为唯一编辑源，重新同步 a_side。"
         )
+
+
+# 六个镜像目录（与 AGENTS.md「a_side 自动同步」范围一致）
+MIRROR_DIRS = [
+    "algorithoms",
+    "call_llm",
+    "data_transmission",
+    "fake_spots",
+    "transport",
+    "workflow",
+]
+
+
+def test_ab_no_stale_files():
+    """a_side 无多余 / 无缺失文件（防陈留旧文件漏检）。
+
+    ``test_ab_core_files_in_sync`` 只查 ``SYNC_FILES`` 白名单内文件的漂移，
+    查不到白名单外的陈留（历史案例：工作区已删的 decision_maker.md /
+    planner.md / replanner.md 仍残留在 a_side，白名单测试全绿）。本守卫按
+    6 个镜像目录比对两侧**文件名集合**：
+    - a_side 出现工作区没有的文件 = 陈留（已删未清理）；
+    - 工作区出现 a_side 没有的文件 = 漏同步（新增未复制）。
+    两侧必须一致；内容一致性由 SHA 白名单测试 + 镜像纪律保证。
+    """
+    for sub in MIRROR_DIRS:
+        a_dir = _A_ROOT / sub
+        b_dir = _B_ROOT / "a_side" / sub
+        if not a_dir.is_dir() and not b_dir.is_dir():
+            continue
+        a_names = {p.name for p in a_dir.iterdir() if p.is_file()} if a_dir.is_dir() else set()
+        b_names = {p.name for p in b_dir.iterdir() if p.is_file()} if b_dir.is_dir() else set()
+        extras = sorted(b_names - a_names)
+        missing = sorted(a_names - b_names)
+        assert not extras, (
+            f"a_side/{sub} 有多余文件（工作区已删未清理）: {extras}\n"
+            "请在 a_side 侧删除同名残留。"
+        )
+        assert not missing, (
+            f"a_side/{sub} 缺失文件（新增未同步）: {missing}\n"
+            "请以 A 主目录为唯一编辑源复制到 a_side。"
+        )
