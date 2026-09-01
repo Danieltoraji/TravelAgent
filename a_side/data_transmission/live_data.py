@@ -28,6 +28,12 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from data_transmission.city_travel import CityTravelEdge
 from data_transmission.enums import Mode, Source
 from data_transmission.hotel import Hotel
+from data_transmission.live_errors import LiveDataError  # noqa: F401  re-export（历史 import 路径兼容）
+from data_transmission.quota_manager import (
+    QuotaExceeded,
+    QuotaManager,
+    make_quota_manager,
+)
 from data_transmission.restaurant import Restaurant
 
 
@@ -38,13 +44,6 @@ def use_live_data() -> bool:
         "true",
         "yes",
     }
-
-
-class LiveDataError(RuntimeError):
-    """真实数据源接入失败（工具缺失 / 返回不可解析 / 网络错误）。
-
-    调用方应捕获并回退假源（规划层兜底），不要让异常穿透到排程。
-    """
 
 
 # ---------------------------------------------------------------------------
@@ -1060,37 +1059,6 @@ def make_live_flight_provider(
     return flight_provider
 
 
-class _BudgetExceeded(LiveDataError):
-    """工具调用达预算上限（额度纪律：超限该模式走估算，不超额硬查）。"""
-
-
-class _BudgetedToolProvider:
-    """按工具名计数的 tool_provider 包装：达上限抛 ``_BudgetExceeded``。
-
-    用法：把 ``mode_budget`` 传入 ``make_live_intercity_provider``——BFS 一次规划
-    内 train_trip / train_ticket / flight_search 各 ≤6 次（交接文档 §4 额度纪律），
-    超限被各子 provider 的异常兜底转成 None/LiveDataError → 该段回落估算。
-    ``stats`` 为可选外部 dict，实时记录各工具累计调用数（探针/验收用）。
-    """
-
-    def __init__(self, inner: Any, budget: Dict[str, int],
-                 stats: Optional[Dict[str, int]] = None):
-        self._inner = inner
-        self._budget = dict(budget)
-        self._stats = stats if stats is not None else {}
-
-    def call(self, name: str, **kwargs: Any):
-        cap = self._budget.get(name)
-        if cap is not None:
-            used = self._stats.get(name, 0)
-            if used >= cap:
-                raise _BudgetExceeded(
-                    f"{name} 调用达上限 {cap}（额度纪律：超出该模式走估算）"
-                )
-            self._stats[name] = used + 1
-        return self._inner.call(name, **kwargs)
-
-
 def make_live_intercity_provider(
     tool_provider: Any,
     schedule: Dict[str, Any],
@@ -1113,16 +1081,16 @@ def make_live_intercity_provider(
     任何真源失败（工具缺 / 无直达 / 网络）都落回 map 估算 provider——
     ``find_city_travel_preferred`` 的真源-None-回落链已兜底，不炸规划。
 
-    ``mode_budget`` / ``stats``（本批新增，额度纪律落地）：一次规划内
-    train_trip / train_ticket / flight_search 各自调用上限（默认各 ≤6），
-    超过上限的工具调用抛 ``_BudgetExceeded`` → 该模式该段回落估算——
+    ``mode_budget`` / ``stats``（额度纪律落地，P3 起由 ``QuotaManager`` 承载）：
+    一次规划内 train_trip / train_ticket / flight_search 各自调用上限（默认
+    各 ≤6），超过上限的工具调用抛 ``QuotaExceeded`` → 该模式该段回落估算——
     与 BFS 的懒查询 + (城市对)缓存构成「per-mode 预算」一层，防额度失控
     （车次对多不会挤占航班预算；反之亦然）。
     """
 
     if mode_budget is None:
         mode_budget = {"train_trip": 6, "train_ticket": 6, "flight_search": 6}
-    tool_provider = _BudgetedToolProvider(tool_provider, mode_budget, stats)
+    tool_provider = make_quota_manager(tool_provider, mode_budget, stats)
 
     def _direction_date(o: str, d: str) -> str:
         departure = (schedule.get("departure_date") or "").strip()
@@ -1140,23 +1108,9 @@ def make_live_intercity_provider(
 
     map_provider = make_live_city_travel_provider(tool_provider, mode=Mode.TRAIN.value)
 
-    # 候选生成通道：绕过 per-mode 预算（候选生成器有自己的总量纪律）。
-    raw_tool_provider = tool_provider._inner
-
-    # 真源节律守卫（8.31 贵港→北京 实测）：候选生成器对 AirIn(北京) 24 个
-    # 邻居连续查询（含 train_trip + train_ticket 双通道、失败 4 次重试退避），
-    # 无间隔连发会触发 12306 限流风暴（Remote end closed）→ 整批候选全 None
-    # → 候选生成 0 条 → 回落老 BFS driving（贵港→南宁→北京 应 292m 却 1432m）。
-    # 按 AGENTS.md「免费 key 查询循环加 0.3~0.4s 间隔」纪律，相邻真源查询
-    # 间隔 ≥0.35s（跨 provider 实例共享，去程/返程同一次生成共用）。
-    _last_train_query_at = [0.0]
-
-    def _train_query_pace() -> None:
-        now = time.monotonic()
-        wait = 0.35 - (now - _last_train_query_at[0])
-        if wait > 0:
-            time.sleep(wait)
-        _last_train_query_at[0] = time.monotonic()
+    # 候选生成通道：绕过 per-mode 预算（候选生成器有自己的总量纪律）。P3 起
+    # 不再裸穿透 ``_inner``，改走 QuotaManager 的穿透代理（节律 + 无预算）。
+    unbudgeted_provider = tool_provider.unbudgeted()
 
     def train_edge_unbudgeted(o: str, d: str, date_str: str = "") -> Optional[CityTravelEdge]:
         """预算外铁路查询（空铁候选生成器专用）。
@@ -1165,15 +1119,15 @@ def make_live_intercity_provider(
         由 12 放宽——北京类枢纽 AirIn 33 城、南宁排第 17 位，旧 12 会截断），
         不应与主链路（直达/BFS）共享 per-mode 预算——共享时去程邻居查询会
         吃光 train_trip/train_ticket 各 6 次预算，返程方向 train 级直接跳过、
-        只剩 flight 0 条 → 退化 driving（8.30 demo1 返程实测双杀）。
+        只剩 flight 0 条 → 退化 driving（8.30 demo1 返程实测双杀）。节律
+        0.35s 由 QuotaManager 穿透通道承担（12306 限流风暴防护，8.31 实测）。
         """
-        _train_query_pace()
         try:
-            edge = make_live_train_trip_provider(raw_tool_provider, date_str)(
+            edge = make_live_train_trip_provider(unbudgeted_provider, date_str)(
                 o, d, mode=Mode.TRAIN.value
             )
             if edge is None:
-                edge = make_live_train_provider(raw_tool_provider, date_str)(
+                edge = make_live_train_provider(unbudgeted_provider, date_str)(
                     o, d, mode=Mode.TRAIN.value
                 )
             if edge is not None and edge.mode in (Mode.TRAIN.value,):
@@ -1200,7 +1154,7 @@ def make_live_intercity_provider(
                         edge = make_live_train_provider(tool_provider, date_str)(
                             o, d, mode=Mode.TRAIN.value
                         )
-                except _BudgetExceeded:
+                except QuotaExceeded:
                     pass  # 车次预算超限 → 该段不再查车次，转航班/估算（预算按模式独立）
                 if edge is not None:
                     return edge
@@ -1208,7 +1162,7 @@ def make_live_intercity_provider(
                 flight_provider = make_live_flight_provider(tool_provider, date_str)
                 try:
                     edge = flight_provider(o, d, mode=Mode.AIR.value)
-                except _BudgetExceeded:
+                except QuotaExceeded:
                     edge = None  # 航班预算超限 → 该段回落估算
                 if edge is not None:
                     return edge
