@@ -297,32 +297,6 @@ class IntercityRoute:
         return len(self.edges) > 1
 
 
-def load_regions(path: Optional[Any] = None) -> list:
-    """区域表 ``[{name, hubs, members}]``；文件缺失 / 无 regions → []。"""
-    travel_path = Path(path) if path is not None else DEFAULT_CITY_TRAVEL_PATH
-    if not travel_path.exists():
-        return []
-    try:
-        data = json.loads(travel_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    return data.get("regions", []) or []
-
-
-def find_region_of(
-    city: str, regions: Optional[list] = None
-) -> Optional[dict]:
-    """城市所在区域（hub 或 member 命中）；不在任何区域 → None。
-
-    ``regions=None`` → 读默认表：便于调用方一次加载复用。
-    """
-    regions = regions if regions is not None else load_regions()
-    for region in regions:
-        if city in (region.get("hubs") or []) or city in (region.get("members") or []):
-            return region
-    return None
-
-
 def _pick_segment(
     a: str,
     b: str,
@@ -377,89 +351,8 @@ def _route_minutes(edges: Tuple[CityTravelEdge, ...]) -> int:
     )
 
 
-def find_intercity_route_template(
-    origin: str,
-    destination: str,
-    max_total_minutes: int = DEFAULT_MAX_TOTAL_MINUTES,
-    options: Optional[Dict[Tuple[str, str], Dict[str, CityTravelEdge]]] = None,
-    priority: Optional[str] = None,
-) -> Optional[IntercityRoute]:
-    """区域模板候选枚举（批次 2.5 实现；**8.29 起主入口已改 BFS 全图**，
-    本函数与 ``load_regions``/``find_region_of`` 一并保留兼容，不再被调用）。
-
-    只枚举「出发区枢纽 × 目标区枢纽（含直飞特例）」≤2 跳链——依赖 regions 表、
-    非枢纽成员中转/跨区小众链会漏，故被 BFS+剪枝 取代。行为见旧文档记录：
-
-    出发区枢纽 × 目标区枢纽（含「本区枢纽 → 目标区成员直飞」特例），枚举全部
-    ≤2 跳链，取总时长（含 air 缓冲）最短且 ≤ ``max_total_minutes``；无候选 → None。
-
-    例如 天津→张掖（华北[北京] → 西北[西安/兰州/乌鲁木齐]）：
-    - 北京→张掖 直飞（大兴→甘州）→ 链 [天津→北京, 北京→张掖] 约 240min ★
-    - 经兰州 → [天津→北京, 北京→兰州, 兰州→张掖] 约 385min
-    取最短 → 踩中「天津→大兴→直飞张掖」的最优策略（多枢纽价值所在）。
-    """
-    if not origin or not destination or origin == destination:
-        return None
-    options = options if options is not None else load_city_travel_options()
-    origin_region = find_region_of(origin)
-    dest_region = find_region_of(destination)
-    if origin_region is None or dest_region is None:
-        return None
-
-    candidates: List[IntercityRoute] = []
-    seen = set()
-    hubs1 = origin_region.get("hubs") or []
-    hubs2 = dest_region.get("hubs") or []
-
-    def add(chain: Tuple[CityTravelEdge, ...]) -> None:
-        if not chain:
-            return
-        key = tuple((e.origin, e.destination, e.mode) for e in chain)
-        if key in seen:
-            return
-        seen.add(key)
-        minutes = _route_minutes(chain)
-        if minutes <= max_total_minutes:
-            candidates.append(
-                IntercityRoute(chain, minutes, sum(e.cost_per_person for e in chain))
-            )
-
-    for h1 in hubs1:
-        seg1 = None if origin == h1 else _pick_segment(origin, h1, options, "rail", priority)
-        if origin != h1 and seg1 is None:
-            continue  # 到不了本区枢纽 → 该 h1 无候选
-        head = (seg1,) if seg1 is not None else ()
-        # 特例：本区枢纽 → 目标区成员直飞（如 去程 天津→张掖：北京→张掖 大兴→甘州）
-        if destination != h1:
-            seg_direct = _pick_segment(h1, destination, options, "air", priority)
-            if seg_direct is not None:
-                add(head + (seg_direct,))
-        # 经目标区枢纽：h1 → h2 → destination
-        for h2 in hubs2:
-            if h2 == h1 or h2 == destination:
-                continue
-            mid = _pick_segment(h1, h2, options, "air", priority)
-            tail = _pick_segment(h2, destination, options, "rail", priority)
-            if mid is None or tail is None:
-                continue
-            add(head + (mid, tail))
-    # 特例（对称）：成员直连目标区枢纽（如 返程 张掖→天津：张掖→北京 直飞 145m
-    # 优于 张掖→兰州→北京 385m——h1 循环只枚举「本区枢纽出发」，此处补 origin 直连）
-    if origin not in hubs1 and destination not in hubs2:
-        for h2 in hubs2:
-            seg0 = _pick_segment(origin, h2, options, "air", priority)
-            tail0 = _pick_segment(h2, destination, options, "rail", priority)
-            if seg0 is None or tail0 is None:
-                continue
-            add((seg0, tail0))
-
-    if not candidates:
-        return None
-    return min(candidates, key=lambda r: r.total_minutes)
-
-
 # ---------------------------------------------------------------------------
-# BFS + 剪枝 全图搜索（8.29 起，替代区域模板候选枚举；template 函数保留兼容）
+# BFS + 剪枝 全图搜索（8.29 起，替代区域模板候选枚举）
 # ---------------------------------------------------------------------------
 
 DEFAULT_MAX_HOPS = 3  # 中转链最大跳数：3 段覆盖空铁联运全组合；4 段会明显绕路且被剪
