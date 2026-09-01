@@ -18,13 +18,27 @@ _B_ROOT = Path(__file__).resolve().parents[1]
 _A_ROOT = Path(__file__).resolve().parents[2]
 
 # 双方共有的同步文件（A data_transmission ↔ B a_side/data_transmission）
+# P1/P2/P3 新增模块（enums/intercity_strategy/place_normalizer/quota_manager/
+# live_errors/adapters/tool_specs）已并入清单——这些是 A 侧权威定义的接口层，
+# 漂移必须被本测试拦截（P3-F 收尾补全）。
 SYNC_FILES = [
+    # 原核心
     "city_travel.py",
     "live_data.py",
     "travel.py",
     "air_routes.py",
     "air_routes.json",
     "demo_candidate.py",
+    # P1：口径枚举集中
+    "enums.py",
+    # P2：城际策略框架
+    "intercity_strategy.py",
+    # P3：地名归一化 / 额度管家 / 异常 / 适配器 / ToolSpec 注册表
+    "place_normalizer.py",
+    "quota_manager.py",
+    "live_errors.py",
+    "adapters.py",
+    "tool_specs.py",
 ]
 
 
