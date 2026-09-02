@@ -77,6 +77,33 @@ class DataSourceResolver:
                     names.append(name)
         return names
 
+    def _search_plan_once(self, city: str) -> Optional[Dict[str, Any]]:
+        """9.2 十二节 A：LLM 定制候选池搜索计划（惰性生成一次并缓存）。
+
+        - gate 关 / 无 planner → None（B 侧 scenic 走内置固定词表，零回归）；
+        - 成功 → ``{"buckets": [...]}``；LLM 失败 / 校验不过 → planner 内部
+          返回 None（同样回退固定词表），此处只做一次尝试不重试。
+        """
+        planner = getattr(self, "_search_planner", None)
+        if planner is None or getattr(self, "_search_plan_tried", False):
+            return getattr(self, "_search_plan", None)
+        self._search_plan_tried = True
+        content = self.requirement.get("content") or {}
+        try:
+            plan = planner.plan_for(
+                str(city or ""),
+                days=int(content.get("days") or 2),
+                preferred_tags=(content.get("preferences") or {}).get(
+                    "preferred_tags"
+                ),
+                must_visit=self._must_visit_names(),
+            )
+        except Exception as exc:  # noqa: BLE001  计划失败不阻断候选池
+            logger.warning("search_plan 生成失败（%s）：%s", city, exc)
+            plan = None
+        self._search_plan = plan
+        return plan
+
     def _generate_live_or_fallback(self) -> TripTimeline:
         """真源优先：候选池 / 规划任一步失败 → 回退假数据管线（保留失败原因）。
 

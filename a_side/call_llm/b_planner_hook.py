@@ -118,8 +118,14 @@ class BPlannerHook(
         planner_fn: Optional[Callable[..., Dict[str, Any]]] = None,
         ask_user_on_conflict: bool = False,
         tool_provider: Any = None,
+        search_planner: Optional[Any] = None,
     ) -> None:
         """构造参数见类 docstring。
+
+        ``search_planner``（9.2 十二节 A，可选）：LLM 定制候选池搜索计划器
+        （``plan_for(destination, days, preferred_tags, must_visit) -> dict|None``）。
+        缺省 None → 内部建 ``ScenicSearchPlanner()``（``USE_LLM_TOOLS`` 门控
+        默认关 → 返回 None → 走 B 侧固定词表，零回归）；传入实例可注入/测试。
 
         ``tool_provider``：B 侧工具门面（``ToolProvider.call("scenic"/"map"/...)``）。
         当传入且环境变量 ``USE_LIVE_DATA`` 开启时，规划层走**真实数据**：
@@ -142,6 +148,14 @@ class BPlannerHook(
         self._ask_user_on_conflict = bool(ask_user_on_conflict)
         self._planner_fn = planner_fn
         self.last_error: Optional[str] = None
+        # 9.2 十二节 A：LLM 定制候选池搜索计划器（缺省内部建；gate off → None）
+        if search_planner is None:
+            from call_llm.scenic_search_planner import ScenicSearchPlanner
+
+            search_planner = ScenicSearchPlanner()
+        self._search_planner: Optional[Any] = search_planner
+        self._search_plan: Optional[Dict[str, Any]] = None
+        self._search_plan_tried: bool = False
         # 数据源记录（PipelineSource）：fake（假数据）/ live（真实数据）/
         # live_fallback（真源失败回退假）
         self.last_data_source: str = PipelineSource.FAKE.value
@@ -195,6 +209,9 @@ class BPlannerHook(
             def _live_loader(_city: str) -> Any:
                 from algorithoms.select_spots import select_spots
 
+                # 9.2 十二节 A：LLM 定制候选池搜索计划（惰性一次，gate off → None）
+                search_plan = self._search_plan_once(_city)
+
                 # select_spots 的 spots_provider 是 fn(city) 单参：这里用闭包
                 # 注入天数联动的 limit + 必去景点强拉名单（LiveSpotsSource 支持）。
                 def _source_with_limit(city: str):
@@ -202,6 +219,7 @@ class BPlannerHook(
                         city,
                         limit=self._pool_days_limit(),
                         ensure_spots=self._must_visit_names(),
+                        search_plan=search_plan,
                     )
 
                 return select_spots(

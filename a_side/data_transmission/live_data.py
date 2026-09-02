@@ -222,6 +222,7 @@ class LiveSpotsSource:
         city: str,
         limit: Optional[int] = None,
         ensure_spots: Optional[List[str]] = None,
+        search_plan: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         kwargs: Dict[str, Any] = {"action": "search", "place": city}
         if limit:
@@ -230,6 +231,9 @@ class LiveSpotsSource:
             kwargs["ensure_spots"] = [
                 str(name) for name in ensure_spots if str(name).strip()
             ]
+        # 9.2 十二节 A：LLM 定制搜索计划（可选，None 时 B 侧走固定词表零回归）
+        if search_plan:
+            kwargs["search_plan"] = search_plan
         try:
             result = self.tool_provider.call("scenic", **kwargs)
         except Exception as exc:  # noqa: BLE001  工具层网络/参数错误统一转 LiveDataError

@@ -1832,6 +1832,107 @@ class TestScenicSearch(unittest.TestCase):
         self.assertEqual(len(spots), 1)
         self.assertEqual(spots[0]["name"], "天安门")
 
+    # ---- 9.2 十二节 A：search_plan（LLM 定制搜索计划，可选）----
+
+    def test_live_scenic_search_plan_overrides_keywords(self) -> None:
+        """search_plan 覆盖固定词表：按计划桶逐词搜索 + rating 截断。"""
+        client = self.make_mock_amap_client()
+        plan = {
+            "buckets": [
+                {"keywords": ["景点"], "quota_ratio": 0.6, "note": "市区"},
+                {"keywords": ["博物馆", "园林"], "quota_ratio": 0.4,
+                 "note": "特色"},
+            ],
+        }
+        client.search_poi.side_effect = [
+            [self._text_poi("天安门广场", 4.9)],
+            [self._text_poi("故宫博物院", 4.9)],      # 博物馆桶（实为综合点）
+            [self._text_poi("颐和园", 4.8)],          # 园林桶
+        ]
+
+        with patch("time.sleep"):
+            spots = ScenicToolLive(client)._run(
+                action="search", place="北京", limit=10, search_plan=plan,
+            )
+        queries = [c.args[0] for c in client.search_poi.call_args_list]
+        self.assertEqual(queries, ["北京 景点", "北京 博物馆", "北京 园林"])
+        # 组配额：每组 limit×(ratio/sum) / 词数 → (10×0.6/1/1=6, 10×0.4/1/2=2, 2)
+        self.assertEqual(
+            [c.kwargs["limit"] for c in client.search_poi.call_args_list],
+            [6, 2, 2],
+        )
+        names = {s["name"] for s in spots}
+        self.assertIn("天安门广场", names)
+        self.assertIn("故宫博物院", names)
+        self.assertIn("颐和园", names)
+
+    def test_live_scenic_search_plan_invalid_falls_back(self) -> None:
+        """search_plan 结构非法 → 回退内置固定词表（不炸、候选池照常）。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.side_effect = [
+            [self._text_poi("天安门", 4.9)],          # 固定市区桶
+            [self._text_poi("八达岭长城", 4.8)],       # 固定远郊词（长城）
+            [self._text_poi("潭柘寺", 4.8)],          # 寺
+            [self._text_poi("西山森林公园", 4.7)],     # 山
+            [self._text_poi("北宫森林公园", 4.7)],     # 国家森林公园
+        ]
+
+        with patch("time.sleep"):
+            spots = ScenicToolLive(client)._run(
+                action="search", place="北京", limit=10,
+                search_plan={"bad": True},   # 非法计划
+            )
+        # 回退固定词表：市区「北京 景点」+ 4 远郊词
+        queries = [c.args[0] for c in client.search_poi.call_args_list]
+        self.assertEqual(
+            queries,
+            ["北京 景点", "北京 长城", "北京 寺", "北京 山", "北京 国家森林公园"],
+        )
+        self.assertEqual(len(spots), 5)
+
+    def test_live_scenic_search_plan_empty_plan_falls_back(self) -> None:
+        """search_plan buckets 空/全无效 → 回退固定词表（调用方不崩）。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.side_effect = [
+            [self._text_poi("天安门", 4.9)],
+            [self._text_poi("八达岭长城", 4.8)],
+            [self._text_poi("潭柘寺", 4.8)],
+            [self._text_poi("西山森林公园", 4.7)],
+            [self._text_poi("北宫森林公园", 4.7)],
+        ]
+
+        with patch("time.sleep"):
+            spots = ScenicToolLive(client)._run(
+                action="search", place="北京", limit=10,
+                search_plan={"buckets": []},   # 空桶 → 回退
+            )
+        self.assertEqual(len(spots), 5)
+        self.assertEqual(client.search_poi.call_args_list[0].args[0], "北京 景点")
+
+    def test_live_scenic_search_plan_word_failure_skipped(self) -> None:
+        """计划桶内单词失败（限流）→ 跳过不阻断，其余词仍进池。"""
+        client = self.make_mock_amap_client()
+        plan = {
+            "buckets": [
+                {"keywords": ["景点"], "quota_ratio": 0.6},
+                {"keywords": ["长城", "寺"], "quota_ratio": 0.4},
+            ],
+        }
+        client.search_poi.side_effect = [
+            [self._text_poi("天安门", 4.9)],
+            ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
+            [self._text_poi("潭柘寺", 4.8)],
+        ]
+
+        with patch("time.sleep"):
+            spots = ScenicToolLive(client)._run(
+                action="search", place="北京", limit=10, search_plan=plan,
+            )
+        names = {s["name"] for s in spots}
+        self.assertIn("天安门", names)
+        self.assertIn("潭柘寺", names)
+        self.assertEqual(client.search_poi.call_count, 3)
+
 
 class TestAmapClientDistance(unittest.TestCase):
     """AmapClient 批量距离测量（/v3/distance）提取与多终点分请求。"""

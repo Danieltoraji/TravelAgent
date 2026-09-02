@@ -103,6 +103,16 @@ class ScenicTool(BaseTool):
             },
             "place": {"type": "string", "description": "景点名称，或 search 时为目标城市"},
             "limit": {"type": "integer", "description": "search 返回数量上限（默认 10）"},
+            # 12（9.2 十二节 A）：LLM 定制的候选池搜索计划（可选）——
+            # {buckets: [{keywords: [类别词], quota_ratio: 0~1}]} 覆盖固定词表；
+            # 缺省 None → 用内置固定词表（_FAR_KEYWORDS/_URBAN_RATIO），零回归。
+            "search_plan": {
+                "type": "object",
+                "description": "可选。A 侧 ScenicSearchPlanner 产出的分层搜索计划："
+                "{buckets: [{keywords: [...], quota_ratio: 0~1, note: \"\"}]}。"
+                "每个 bucket 是一组关键词（自动拼「城市 词」查询）+ 占池宽配额比例；"
+                "校验失败/缺省 → 回退内置固定词表。",
+            },
             # 8.30 必去强拉：搜索结果未覆盖的必去景点逐个精确查找入库
             "ensure_spots": {"type": "array", "items": {"type": "string"},
                              "description": "必去景点名列表（search 时强拉保障，远郊景点不依赖搜索排名）"},
@@ -121,7 +131,6 @@ class ScenicTool(BaseTool):
         if action == "search":
             return self._search_spots(place, limit=limit)
         return self._status(place)
-
     def _status(self, place: str) -> Dict[str, Any]:
         info = self._world.get_place(place)
         if info is None:
@@ -190,9 +199,13 @@ class ScenicToolLive(ScenicTool):
 
     def _run(self, place: str = "", action: str = "status",
              limit: int = 10, city: str = "北京",
-             ensure_spots: Optional[List[str]] = None) -> Any:
+             ensure_spots: Optional[List[str]] = None,
+             search_plan: Optional[Dict[str, Any]] = None) -> Any:
         if action == "search":
-            return self._search_spots(place, limit=limit, ensure_spots=ensure_spots)
+            return self._search_spots(
+                place, limit=limit, ensure_spots=ensure_spots,
+                search_plan=search_plan,
+            )
         return self._status(place, city=city)
 
     def _status(self, place: str, city: str = "北京") -> Dict[str, Any]:
@@ -229,9 +242,13 @@ class ScenicToolLive(ScenicTool):
         }
 
     def _search_spots(
-        self, place: str, limit: int = 10, ensure_spots: Optional[List[str]] = None
+        self, place: str, limit: int = 10, ensure_spots: Optional[List[str]] = None,
+        search_plan: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Live 城市候选池（B5）：多锚点分层搜索 → 返回 A 侧 spot dict 列表。
+
+        ``search_plan``（9.2 十二节 A）：可选 LLM 定制搜索计划——缺省 None 走
+        内置固定词表（零回归）；结构见 ``_layered_search``。
 
         **层一（9.2 十一节：候选池空间覆盖，真源实证后修正版）**：
         - ``_layered_search`` = 市区桶 text「城市 景点」（质量 4.7-4.9，实测天安门/
@@ -259,7 +276,7 @@ class ScenicToolLive(ScenicTool):
         city = place or ""
         limit = max(int(limit or 10), 1)
 
-        pois = self._layered_search(city, limit)
+        pois = self._layered_search(city, limit, search_plan=search_plan)
         if not pois:
             # geocode 失败 / 分层桶全空 → 回退老 text 路径（行为不变）
             pois = self._client.search_poi(f"{city} 景点", city=city, limit=limit)
@@ -341,10 +358,14 @@ class ScenicToolLive(ScenicTool):
                     logger.warning("must_visit %s 精确搜索无结果，跳过", must_name)
         return spots
 
-    def _layered_search(self, city: str, limit: int) -> List[Dict[str, Any]]:
+    def _layered_search(
+        self, city: str, limit: int,
+        search_plan: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """层一（9.2 十一节）：text 多关键词扩展搜索核心。
 
-        市区桶 ``search_poi(f"{city} 景点")`` + 远郊类别词桶
+        内置固定词表路径（``search_plan`` 缺省 / 无效时，行为与 9.2 实证修正版
+        完全一致）：市区桶 ``search_poi(f"{city} 景点")`` + 远郊类别词桶
         ``search_poi(f"{city} {word}")``（``_FAR_KEYWORDS``：长城/寺/山/
         国家森林公园）：
         - 市区桶配额 ``limit × _URBAN_RATIO``（60%），远郊每词配额
@@ -353,9 +374,28 @@ class ScenicToolLive(ScenicTool):
         - **市区桶失败 → 返回 ``[]``**（调用方回退老 text 路径），远郊词全空
           不阻断（有市区即可）。
 
+        ``search_plan``（9.2 十二节 A：LLM 定制计划）：结构
+        ``{"buckets": [{"keywords": ["长城", "寺"], "quota_ratio": 0.3}]}``——
+        - 每个 bucket 是一组类别词（自动拼 ``f"{city} {word}"`` 查询），
+          ``quota_ratio`` 是该组占池宽配额比例（0~1，允许缺省等分、允许总和≠1
+          按比例归一）；
+        - 组内每词独立搜索，词间 ``_BUCKET_DELAY`` 节律；单词/组失败跳过不阻断；
+        - 计划结构非法（非 dict / 无有效 bucket / 词全空）→ **回退内置固定词表**
+          并 warning（LLM 乱出也不影响候选池产出）；
+        - 返回仍为原始 POI 列表（未去重，去重/截断由调用方统一处理）。
+
         Returns:
             合并后的原始 POI 列表（**未去重**，去重/截断由调用方统一处理）。
         """
+        if search_plan:
+            buckets = self._normalize_search_plan(search_plan)
+            if buckets:
+                return self._search_with_plan(city, limit, buckets)
+            logger.warning(
+                "search_plan 校验失败，回退内置固定词表（%s）", city,
+            )
+
+        # ---- 内置固定词表路径（缺省 / 计划无效，9.2 实证行为）----
         pois: List[Dict[str, Any]] = []
         urban_quota = max(1, round(limit * _URBAN_RATIO))
         try:
@@ -382,4 +422,95 @@ class ScenicToolLive(ScenicTool):
             except Exception as exc:  # noqa: BLE001  单词失败不阻断整体
                 logger.warning("远郊词「%s」搜索失败（%s）：%s", word, city, exc)
                 continue
+        return pois
+
+    @staticmethod
+    def _normalize_search_plan(
+        search_plan: Dict[str, Any],
+    ) -> Optional[List[Tuple[List[str], float]]]:
+        """校验/归一化 LLM 搜索计划 → ``[(keywords, quota_ratio)]`` 或 None。
+
+        规则：
+        - 顶层必须是 dict 且含非空 ``buckets`` 列表；
+        - 每个 bucket：``keywords`` 非空字符串列表（去重、剥空白、剔除含城市
+          名的整串——LLM 若给出「北京 长城」也接受，保留原样查询），
+          ``quota_ratio`` 数值 0~1（缺省/非法 → 与其他桶等分）；
+        - bucket 数 1~8、总词数 ≤ 24（超限截断），全部无效 → None。
+        """
+        try:
+            buckets = search_plan.get("buckets")
+        except AttributeError:
+            return None
+        if not isinstance(buckets, list) or not buckets:
+            return None
+
+        cleaned: List[Tuple[List[str], float]] = []
+        for bucket in buckets[:8]:
+            if not isinstance(bucket, dict):
+                continue
+            raw_keywords = bucket.get("keywords")
+            if not isinstance(raw_keywords, list):
+                continue
+            words: List[str] = []
+            for kw in raw_keywords:
+                kw = str(kw).strip()
+                if kw and kw not in words:
+                    words.append(kw)
+            if not words:
+                continue
+            ratio_raw = bucket.get("quota_ratio")
+            try:
+                ratio = float(ratio_raw) if ratio_raw is not None else 0.0
+            except (TypeError, ValueError):
+                ratio = 0.0
+            if not (0.0 < ratio <= 1.0):
+                ratio = 0.0  # 缺省/非法 → 等分
+            cleaned.append((words, ratio))
+        if not cleaned:
+            return None
+
+        # 总词数截断（防 LLM 超发请求击穿 QPS 节律预算）
+        total_words = sum(len(words) for words, _ in cleaned)
+        if total_words > 24:
+            logger.warning(
+                "search_plan 总词数 %d > 24，截断保留前 24 词", total_words,
+            )
+            kept: List[Tuple[List[str], float]] = []
+            budget = 24
+            for words, ratio in cleaned:
+                if budget <= 0:
+                    break
+                take = words[:budget]
+                budget -= len(take)
+                kept.append((take, ratio))
+            cleaned = kept
+        return cleaned
+
+    def _search_with_plan(
+        self, city: str, limit: int,
+        buckets: List[Tuple[List[str], float]],
+    ) -> List[Dict[str, Any]]:
+        """按 LLM 计划桶搜索：组配额 ``limit×ratio`` 归一 → 组内每词分额查询。"""
+        pois: List[Dict[str, Any]] = []
+        total_ratio = sum(ratio for _, ratio in buckets) or 1.0
+        request_index = 0
+        for words, ratio in buckets:
+            group_quota = max(
+                1, round(limit * (ratio / total_ratio) / len(words))
+            )
+            for word in words:
+                if request_index:
+                    import time as _time
+                    _time.sleep(_BUCKET_DELAY)
+                request_index += 1
+                try:
+                    bucket = self._client.search_poi(
+                        f"{city} {word}", city=city, limit=group_quota,
+                    )
+                    pois.extend(bucket or [])
+                except Exception as exc:  # noqa: BLE001  单词失败不阻断整体
+                    logger.warning(
+                        "计划词「%s」搜索失败（%s）：%s", word, city, exc,
+                    )
+                    continue
         return pois
