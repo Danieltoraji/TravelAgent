@@ -179,6 +179,9 @@ def normalize_live_spot(raw: Any, city: str, index: int = 0) -> Optional[Dict[st
             or raw.get("reservation")
             or raw.get("need_reservation")
         ),
+        # 9.2 十一节层二：透传高德 rating（B 侧 scenic 工具返回，select_spots
+        # 据此质量评分；假池 spots.json 无此字段 → 缺省 0 → 假数据零回归）
+        "rating": _as_float(raw.get("rating")),
     }
 
 

@@ -1,4 +1,5 @@
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -10,6 +11,19 @@ sys.path.insert(0,str(project_root))
 
 from data_transmission.requirement import requirement_schema
 from data_transmission.city_graph import match_city_spots, normalize_city_name
+from algorithoms.spot_assignment import _haversine_km, _spot_coord
+
+# 9.2 十一节层二：rating 质量评分分档（真源 POI 评分；假池无 rating 字段 → 0 → 零回归）
+_RATING_TIERS = (
+    (4.8, 6),
+    (4.5, 4),
+    (4.0, 2),
+)
+_RATING_LOW_BAD = 3.5   # 0 < rating < 3.5 主动压掉
+_RATING_LOW_PENALTY = 5
+# 9.2 十一节层三：距池质心距离惩罚（仅真源池启用）——>25km 每超 10km 减 2 分
+_DISTANCE_PENALTY_THRESHOLD_KM = 25.0
+_DISTANCE_PENALTY_PER_10KM = 2
 
 def load_spot_json(city: str | None = None, file_path=None) -> list:
     """Load attractions for one city from its city data directory."""
@@ -98,6 +112,24 @@ def select_spots(
     required_tags=set(requirement["content"]["constraints"]["required_tags"])
     dismissed_tags=set(requirement["content"]["constraints"]["dismissed_tags"])
     must_visits=requirement["content"]["constraints"]["must_visit"]
+
+    # 9.2 十一节层三：距池质心距离惩罚——仅真源池启用（池内存在 rating 字段；
+    # 假池 spots.json 无 rating → 距离惩罚零回归）。锚点取池内全部景点质心
+    # （零额外请求，不调高德）；与打分循环一致只统计目标城市景点。
+    _live_pool = any("rating" in spot for spot in spots)
+    _pool_centroid = None
+    if _live_pool:
+        coords = [
+            c
+            for s in spots
+            if normalize_city_name(s.get("city", "")) == normalized_target_city
+            and (c := _spot_coord(s)) is not None
+        ]
+        if coords:
+            _pool_centroid = (
+                sum(c[0] for c in coords) / len(coords),
+                sum(c[1] for c in coords) / len(coords),
+            )
 
     def spot_tag_union(spot):
         return set(spot["content_tags"])|set(spot["plan_tags"])|set(spot["experience_tags"])
@@ -210,7 +242,31 @@ def select_spots(
         match_avoid = spot_tags & avoid_tags
         score -= len(match_avoid) * 8
 
-        # 5. 分数达标才保留，存入分数
+        # 4. rating 质量评分（9.2 十一节层二）：真源 POI 评分入分——
+        #    ≥4.8 → +6；≥4.5 → +4；≥4.0 → +2；0<rating<3.5 → −5；
+        #    无评分（rating=0，含假池无该字段）不加不罚 → 假数据零回归。
+        rating = float(spot.get("rating", 0) or 0)
+        if rating >= _RATING_TIERS[0][0]:
+            score += _RATING_TIERS[0][1]
+        elif rating >= _RATING_TIERS[1][0]:
+            score += _RATING_TIERS[1][1]
+        elif rating >= _RATING_TIERS[2][0]:
+            score += _RATING_TIERS[2][1]
+        elif 0 < rating < _RATING_LOW_BAD:
+            score -= _RATING_LOW_PENALTY
+
+        # 5. 距池质心距离惩罚（9.2 十一节层三，仅真源池）：>25km 每超 10km 减 2 分；
+        #    must_visit 硬约束在 must 分支已被拦下（走 must_spots），此处天然豁免。
+        if _live_pool and _pool_centroid is not None:
+            coord = _spot_coord(spot)
+            if coord is not None:
+                dist_km = _haversine_km(coord, _pool_centroid)
+                if dist_km > _DISTANCE_PENALTY_THRESHOLD_KM:
+                    score -= _DISTANCE_PENALTY_PER_10KM * math.ceil(
+                        (dist_km - _DISTANCE_PENALTY_THRESHOLD_KM) / 10
+                    )
+
+        # 6. 分数达标才保留，存入分数
         if score >= min_threshold:
             spot_with_score = spot.copy()  # 复制原字典，不修改原始数据
             spot_with_score["match_score"] = score
