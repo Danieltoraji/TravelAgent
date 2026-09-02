@@ -29,17 +29,28 @@ _DEFAULT_CLOSE = "17:00"
 # 无 API 数据时的建议停留时长（分钟）
 _DEFAULT_DURATION = 120
 
-# 层一（9.2 十一节）：多锚点分层搜索——城市中心 → 三桶 search_poi_around。
-# 桶定义：(radius 米, 配额比例)。市区 60% / 近郊 30% / 远郊 10%，随 limit（days×5）
-# 联动再分配空间：如 2 天 10 家 = 6 市区 + 3 近郊 + 1 远郊；7 天 35 家 ≈ 21/10/4。
-_BUCKETS = (
-    (15000, 0.6),   # 市区桶：radius=15km
-    (40000, 0.3),   # 近郊桶：radius=40km（剔除 15km 内已收）
-    (80000, 0.1),   # 远郊桶：radius=80km（剔除 40km 内已收）
-)
-# 各桶剔除半径（米）——前序桶已覆盖的市区/近郊不重复收（around 返回 distance 字段）
-_BUCKET_EXCLUDE_RADIUS_M = (0, 15000, 40000)
-# 桶间节律（免费 key QPS≈2-3/s，照抄 _PAGE_DELAY）
+# 层一（9.2 十一节）：多锚点分层搜索——市区 text「城市 景点」+ 远郊通用类别词 text。
+#
+# **为什么弃用 around 三桶（2026-09-02 真源实证）**：`search_poi_around` 按
+# `sortrule=distance` 距离升序返回，市中心 POI 密度极大（东交民巷一带 0.2-0.6km
+# 就有几十个旧址/遗址/打卡点），15/40/80km 三桶的配额全被市中心占满 → 剔除
+# 逻辑整桶清空 → 远郊 0 命中（实测最终池 6 家全是 0.2-0.3km 低质 POI）。
+# 免费 key 下 around 无法实现空间分层。
+#
+# **text 关键词按名称相关度匹配（不按距离）**：实测「北京 长城」直击八达岭
+# 长城(60km, 4.8)/慕田峪长城(60km, 4.8)；「北京 寺」直击潭柘寺(32km, 4.8)/
+# 红螺寺(56km, 4.8)；「北京 山」直击西山森林公园(20km, 4.7)/百望山(19km, 4.7)；
+# 「北京 国家森林公园」直击北宫(25km, 4.7)/鹫峰(32km, 4.5)。故层一改为：
+# 市区桶 `search_poi(f"{city} 景点")`（质量已验证 4.7-4.9）+ 远郊类别词
+# `search_poi(f"{city} {word}")` 定向召回，合并去重 → rating 降序截断。
+#
+# 远郊类别词表（通用，跨城市有效；无对应景点的城市该词返回空自动跳过）：
+# 长城（八达岭/慕田峪级）/ 寺（潭柘寺/红螺寺级）/ 山（西山/百望山级）/
+# 国家森林公园（北宫/鹫峰级）——实证「湖」「古镇」「遗址公园」召回弱/噪音多，不入选。
+_FAR_KEYWORDS = ("长城", "寺", "山", "国家森林公园")
+# 市区桶配额比例（剩余给远郊类别词桶，随 limit=days×5 联动）
+_URBAN_RATIO = 0.6
+# 词间节律（免费 key QPS≈2-3/s，照抄 _PAGE_DELAY）
 _BUCKET_DELAY = 0.3
 
 # 真实高德 opentime_today 格式繁杂（"08:30-17:00"、"09:00-22:00;18:30-22:00"、
@@ -222,16 +233,19 @@ class ScenicToolLive(ScenicTool):
     ) -> List[Dict[str, Any]]:
         """Live 城市候选池（B5）：多锚点分层搜索 → 返回 A 侧 spot dict 列表。
 
-        **层一（9.2 十一节：候选池空间覆盖）**：
-        - 先 ``geocode`` 城市中心 → 三桶 ``search_poi_around``：市区桶（15km）+
-          近郊桶（40km，剔除 15km 内已收）+ 远郊桶（80km，剔除 40km 内已收）——
-          远郊优质景点（颐和园/长城/环球影城类）不再被「市中心相关度排序」饿死；
-        - 桶配额随 limit（= ``days×5``）联动再分配：市区 60% / 近郊 30% / 远郊 10%
-          （如 2 天 10 家 = 6 市区 + 3 近郊 + 1 远郊），池宽总量不变只是空间分层；
-        - geocode 失败 / 三桶全空 / 单桶限流 → 回退老 text 路径（``search_poi``
-          ``f"{city} 景点"`` → 城市名），保持既有行为不炸；
+        **层一（9.2 十一节：候选池空间覆盖，真源实证后修正版）**：
+        - ``_layered_search`` = 市区桶 text「城市 景点」（质量 4.7-4.9，实测天安门/
+          故宫/天坛/景山）+ 远郊类别词 text「城市 长城/寺/山/国家森林公园」——
+          远郊优质景点（八达岭/慕田峪/潭柘寺/红螺寺级）不再被「市中心相关度排序」
+          饿死；**弃用 around 三桶**（实证：around 按距离升序，市中心 POI 密度
+          把 15/40/80km 桶配额占满，剔除逻辑整桶清空，远郊 0 命中）；
+        - 桶配额随 limit（= ``days×5``）联动：市区 60% / 远郊类别词 40% 摊分、
+          每词至少 2 个候选（如 2 天 10 家 = 6 市区 + 4 词×2 远郊候选，合并后
+          rating 截断收束池宽到 limit），池宽总量不变只是空间分层；
+        - 市区桶失败 / 全空 → 回退老 text 路径（``search_poi`` ``f"{city} 景点"``
+          → 城市名），保持既有行为不炸；远郊单词失败/无结果跳过不阻断；
         - 合并后按 **rating 降序**截断到 limit（质量优先 + 池宽上限）；
-        - 桶间 0.3s 节律（``_BUCKET_DELAY``，防免费 key QPS 10021）。
+        - 词间 0.3s 节律（``_BUCKET_DELAY``，防免费 key QPS 10021）。
 
         **既有语义保留**：
         - ``limit`` 直透（>25 时 amap_client 自动翻页）——候选池宽度随天数联动；
@@ -328,46 +342,44 @@ class ScenicToolLive(ScenicTool):
         return spots
 
     def _layered_search(self, city: str, limit: int) -> List[Dict[str, Any]]:
-        """层一（9.2 十一节）：多锚点分层搜索核心。
+        """层一（9.2 十一节）：text 多关键词扩展搜索核心。
 
-        geocode 城市中心 → 按 ``_BUCKETS`` 三桶 ``search_poi_around``：
-        - 市区桶 radius=15km → 近郊桶 radius=40km（剔除 15km 内已收）→
-          远郊桶 radius=80km（剔除 40km 内已收）；
-        - 桶配额随 limit 比例（60%/30%/10%，最小 1）——池宽总量不变，空间再分配；
-        - 桶间 ``_BUCKET_DELAY`` 秒节律；单桶失败（限流/网络）跳过不阻断；
-        - 任一步失败 / 全空 → 返回 ``[]``（调用方回退老 text 路径）。
+        市区桶 ``search_poi(f"{city} 景点")`` + 远郊类别词桶
+        ``search_poi(f"{city} {word}")``（``_FAR_KEYWORDS``：长城/寺/山/
+        国家森林公园）：
+        - 市区桶配额 ``limit × _URBAN_RATIO``（60%），远郊每词配额
+          ``limit × (1-ratio) / 词数``——池宽总量不变，空间再分配；
+        - 远郊词间 ``_BUCKET_DELAY`` 秒节律；单词失败（限流/网络）跳过不阻断；
+        - **市区桶失败 → 返回 ``[]``**（调用方回退老 text 路径），远郊词全空
+          不阻断（有市区即可）。
 
         Returns:
             合并后的原始 POI 列表（**未去重**，去重/截断由调用方统一处理）。
         """
+        pois: List[Dict[str, Any]] = []
+        urban_quota = max(1, round(limit * _URBAN_RATIO))
         try:
-            center = self._client.geocode(city, city=city)
-        except Exception as exc:  # noqa: BLE001  geocode 失败回退 text
-            logger.warning("分层搜索 geocode 失败（%s），回退 text 搜索：%s", city, exc)
-            return []
-        if not center:
+            urban = self._client.search_poi(
+                f"{city} 景点", city=city, limit=urban_quota,
+            )
+            pois.extend(urban or [])
+        except Exception as exc:  # noqa: BLE001  市区桶失败回退老 text 路径
+            logger.warning("市区桶搜索失败（%s），回退 text 搜索：%s", city, exc)
             return []
 
-        pois: List[Dict[str, Any]] = []
-        for bucket_index, (radius_m, ratio) in enumerate(_BUCKETS):
-            if bucket_index:
+        far_quota = max(
+            2, round(limit * (1 - _URBAN_RATIO) / len(_FAR_KEYWORDS))
+        )
+        for word_index, word in enumerate(_FAR_KEYWORDS):
+            if word_index:
                 import time as _time
                 _time.sleep(_BUCKET_DELAY)
-            quota = max(1, round(limit * ratio))
             try:
-                bucket = self._client.search_poi_around(
-                    center, radius=radius_m, keywords="景点", limit=quota,
+                bucket = self._client.search_poi(
+                    f"{city} {word}", city=city, limit=far_quota,
                 )
-            except Exception as exc:  # noqa: BLE001  单桶限流/失败不阻断整体
-                logger.warning(
-                    "分层搜索桶 %d 失败（radius=%dm）：%s", bucket_index, radius_m, exc,
-                )
+                pois.extend(bucket or [])
+            except Exception as exc:  # noqa: BLE001  单词失败不阻断整体
+                logger.warning("远郊词「%s」搜索失败（%s）：%s", word, city, exc)
                 continue
-            exclude_m = _BUCKET_EXCLUDE_RADIUS_M[bucket_index]
-            for poi in bucket or []:
-                # 剔除前序桶已覆盖半径内的 POI（around 返回 distance 字段，单位米）
-                dist_m = float(poi.get("distance", 0) or 0)
-                if exclude_m and dist_m and dist_m < exclude_m:
-                    continue
-                pois.append(poi)
         return pois

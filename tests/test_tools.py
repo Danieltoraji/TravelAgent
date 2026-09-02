@@ -1647,14 +1647,19 @@ class TestScenicSearch(unittest.TestCase):
         self.assertIn("故宫", first["tags"])
         self.assertEqual(first["alias"], ["紫禁城"])
         self.assertEqual(first["rating"], 4.8)
-        # 搜索「城市+景点」
-        self.assertEqual(client.search_poi.call_args.args[0], "北京 景点")
-        self.assertEqual(client.search_poi.call_args.kwargs["city"], "北京")
+        # 层一市区桶：搜索「城市+景点」（首个调用）
+        self.assertEqual(client.search_poi.call_args_list[0].args[0], "北京 景点")
+        self.assertEqual(
+            client.search_poi.call_args_list[0].kwargs["city"], "北京",
+        )
 
     def test_live_scenic_search_fallback_broadens_query(self) -> None:
         client = self.make_mock_amap_client()
+        # 层一分层 5 次（市区「北京 景点」+ 远郊词长城/寺/山/国家森林公园）全空 →
+        # 回退「北京 景点」仍空 → 最终按城市名搜索
         client.search_poi.side_effect = [
-            [],  # 「北京 景点」无结果
+            [], [], [], [], [],   # 分层搜索 5 次全空
+            [],                   # 回退「北京 景点」无结果
             [{"name": "北京城", "lat": 39.9, "lng": 116.4, "opentime_today": "",
               "type": "", "tag": "", "cost": 0, "rating": 0}],
         ]
@@ -1662,8 +1667,8 @@ class TestScenicSearch(unittest.TestCase):
         spots = ScenicToolLive(client)._run(action="search", place="北京")
         self.assertEqual(len(spots), 1)
         self.assertEqual(spots[0]["name"], "北京城")
-        # 回落：第二次按城市名搜索
-        self.assertEqual(client.search_poi.call_args_list[1].args[0], "北京")
+        # 最终回落：按城市名搜索（第 7 次调用）
+        self.assertEqual(client.search_poi.call_args_list[6].args[0], "北京")
         # 无营业时间 → 默认 09:00-17:00
         self.assertEqual(spots[0]["opening_time"], "09:00")
         self.assertEqual(spots[0]["closing_time"], "17:00")
@@ -1699,26 +1704,32 @@ class TestScenicSearch(unittest.TestCase):
         self.assertNotIn("suggest_duration", result)  # status 模式不带 search 字段
         self.assertEqual(client.search_poi.call_args.kwargs["limit"], 1)
 
-    # ---- 层一（9.2 十一节）：多锚点分层搜索 ----
+    # ---- 层一（9.2 十一节，真源实证修正版）：text 多关键词扩展 ----
 
     @staticmethod
-    def _around_poi(name, distance_m, rating, lat=39.9, lng=116.4,
-                    tag="", cost=0):
-        """构造 search_poi_around 返回的标准化 POI（含 distance 字段，单位米）。"""
+    def _text_poi(name, rating, lat=39.9, lng=116.4, tag="", cost=0):
+        """构造 search_poi 返回的标准化 POI（text 关键词搜索语义）。
+
+        2026-09-02 真源实证：search_poi_around 按距离升序，市中心 POI 密度把
+        15/40/80km 桶配额占满（剔除逻辑整桶清空），远郊 0 命中——层一弃 around
+        改 text 多关键词扩展：市区「城市 景点」+ 远郊类别词（长城/寺/山/
+        国家森林公园），text 按名称相关度匹配直击远郊（八达岭/慕田峪/潭柘寺）。
+        """
         return {
-            "name": name, "lat": lat, "lng": lng, "distance": distance_m,
+            "name": name, "lat": lat, "lng": lng,
             "type": "", "tag": tag, "cost": cost, "rating": rating,
             "opentime_today": "08:30-17:00", "address": "", "opentime_week": "",
         }
 
-    def test_live_scenic_layered_search_three_buckets_with_quota(self) -> None:
-        """层一：geocode 城市中心 → 三桶 around（15/40/80km），配额随 limit 联动（6/3/1）。"""
+    def test_live_scenic_layered_search_urban_plus_far_keywords(self) -> None:
+        """层一：市区桶「城市 景点」+ 远郊类别词（长城/寺/山/国家森林公园）text 扩展。"""
         client = self.make_mock_amap_client()
-        client.geocode.return_value = (39.9, 116.4)
-        client.search_poi_around.side_effect = [
-            [self._around_poi("故宫", 2000, 4.8)],
-            [self._around_poi("颐和园", 18000, 4.6)],
-            [self._around_poi("慕田峪长城", 55000, 4.9)],
+        client.search_poi.side_effect = [
+            [self._text_poi("天安门广场", 4.9)],
+            [self._text_poi("八达岭长城", 4.8)],
+            [self._text_poi("潭柘寺", 4.8)],
+            [self._text_poi("西山国家森林公园", 4.7)],
+            [self._text_poi("慕田峪长城", 4.8)],
         ]
 
         with patch("time.sleep"):
@@ -1726,89 +1737,75 @@ class TestScenicSearch(unittest.TestCase):
                 action="search", place="北京", limit=10,
             )
 
-        # geocode 城市中心
-        self.assertEqual(client.geocode.call_args.args[0], "北京")
-        # 三桶：radius 15/40/80km，配额 6/3/1（limit=10 → 60%/30%/10%）
-        around_calls = client.search_poi_around.call_args_list
-        self.assertEqual(len(around_calls), 3)
+        # 5 次 text 搜索（市区 1 + 远郊词 4），不再 geocode / around
+        self.assertEqual(client.search_poi.call_count, 5)
+        self.assertEqual(client.geocode.call_count, 0)
+        self.assertEqual(client.search_poi_around.call_count, 0)
+        queries = [c.args[0] for c in client.search_poi.call_args_list]
         self.assertEqual(
-            [c.kwargs["radius"] for c in around_calls], [15000, 40000, 80000],
+            queries,
+            ["北京 景点", "北京 长城", "北京 寺", "北京 山", "北京 国家森林公园"],
         )
-        self.assertEqual([c.kwargs["limit"] for c in around_calls], [6, 3, 1])
+        # 配额：市区 60%（6），远郊每词至少 2 候选（limit=10 → 40%/4=1 → 下限 2）
         self.assertEqual(
-            [c.kwargs["keywords"] for c in around_calls], ["景点", "景点", "景点"],
+            [c.kwargs["limit"] for c in client.search_poi.call_args_list],
+            [6, 2, 2, 2, 2],
         )
-        # 三桶景点全进池（远郊慕田峪不再被「市中心排序」饿死）
+        # 远郊优质景点进池（不再被「市中心排序」饿死）
+        names = {s["name"] for s in spots}
+        self.assertIn("八达岭长城", names)
+        self.assertIn("慕田峪长城", names)
+        self.assertIn("潭柘寺", names)
+
+    def test_live_scenic_layered_search_far_word_failure_skipped(self) -> None:
+        """层一：远郊单词失败（限流/网络）跳过不阻断，市区桶仍进池。"""
+        client = self.make_mock_amap_client()
+        client.search_poi.side_effect = [
+            [self._text_poi("故宫", 4.9)],
+            ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
+            [self._text_poi("潭柘寺", 4.8)],
+            ValueError("高德 API 错误 [10021]: CUQPS_HAS_EXCEEDED_THE_LIMIT"),
+            [self._text_poi("北宫国家森林公园", 4.7)],
+        ]
+
+        with patch("time.sleep"):
+            spots = ScenicToolLive(client)._run(
+                action="search", place="北京", limit=10,
+            )
         names = {s["name"] for s in spots}
         self.assertIn("故宫", names)
-        self.assertIn("颐和园", names)
-        self.assertIn("慕田峪长城", names)
-
-    def test_live_scenic_layered_search_excludes_covered_radius(self) -> None:
-        """层一：近郊桶剔除 15km 内已收（市区桶覆盖），远郊桶剔除 40km 内已收。"""
-        client = self.make_mock_amap_client()
-        client.geocode.return_value = (39.9, 116.4)
-        client.search_poi_around.side_effect = [
-            # 市区桶：都 <15km
-            [self._around_poi("市区甲", 3000, 4.5)],
-            # 近郊桶：12000m（<15000 应剔除，市区桶已收）+ 25000m（保留）
-            [
-                self._around_poi("近郊乙", 12000, 4.7),
-                self._around_poi("近郊丙", 25000, 4.6),
-            ],
-            # 远郊桶：35000m（<40000 应剔除）+ 60000m（保留）
-            [
-                self._around_poi("远郊丁", 35000, 4.8),
-                self._around_poi("远郊戊", 60000, 4.9),
-            ],
-        ]
-
-        with patch("time.sleep"):
-            spots = ScenicToolLive(client)._run(
-                action="search", place="北京", limit=10,
-            )
-        names = [s["name"] for s in spots]
-        self.assertIn("市区甲", names)
-        self.assertIn("近郊丙", names)
-        self.assertNotIn("近郊乙", names)   # 15km 内已收，剔除
-        self.assertIn("远郊戊", names)
-        self.assertNotIn("远郊丁", names)   # 40km 内已收，剔除
+        self.assertIn("潭柘寺", names)
+        self.assertIn("北宫国家森林公园", names)
+        self.assertEqual(client.search_poi.call_count, 5)
 
     def test_live_scenic_layered_search_rating_truncation_and_dedup(self) -> None:
-        """层一：跨桶同名去重 + 合并后按 rating 降序截断到 limit。"""
+        """层一：跨桶（市区+远郊词）同名去重 + 合并后按 rating 降序截断到 limit。"""
         client = self.make_mock_amap_client()
-        client.geocode.return_value = (39.9, 116.4)
-        # 三桶共 8 个（含跨桶同名「长城」x2、市区桶内同名「天坛」x2）→ 去重后 4 个
-        client.search_poi_around.side_effect = [
-            [
-                self._around_poi("长城", 2000, 4.1),
-                self._around_poi("长城", 2500, 4.1),     # 同名 → 去重
-                self._around_poi("天坛", 3000, 4.4),
-                self._around_poi("天坛", 3500, 4.4),     # 同名 → 去重
-            ],
-            [self._around_poi("长城", 20000, 4.9)],      # 跨桶同名 → 去重（保留首个 4.1）
-            [
-                self._around_poi("慕田峪", 50000, 4.8),
-                self._around_poi("明十三陵", 60000, 4.7),
-            ],
+        client.search_poi.side_effect = [
+            [self._text_poi("天坛", 4.4), self._text_poi("长城", 4.1)],
+            [self._text_poi("长城", 4.9)],      # 跨桶同名 → 去重（保留首个）
+            [self._text_poi("红螺寺", 4.8)],
+            [self._text_poi("西山森林公园", 4.7)],
+            [self._text_poi("慕田峪", 4.8)],
         ]
 
         with patch("time.sleep"):
             spots = ScenicToolLive(client)._run(
                 action="search", place="北京", limit=3,
             )
-        # 去重后池：长城(4.1)/天坛(4.4)/慕田峪(4.8)/明十三陵(4.7) = 4 个
-        # > limit=3 → rating 降序截断：慕田峪 > 明十三陵 > 天坛（长城 4.1 被挤掉）
-        self.assertEqual([s["name"] for s in spots], ["慕田峪", "明十三陵", "天坛"])
-        self.assertEqual([s["rating"] for s in spots], [4.8, 4.7, 4.4])
+        # 去重后池：天坛(4.4)/长城(4.1)/红螺寺(4.8)/西山(4.7)/慕田峪(4.8) = 5 个
+        # > limit=3 → rating 降序截断：红螺寺 > 慕田峪 > 西山（天坛/长城 被挤掉）
+        self.assertEqual(
+            [s["name"] for s in spots], ["红螺寺", "慕田峪", "西山森林公园"],
+        )
+        self.assertEqual([s["rating"] for s in spots], [4.8, 4.8, 4.7])
 
-    def test_live_scenic_layered_search_geocode_failure_falls_back(self) -> None:
-        """层一：geocode 失败 → 回退老 text 路径（search_poi「城市 景点」）。"""
+    def test_live_scenic_layered_search_urban_failure_falls_back(self) -> None:
+        """层一：市区桶失败 → 回退老 text 路径（search_poi「城市 景点」）。"""
         client = self.make_mock_amap_client()
-        client.geocode.side_effect = ValueError("地理编码失败")
-        client.search_poi.return_value = [
-            {"name": "故宫", "lat": 39.9, "lng": 116.4, "opentime_today": "",
-             "type": "", "tag": "", "cost": 0, "rating": 0},
+        client.search_poi.side_effect = [
+            ValueError("高德 API 错误 [10001]: INVALID_USER_KEY"),
+            [self._text_poi("故宫", 4.9)],
         ]
 
         with patch("time.sleep"):
@@ -1817,16 +1814,15 @@ class TestScenicSearch(unittest.TestCase):
             )
         self.assertEqual(len(spots), 1)
         self.assertEqual(spots[0]["name"], "故宫")
-        self.assertEqual(client.search_poi.call_args.args[0], "北京 景点")
+        # 回退：第二次按「城市 景点」搜索
+        self.assertEqual(client.search_poi.call_args_list[1].args[0], "北京 景点")
 
-    def test_live_scenic_layered_search_empty_buckets_falls_back(self) -> None:
-        """层一：三桶全空 → 回退老 text 路径（不产出空池）。"""
+    def test_live_scenic_layered_search_empty_falls_back(self) -> None:
+        """层一：市区桶空 + 远郊词全空 → 回退老 text 路径（不产出空池）。"""
         client = self.make_mock_amap_client()
-        client.geocode.return_value = (39.9, 116.4)
-        client.search_poi_around.side_effect = [[], [], []]
-        client.search_poi.return_value = [
-            {"name": "天安门", "lat": 39.9, "lng": 116.4, "opentime_today": "",
-             "type": "", "tag": "", "cost": 0, "rating": 0},
+        client.search_poi.side_effect = [
+            [], [], [], [], [],          # 市区 + 4 远郊词全空
+            [self._text_poi("天安门", 4.9)],  # 回退「城市 景点」成功
         ]
 
         with patch("time.sleep"):
