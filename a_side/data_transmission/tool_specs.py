@@ -19,7 +19,12 @@
 - ``budget_default``：额度管家 per-mode 预算默认（None = 不限量）；
 - ``cached``：是否走 ``QuotaManager.cached_call`` 的 ``(name,o,d,date)``
   缓存（P3-D2a 主链三真源）；
-- ``mode``：关联的 Mode 枚举值（train/air；None = 非城际）。
+- ``mode``：关联的 Mode 枚举值（train/air；None = 非城际）；
+- ``sanity_hints``：**合理性量尺**（P5.5 改动 4 / P5.6 技能层 S1 新增，
+  可选 str）——该工具返回值的「典型合理量级」提示（如 train_trip 单程
+  >12h 应怀疑），经 ``to_openai_tools()`` 拼进工具 description 作为 LLM
+  审查（P5.5）时的量尺。**只是 hint 不是硬校验**——硬校验仍在策略层，
+  双保险。
 
 本表是现状同步（描述线上真实工具名/额度），不是空想目标——工具名必须与
 ``live_data.py`` 实际 ``tool_provider.call("...", ...)`` 的字符串逐一对应。
@@ -48,6 +53,7 @@ class ToolSpec:
         "budget_default",
         "cached",
         "mode",
+        "sanity_hints",
     )
 
     def __init__(
@@ -58,6 +64,7 @@ class ToolSpec:
         budget_default: Optional[int] = None,
         cached: bool = False,
         mode: Optional[str] = None,
+        sanity_hints: Optional[str] = None,
     ):
         self.name = name
         self.description = description
@@ -65,6 +72,7 @@ class ToolSpec:
         self.budget_default = budget_default
         self.cached = cached
         self.mode = mode
+        self.sanity_hints = sanity_hints
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return (
@@ -113,6 +121,11 @@ TOOL_SPECS: Dict[str, ToolSpec] = {
         budget_default=6,
         cached=True,
         mode=Mode.TRAIN.value,
+        sanity_hints=(
+            "合理性量尺（供审查，非硬校验）：相邻城市 30-120min、跨省 2-8h；"
+            "单程超过 12h 通常意味着该方向无铁路直达、只剩驾驶/绕行边，应怀疑"
+            "并考虑换 flight_search 或换站名重查。"
+        ),
     ),
     "train_ticket": ToolSpec(
         "train_ticket",
@@ -121,6 +134,11 @@ TOOL_SPECS: Dict[str, ToolSpec] = {
         budget_default=6,
         cached=True,
         mode=Mode.TRAIN.value,
+        sanity_hints=(
+            "合理性量尺（供审查，非硬校验）：车次历时量级同 train_trip"
+            "（相邻城市 30-120min、跨省 2-8h）；二等座票价大体 ¥50-1000，"
+            "异常低/异常高应怀疑。"
+        ),
     ),
     "flight_search": ToolSpec(
         "flight_search",
@@ -129,6 +147,11 @@ TOOL_SPECS: Dict[str, ToolSpec] = {
         budget_default=6,
         cached=True,
         mode=Mode.AIR.value,
+        sanity_hints=(
+            "合理性量尺（供审查，非硬校验）：800km 以上航线票价大体 ¥300-2000，"
+            "¥8 级票价必错；2000km 级航线 3h 内属正常；也可用于交叉验证铁路"
+            "结果的耗时/价格量级。"
+        ),
     ),
 }
 
@@ -254,11 +277,16 @@ def to_openai_tools(
     tools: List[Dict[str, Any]] = []
     for name in sorted(selected):
         spec = TOOL_SPECS[name]
+        description = spec.description
+        if spec.sanity_hints:
+            # P5.5 改动 4：量尺拼进工具 description，作为 LLM 审查时的参照。
+            # 只改给 LLM 看的文案，不改 A 侧消费面 description（守旧行为）。
+            description = f"{description}\n{spec.sanity_hints}"
         tools.append({
             "type": "function",
             "function": {
                 "name": spec.name,
-                "description": spec.description,
+                "description": description,
                 "parameters": _TOOL_INPUT_SCHEMAS.get(
                     name, {"type": "object", "properties": {}}
                 ),
