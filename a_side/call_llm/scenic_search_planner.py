@@ -6,9 +6,13 @@
 湖/园林、上海摩天楼/博物馆、西安古迹）：固定词表对非典型城市召回会偏。
 
 本模块加一层 LLM 定制：让模型按目的地城市特点给出一组分桶搜索计划
-``{"buckets": [{"keywords": [...], "quota_ratio": 0~1, "note": "..."}]}``，
-经 ``LiveSpotsSource`` 透传给 B 侧 ``scenic`` 工具的 ``search_plan``，
-``_layered_search`` 按计划桶覆盖固定词表（缺省 None → 固定表，零回归）。
+``{"buckets": [{"keywords": [...], "quota_ratio": 0~1, "note": "..."}],
+"trip_center": {...}}``，经 ``LiveSpotsSource`` 透传给 B 侧 ``scenic``
+工具的 ``search_plan``，``_layered_search`` 按计划桶覆盖固定词表（缺省
+None → 固定表，零回归）；``trip_center`` 供 A 侧 ``select_spots`` 层三
+距离惩罚当锚点（默认市中心；张掖/黄山这类「核心景点在城外」的城市由 LLM
+结合用户偏好/必去判为 poi 锚点，避免把用户专程去的远郊名片当普通远郊
+惩罚掉——见张掖七彩丹霞实证）。
 
 设计（对齐 P5.2 PlannerAgent 先例但更轻——纯规划，不查真源工具）：
 - 门控 ``USE_LLM_TOOLS`` 默认关 → ``plan_for`` 返回 None（调用方走固定词表，
@@ -16,7 +20,8 @@
 - 一次 LLM 调用 + ``response_schema`` 结构化输出；LLM 失败 / 结构非法 /
   校验不过 → None + warning（LLM 乱出不影响候选池产出）；
 - 护栏：第 1 桶必须是市区综合桶（keywords 含「景点」，质量已验证 4.7-4.9）；
-  桶数 1~8、总词数 ≤24、quota_ratio 0~1（B 侧归一化兜底）。
+  桶数 1~8、总词数 ≤24、quota_ratio 0~1（B 侧归一化兜底）；trip_center
+  非法只降级默认 city_center（不拖垮 buckets）。
 """
 
 from __future__ import annotations
@@ -43,15 +48,23 @@ SCENIC_SEARCH_PLAN_SYSTEM = (
     "（搜索「城市 景点」能稳定召回天安门/故宫级市中心高分景点），"
     "quota_ratio 建议 0.5~0.7；\n"
     "2. 其余桶按该城市远郊/特色分布给类别词（参考：长城、山、寺、湖、"
-    "国家森林公园、古镇、博物馆、园林、遗址公园、海洋馆、主题乐园、"
-    "滑雪场等——**只选该城真实存在且成规模的类别**，每桶 1~3 个词，"
+    "国家森林公园、古镇、博物馆、园林、遗址公园、丹霞、峡谷、草原、海洋馆、"
+    "主题乐园、滑雪场等——**只选该城真实存在且成规模的类别**，每桶 1~3 个词，"
     "全计划总词数 3~8）；\n"
     "3. 参考用户的偏好标签（preferred_tags）与必去景点（must_visit）微调"
     "类别词——如偏好「历史文化」可加「博物馆」「遗址」类桶；\n"
     "4. quota_ratio 是该桶占候选池的比例（0~1），各桶相加应≈1，"
     "远郊桶比例别压过市区综合桶；\n"
-    "5. 只输出 JSON：{buckets: [{keywords: [...], quota_ratio: 0~1, "
-    "note: 桶说明}]}，不要解释。"
+    "5. 只输出 JSON：{buckets: [...], trip_center: {...}}，不要解释。\n\n"
+    "**trip_center（本次旅行的空间中心）判断——结合用户需求**：\n"
+    "- 若目的地是「核心景点在城外」的城市（如 张掖=七彩丹霞在 34km 外、"
+    "黄山=景区在城外），且用户偏好/必去指向这类远郊自然/地质景点，则中心应是"
+    "**该核心景点**（type=poi，poi=完整景点名如「张掖七彩丹霞景区」）——"
+    "用户为它而来，评分不应以市中心为锚把它当远郊惩罚掉；\n"
+    "- 若目的地是「市区即核心」（如 北京/西安/成都），或偏好指向市区文化历史，"
+    "则 type=city_center；\n"
+    "- 综合 destination、days、preferred_tags、must_visit 判断，给出 reason"
+    "（一句话说明依据）；拿不准时保守 type=city_center。"
 )
 
 SCENIC_SEARCH_PLAN_SCHEMA: Dict[str, Any] = {
@@ -81,15 +94,32 @@ SCENIC_SEARCH_PLAN_SCHEMA: Dict[str, Any] = {
                 },
                 "required": ["keywords", "quota_ratio"],
             },
-        }
+        },
+        "trip_center": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "enum": ["city_center", "poi"]},
+                "poi": {
+                    "type": "string",
+                    "description": "type=poi 时的核心景点完整名（如 张掖七彩丹霞景区）",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "判断依据一句话（引用用户偏好/必去/城市特点）",
+                },
+            },
+            "required": ["type"],
+        },
     },
-    "required": ["buckets"],
+    "required": ["buckets", "trip_center"],
 }
 
 # 关键护栏词：第 1 桶必须含「景点」（市区综合桶质量已验证）
 _URBAN_ANCHOR = "景点"
 _MAX_BUCKETS = 8
 _MAX_TOTAL_WORDS = 24
+# trip_center 缺省：市中心（保守——不引入错误锚点）
+_DEFAULT_TRIP_CENTER = {"type": "city_center", "reason": "默认：市区即旅行中心"}
 
 
 def _user_plan_prompt(
@@ -108,7 +138,7 @@ def _user_plan_prompt(
 
 
 def _validate_buckets(plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """结构校验 + 护栏，返回干净计划或 None（调用方回退固定词表）。
+    """结构校验 + 护栏，返回 ``{"buckets": [...]}`` 或 None（调用方回退固定词表）。
 
     - 顶层含非空 buckets 列表；
     - buckets[0].keywords 必须含「景点」（市区综合桶护栏）；
@@ -168,6 +198,44 @@ def _validate_buckets(plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                          "note": bucket["note"]})
         cleaned = kept
     return {"buckets": cleaned}
+
+
+def _validate_trip_center(content: Dict[str, Any]) -> Dict[str, Any]:
+    """校验/归一化 trip_center；非法/缺省 → city_center（保守）。
+
+    - type ∈ {city_center, poi}；poi 非空字符串、reason 可选；
+    - 非法结构 → 默认 city_center（不因锚点字段作废整个计划）。
+    """
+    try:
+        tc = content.get("trip_center")
+    except AttributeError:
+        return dict(_DEFAULT_TRIP_CENTER)
+    if not isinstance(tc, dict):
+        return dict(_DEFAULT_TRIP_CENTER)
+    tc_type = str(tc.get("type") or "")
+    if tc_type == "poi":
+        poi = str(tc.get("poi") or "").strip()
+        if not poi:
+            return dict(_DEFAULT_TRIP_CENTER)
+        return {"type": "poi", "poi": poi,
+                "reason": str(tc.get("reason") or "")}
+    if tc_type == "city_center":
+        return {"type": "city_center",
+                "reason": str(tc.get("reason") or "")}
+    return dict(_DEFAULT_TRIP_CENTER)
+
+
+def _validate_plan(content: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """整体校验（buckets + trip_center），返回完整计划或 None。
+
+    buckets 校验不过 → None（回退固定词表）；trip_center 独立校验、
+    非法只降级默认 city_center（不拖垮 buckets）。
+    """
+    buckets_part = _validate_buckets(content)
+    if buckets_part is None:
+        return None
+    return {"buckets": buckets_part["buckets"],
+            "trip_center": _validate_trip_center(content)}
 
 
 class ScenicSearchPlanner:
@@ -244,13 +312,14 @@ class ScenicSearchPlanner:
         content = result.get("content") or {}
         if not isinstance(content, dict):
             return None
-        plan = _validate_buckets(content)
+        plan = _validate_plan(content)
         if plan is None:
             logger.warning("ScenicSearchPlanner 输出校验不过（%s）", destination)
             return None
         logger.info(
-            "ScenicSearchPlanner 计划（%s）：%s",
+            "ScenicSearchPlanner 计划（%s）：buckets=%s trip_center=%s",
             destination,
             [b["keywords"] for b in plan["buckets"]],
+            plan["trip_center"],
         )
         return plan

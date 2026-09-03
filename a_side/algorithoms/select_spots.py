@@ -89,12 +89,18 @@ def select_spots(
     ask_user_on_conflict=True,
     user_input_fn: Optional[Callable[[str], str]] = None,
     spots_provider: Optional[Callable[[str], list]] = None,
+    trip_center: Optional[dict] = None,
 ):
     """挑选景点（must / conflict / scored 三类）。
 
     ``spots_provider``：``fn(city) -> List[spot dict]``（与 ``load_spot_json`` 同契约，
     即原始候选数组）；缺省读 ``fake_spots/`` 假数据。真实数据接入时由
     ``data_transmission.live_data.LiveSpotsSource`` 注入（USE_LIVE_DATA=1）。
+
+    ``trip_center``（9.2 十二节 A）：本次旅行的空间中心（LLM 判断），结构
+    ``{"type": "city_center"}`` 或 ``{"type": "poi", "poi": "景点名"}``。
+    层三距离惩罚锚点 = trip_center.poi 命中池内景点时的该点坐标；否则回退
+    池质心（缺省 None / 未命中 / 假池 → 与既往完全一致，零回归）。
     """
     user_input_fn = user_input_fn or input
     target_city=requirement["content"]["destination"]
@@ -113,9 +119,10 @@ def select_spots(
     dismissed_tags=set(requirement["content"]["constraints"]["dismissed_tags"])
     must_visits=requirement["content"]["constraints"]["must_visit"]
 
-    # 9.2 十一节层三：距池质心距离惩罚——仅真源池启用（池内存在 rating 字段；
-    # 假池 spots.json 无 rating → 距离惩罚零回归）。锚点取池内全部景点质心
-    # （零额外请求，不调高德）；与打分循环一致只统计目标城市景点。
+    # 9.2 十一节层三：距离惩罚锚点——仅真源池启用（池内存在 rating 字段；
+    # 假池 spots.json 无 rating → 距离惩罚零回归）。
+    # 默认锚点 = 池内全部景点质心（零额外请求，不调高德）；与打分循环一致
+    # 只统计目标城市景点。
     _live_pool = any("rating" in spot for spot in spots)
     _pool_centroid = None
     if _live_pool:
@@ -130,6 +137,26 @@ def select_spots(
                 sum(c[0] for c in coords) / len(coords),
                 sum(c[1] for c in coords) / len(coords),
             )
+
+    # 9.2 十二节 A：trip_center.poi 命中池内景点 → 惩罚锚点改为该点坐标
+    # （张掖=七彩丹霞 34km 外这类「核心景点在城外」城市，LLM 判 poi 锚点后
+    # 远郊名片不再被「市中心=默认中心」的质心惩罚压掉）。未命中/缺省 →
+    # 保持质心（零回归）。
+    if (
+        _live_pool
+        and isinstance(trip_center, dict)
+        and trip_center.get("type") == "poi"
+    ):
+        poi_name = str(trip_center.get("poi") or "").strip()
+        if poi_name:
+            for s in spots:
+                if normalize_city_name(s.get("city", "")) != normalized_target_city:
+                    continue
+                if match_name(s, poi_name):
+                    coord = _spot_coord(s)
+                    if coord is not None:
+                        _pool_centroid = coord
+                        break
 
     def spot_tag_union(spot):
         return set(spot["content_tags"])|set(spot["plan_tags"])|set(spot["experience_tags"])

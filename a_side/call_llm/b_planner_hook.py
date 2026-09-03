@@ -209,8 +209,13 @@ class BPlannerHook(
             def _live_loader(_city: str) -> Any:
                 from algorithoms.select_spots import select_spots
 
-                # 9.2 十二节 A：LLM 定制候选池搜索计划（惰性一次，gate off → None）
+                # 9.2 十二节 A：LLM 定制候选池搜索计划（惰性一次，gate off → None）。
+                # search_plan = {"buckets": [...], "trip_center": {...}}；
+                # buckets 透传 B 侧 scenic；trip_center 交给 select_spots 做层三锚点。
                 search_plan = self._search_plan_once(_city)
+                trip_center = None
+                if isinstance(search_plan, dict):
+                    trip_center = search_plan.get("trip_center")
 
                 # select_spots 的 spots_provider 是 fn(city) 单参：这里用闭包
                 # 注入天数联动的 limit + 必去景点强拉名单（LiveSpotsSource 支持）。
@@ -226,6 +231,7 @@ class BPlannerHook(
                     self.requirement,
                     ask_user_on_conflict=ask,
                     spots_provider=_source_with_limit,
+                    trip_center=trip_center,
                 )
 
             self._live_spots_provider = _live_loader
