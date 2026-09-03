@@ -74,6 +74,11 @@ jobs:
             DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
             DEEPSEEK_BASE_URL=${{ secrets.DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
             DEEPSEEK_MODEL=${{ secrets.DEEPSEEK_MODEL || 'deepseek-v4-flash' }}
+            # A 侧 LLM 工具门控（9.2 十二节 A：ScenicSearchPlanner 定制搜索计划 /
+            # trip_center 旅行中心）。Secret USE_LLM_TOOLS=true 才开启（默认关——
+            # 关 = B 侧 scenic 走固定词表 + 质心锚点，零回归）。开启后每行程
+            # 多 1 次 LLM 调用（词表 + 旅行中心判断）。
+            USE_LLM_TOOLS=${{ secrets.USE_LLM_TOOLS || 'false' }}
             # 演示注入端点鉴权（公网必须设置；请求需带 X-Debug-Token 头）
             DEBUG_INJECT_TOKEN=${{ secrets.DEBUG_INJECT_TOKEN }}
             QWEATHER_API_KEY=${{ secrets.QWEATHER_API_KEY }}
