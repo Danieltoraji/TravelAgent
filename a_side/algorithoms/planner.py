@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -290,6 +290,7 @@ def _allocate_optional_spots(
     strategy: str = "balanced",
     perturbation: int = 0,
     day1_skip_spots: bool = False,
+    affinity_fn: Optional[Callable[[Spot, int], float]] = None,
 ) -> List[List[Spot]]:
     """把可选景点预分配到各天（只决定「每天可选子池」，不排程）。
 
@@ -304,6 +305,12 @@ def _allocate_optional_spots(
     8.30 远郊日保护：含远郊必去（距质心 > 25km，spot_assignment 识别）的
     天不接收市区可选景点——远郊日的时间预算应留给往返通勤，市区景点硬塞
     会挤爆当日限额或制造「远郊+市区折返跑」。
+
+    ``affinity_fn``（P5.7-S2，多中心按日决策，可选）：``(spot, day_index0)
+    -> float``，返回该景点「围绕第 day_index0 天中心」的契合分（≥0，越大越
+    契合）。非 None 时，可选景点的目标天选择从「最空/最早」改为「最契合其
+    中心的天」（可行性与 daily_limit 过滤保持不变，契合只在可行天里择优）；
+    亲和分全 0（无锚点/单中心/门控关场景）→ 排序退化为原行为，零回归。
     """
     day_count = len(mandatory_routes)
     prealloc: List[List[Spot]] = [[] for _ in range(day_count)]
@@ -351,6 +358,16 @@ def _allocate_optional_spots(
             if include_meal_time or event["type"] != "meal"
         )
 
+    def affinity(spot: Spot, index: int) -> float:
+        """当天的中心契合分（异常安全：解析失败按 0 处理，不退化为偏好污染）。"""
+        if affinity_fn is None:
+            return 0.0
+        try:
+            value = float(affinity_fn(spot, index)) or 0.0
+        except Exception:  # noqa: BLE001 - 亲和计算失败不该拖垮分配
+            return 0.0
+        return value
+
     # 长景点先分配（选择少、先占位），短景点后补——避免短景点散落空天、
     # 长景点塞不进任何天导致「必去天饿死 / 单景点天」。
     optional_sorted = sorted(
@@ -372,7 +389,16 @@ def _allocate_optional_spots(
         ]
         if not feasible:
             continue
-        if strategy == "greedy":
+        if affinity_fn is not None:
+            # P5.7-S2：目标天 = 与该景点中心契合度最高的可行天
+            #（亲和全 0 → 排序键退化为原策略，行为零变化）。
+            if strategy == "greedy":
+                feasible.sort(key=lambda index: (-affinity(spot, index), index))
+            else:
+                feasible.sort(key=lambda index: (
+                    -affinity(spot, index), day_elapsed(index) or 0, index,
+                ))
+        elif strategy == "greedy":
             feasible.sort(key=lambda index: index)  # Day1 优先
         else:
             feasible.sort(key=lambda index: day_elapsed(index) or 0)  # 最空优先
@@ -932,6 +958,7 @@ def plan_multi_day(
     allocator: str = "balanced",
     perturbation: int = 0,
     min_spots: int = 0,
+    affinity_fn: Optional[Callable[[Spot, int], float]] = None,
 ) -> Dict[str, Any]:
     """Plan all requested days: beam must-assignment + optional allocator + full
     per-day pipeline.
@@ -939,6 +966,12 @@ def plan_multi_day(
     ``allocator``：可选景点的跨天分配策略（``balanced`` 均匀 / ``greedy`` 逐日优先）。
     ``perturbation``：分配时在可行天里取第 k 个（0=最优）→ 与其它种子配合生成多路线候选。
     ``min_spots``：完整的一天至少排多少个景点（达标路由优先，硬规则透传）。
+
+    ``affinity_fn``（P5.7-S2，多中心按日决策，可选）：``(spot, day_index0)
+    -> float`` 返回该景点对当天中心（center_schedule 逐日锚点）的契合分；
+    非 None → 可选景点预分配（``_allocate_optional_spots``）优先落「最契合
+    中心」的可行天；None（门控关 / 单中心 / LLM 失败走默认）→ 行为与现状
+    完全一致（零回归）。
 
     ``first_day_start_time``（到达日时间轴重叠修复，方案 A）：可选。仅覆盖
     **第 1 天执行排程**的起点（如城际到达 + 接驳缓冲），其余天仍用
@@ -1059,6 +1092,7 @@ def plan_multi_day(
         strategy=allocator,
         perturbation=perturbation,
         day1_skip_spots=day1_skip,
+        affinity_fn=affinity_fn,
     )
     plan = _plan_multi_day_with_prealloc(
         requirement,
