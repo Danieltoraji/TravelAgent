@@ -43,7 +43,10 @@ class FlightSearchTool(BaseTool):
 
     def _run(self, from_city: str = "", to_city: str = "", date: str = "",
              limit: int = 20) -> List[Dict[str, Any]]:
-        validate_flight_date(date)
+        # 9.4 修复：Mock 只回**固定演示样例**（source=demo_fixture，非真查询）——
+        # 不过 validate_flight_date（真源日期校验只属于 Live 版）。否则 Demo
+        # 剧情日期一旦早于"今天"（如约定 2026-09-01 在 09-04 后）整链被拒、
+        # 测试与离线演示全挂——这正是 9.4 发现的 13 个 B 侧失败同根因。
         dep = resolve_city_airport(from_city)
         arr = resolve_city_airport(to_city)
         # 固定演示样例（仅在 DEMO_MODE 下注册，I-04）：校验城市对，

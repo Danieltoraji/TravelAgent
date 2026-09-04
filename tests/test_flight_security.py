@@ -34,7 +34,8 @@ from tools.flight.tools import (  # noqa: E402
     FlightSearchToolUnavailable,
 )
 
-# 固定日期（不依赖"今天"；2026-09-01 为约定 Demo 日期，含在预售/60 天窗内）
+# 固定日期（约定 Demo 剧情日 2026-09-01；9.4 起 Mock demo_fixture 样例已
+# 与日期无关——样例非真查询，不过 validate_flight_date，任何日期可复现）
 _DEMO_DATE = "2026-09-01"
 
 
@@ -91,8 +92,12 @@ def test_connection_error_redacts_url_query(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", _boom)
     client = FlightClient(backend="juhe", api_key="SUPER_SECRET_KEY_123", timeout=10)
+    # 真源查询路径：用动态未来日期（避开 validate_flight_date 对过去日期的拒绝，
+    # 9.4：固定过去日期会让本测试先抛 ValueError 而不是走到网络层）
+    future_date = (__import__("datetime").date.today()
+                   + __import__("datetime").timedelta(days=3)).isoformat()
     with pytest.raises(ConnectionError) as exc_info:
-        client.query_flights("北京", "上海", _DEMO_DATE)
+        client.query_flights("北京", "上海", future_date)
     msg = str(exc_info.value)
     assert "SUPER_SECRET_KEY_123" not in msg
     assert "key=" not in msg and "access_key" not in msg
@@ -149,6 +154,19 @@ def test_mock_does_not_fabricate_other_pairs():
         result = tool.execute(from_city=pair[0], to_city=pair[1], date=_DEMO_DATE)
         assert result.status == "ok"
         assert result.data == [], f"{pair} 不应返回京沪样例"
+
+
+def test_mock_is_date_agnostic_demo_fixture():
+    """9.4 回归：demo_fixture 样例非真查询，过去日期也要能返回固定样例。
+
+    真源日期校验（validate_flight_date）只属于 Live 版；Mock 不再拒过去日期
+    ——否则约定剧情日过期（2026-09-01）就整链 ERROR，离线演示/测试全挂。
+    """
+    tool = FlightSearchTool()
+    result = tool.execute(from_city="锦州", to_city="常州", date="2020-01-01")
+    assert result.status == "ok"
+    assert result.data and result.data[0]["flight_no"] == "KN5621"
+    assert result.data[0]["source"] == "demo_fixture"
 
 
 # ---------------------------------------------------------------------------
