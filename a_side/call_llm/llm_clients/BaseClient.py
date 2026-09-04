@@ -28,6 +28,27 @@ RETRY_BLANK_MESSAGE = (
     "并只输出一个完整的 JSON 对象。"
 )
 
+# ---------------------------------------------------------------------------
+# P5.6-S2 / P5.5：工具结果审查轮（review_schema 开启时，每批 role=tool 结果
+# 回填后插一轮强制审查——模型按世界常识判断结果是否合理，可疑即重调，
+# 否则继续主线。默认关：不传 review_schema 行为与既往完全一致。）
+# ---------------------------------------------------------------------------
+
+REVIEW_TURN_PROMPT = (
+    "请审查刚才工具返回的结果是否合理（时长/价格量级、方向正确性、结果自洽；"
+    "可参考各工具 description 附带的「合理性量尺」）。只输出一个符合给定 JSON "
+    "Schema 的对象：{review: \"ok\" 或 \"suspicious\", reason: 一句理由}。"
+    "ok = 结果合理，可继续主线；suspicious = 结果不合理，"
+    "你下一步必须换参数或换工具重新查询。"
+)
+REVIEW_OK_GUIDE = (
+    "审查结论为 ok。如需更多信息可继续调用工具；否则直接给出最终结论。"
+)
+REVIEW_SUSPICIOUS_GUIDE = (
+    "审查结论为 suspicious：请换参数或换工具重新查询，不要原样重复同一调用；"
+    "若确无其他可查，直接给出最终结论并如实说明。"
+)
+
 
 class LLMClient:
     """Provider-independent chat client with schema extraction and clarification."""
@@ -241,6 +262,7 @@ class LLMClient:
         tool_executor=None,
         max_tool_rounds: int = 3,
         expect_json: bool = True,
+        review_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """P4：支持 function calling 的生成入口。
 
@@ -253,6 +275,14 @@ class LLMClient:
         ``expect_json=False``（2026-09-01，chat v2）：工具回路结束后直接返回
         模型的自然语言回复（不再强制 JSON 解析）——用于对话 + 私有工具场景；
         默认 True 保持原行为（JSON Schema 抽取）。
+
+        ``review_schema``（2026-09-08，P5.6-S2 / P5.5）：可选 JSON object
+        schema（含 ``review: ok|suspicious`` + ``reason``）。开启后**每批**
+        ``role=tool`` 结果回填完插一轮强制审查（tools=None + 该 schema 收口），
+        审查结论与分支指引写回对话，模型据此决定换参重调 / 换工具 / 收尾；
+        返回 ``reviews``（逐轮审查记录，与 ``tool_trace`` 对齐）、
+        ``uncertain``（最终轮审查为 suspicious 且模型直接收尾 = 诚实接受可疑
+        结果）。**默认 None = 零行为变化**（chat/决策/旧调用方不受影响）。
         """
         conversation = list(messages)
         last_message = None
@@ -262,6 +292,12 @@ class LLMClient:
         tool_rounds = 0
         tools_degraded = False
         missing_fields: List[Dict[str, Any]] = []
+        reviews: List[Dict[str, Any]] = []
+        tool_trace: List[Dict[str, Any]] = []
+
+        def _final_uncertain() -> bool:
+            """诚实边界：最后一次审查为 suspicious 且模型已收尾（无新调用）。"""
+            return bool(reviews) and reviews[-1].get("review") == "suspicious"
 
         while True:
             try:
@@ -311,18 +347,48 @@ class LLMClient:
                         for call in tool_calls
                     ],
                 })
+                executed: List[Dict[str, Any]] = []
                 for call in tool_calls:
                     try:
                         arguments = json.loads(call.function.arguments or "{}")
                     except ValueError:
                         arguments = {}
                     result = tool_executor(call.function.name, arguments)
+                    executed.append({
+                        "name": call.function.name,
+                        "arguments": arguments,
+                        "result": result,
+                    })
                     conversation.append({
                         "role": "tool",
                         "tool_call_id": call.id,
                         "content": json.dumps(
                             result, ensure_ascii=False, default=str,
                         )[:8000],
+                    })
+                tool_trace.append({"round": tool_rounds, "calls": executed})
+                # P5.6-S2：每批 tool 结果后强制审查轮（可选开启）
+                if review_schema is not None:
+                    review = self._request_review(
+                        conversation, review_schema, max_retries
+                    )
+                    reviews.append({
+                        "round": tool_rounds,
+                        "tools": [call["name"] for call in executed],
+                        "review": review.get("review"),
+                        "reason": review.get("reason"),
+                    })
+                    conversation.append({
+                        "role": "assistant",
+                        "content": f"[审查] {json.dumps(review, ensure_ascii=False)}",
+                    })
+                    conversation.append({
+                        "role": "user",
+                        "content": (
+                            REVIEW_SUSPICIOUS_GUIDE
+                            if review.get("review") == "suspicious"
+                            else REVIEW_OK_GUIDE
+                        ),
                     })
                 continue
 
@@ -336,6 +402,9 @@ class LLMClient:
                     "finish_reason": getattr(choice, "finish_reason", None),
                     "tool_rounds": tool_rounds,
                     "tools_degraded": tools_degraded,
+                    "reviews": reviews,
+                    "uncertain": _final_uncertain(),
+                    "tool_trace": tool_trace,
                     "raw": {"model_output": getattr(last_message, "content", None)},
                 }
 
@@ -388,5 +457,49 @@ class LLMClient:
             "finish_reason": getattr(choice, "finish_reason", None),
             "tool_rounds": tool_rounds,
             "tools_degraded": tools_degraded,
+            "reviews": reviews,
+            "uncertain": _final_uncertain(),
+            "tool_trace": tool_trace,
             "raw": {"model_output": getattr(last_message, "content", None)},
         }
+
+    def _request_review(
+        self,
+        conversation: List[Dict[str, Any]],
+        review_schema: Dict[str, Any],
+        max_retries: int,
+    ) -> Dict[str, Any]:
+        """对刚回填的 role=tool 结果发起一轮强制审查（tools=None + schema 收口）。
+
+        审查结论（{review: ok|suspicious, reason}）不写回 conversation 之外的
+        任何状态，仅由 generate 主循环负责记录与续写指引——本方法只负责取回
+        一条结构化审查结论；解析/取值非法时按既有重试纪律回传重试。
+        """
+        review_messages = list(conversation)
+        review_messages.append({"role": "user", "content": REVIEW_TURN_PROMPT})
+        last_raw = None
+        for _ in range(max_retries + 1):
+            response = self._request_completion(
+                self._build_request_params(review_messages, review_schema, None)
+            )
+            if not getattr(response, "choices", None):
+                raise RuntimeError("LLM response contains no choices")
+            raw = getattr(response.choices[0].message, "content", None)
+            last_raw = raw
+            parsed = self._extract_json_payload(raw)
+            if parsed is None:
+                self._append_retry_turn(review_messages, raw, RETRY_NOT_JSON_MESSAGE)
+                continue
+            normalized = self._normalize_to_schema(parsed, review_schema)
+            if normalized.get("review") not in ("ok", "suspicious"):
+                self._append_retry_turn(
+                    review_messages,
+                    raw,
+                    "审查输出必须含 review 且取值 ok 或 suspicious，以及一句 reason。"
+                    "请重新只输出 JSON。",
+                )
+                continue
+            return normalized
+        raise ValueError(
+            f"LLM 审查轮在 {max_retries} 次重试后仍未给出有效结论: {last_raw!r}"
+        )
