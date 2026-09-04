@@ -18,6 +18,47 @@ requirement_schema = {
             "title": "出发地",
             "description": "用户出发的城市；为空表示已在目的地，无需来去程",
         },
+        "origin_address": {
+            **nullable_string,
+            "title": "出发地原始文本",
+            "description": (
+                "出发地原始输入（可能是精确到小区的详细地址）。归一化 stash："
+                "origin 字段存收敛后的城市（喂 12306/城际），本字段存原始文本"
+                "（喂高德算「家→车站」市内衔接）。原样透传，不要修改。"
+            ),
+        },
+        "return_address": {
+            **nullable_string,
+            "title": "返程到家地址",
+            "description": (
+                "返程到家地址原始文本（默认同出发地）。喂高德算「末站→家」"
+                "市内衔接。原样透传，不要修改。"
+            ),
+        },
+        "return_location": {
+            **nullable_string,
+            "title": "返程地",
+            "description": "C 端返程地原始输入（选填，默认同出发地）。原样透传。",
+        },
+        "departure_coords": {
+            "type": ["array", "null"],
+            "items": {"type": "number"},
+            "minItems": 2,
+            "maxItems": 2,
+            "title": "出发地坐标",
+            "description": (
+                "C 端 GPS 定位 [lat, lng]（可选）。市内衔接真源化用坐标直连"
+                "高德免 geocode。原样透传，不要修改。"
+            ),
+        },
+        "return_coords": {
+            "type": ["array", "null"],
+            "items": {"type": "number"},
+            "minItems": 2,
+            "maxItems": 2,
+            "title": "返程到家坐标",
+            "description": "C 端 GPS 定位 [lat, lng]（可选）。原样透传，不要修改。",
+        },
         "free_text_requirement": {
             **nullable_string,
             "title": "自由文本备注",

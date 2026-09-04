@@ -140,7 +140,12 @@ def clarify_travel(
     return requirement
 
 
-def _build_route_legs(route: Any) -> List[Dict[str, Any]]:
+def _build_route_legs(
+    route: Any,
+    local_route_fn: Optional[Callable[[str, str], Optional[int]]] = None,
+    head_place: Optional[str] = None,
+    tail_place: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """段级 legs（批次 2 两段式 + 2.5 联运扩展）：**首尾城市端点取自链本身**
     （``edges[0].origin`` / ``edges[-1].destination``），保证去程/返程方向一致
     （返程段 head 应为「张掖→甘州机场」而非去程方向的「天津→甘州机场」）。
@@ -149,13 +154,19 @@ def _build_route_legs(route: Any) -> List[Dict[str, Any]]:
     - 多段联运 → 每段一条 intercity leg，**段间插入同城转场 local 占位**
       （如 北京南站→大兴 的站际衔接，阶段三用 map 真源填充），首尾各一条
       local 接驳占位；
-    - driving / 无站点 → 单条 intercity leg（城市对直达，无 local 骨架）。
+    - driving / 无站点 → 单条 intercity leg（城市对直达，无 local 骨架）；
+    - **首尾 local 真源化（2026-09-04）**：``head_place`` / ``tail_place``
+      给定（出发详细地址 / 返程到家地址）且 ``local_route_fn`` 可用时，
+      首条 local（家→首站）与末条 local（末站→家）填高德实测驾车分钟——
+      中段转场 local 保持占位（其耗时由去程精排的接续缓冲口径承载）。
     """
     edges = route.edges
     first = edges[0]
     last = edges[-1]
-    head_city = first.origin          # 段起点城市（返程段 = 张掖）
-    tail_city = last.destination     # 段终点城市（返程段 = 天津）
+    fill_head = head_place is not None
+    fill_tail = tail_place is not None
+    head_city = head_place or first.origin   # 段起点（去程 = 出发详细地址/城市）
+    tail_city = tail_place or last.destination  # 段终点（返程 = 到家地址/城市）
 
     def intercity_leg(e: Any) -> Dict[str, Any]:
         return {
@@ -171,7 +182,21 @@ def _build_route_legs(route: Any) -> List[Dict[str, Any]]:
             "candidates": list(e.candidates),  # 真源候选列表（多条车次/航班），估算边为空
         }
 
-    def local_leg(a: str, b: str, note: str) -> Dict[str, Any]:
+    def local_leg(a: str, b: str, note: str, use_fn: bool = False) -> Dict[str, Any]:
+        minutes = None
+        if use_fn and local_route_fn is not None:
+            try:
+                minutes = local_route_fn(a, b)
+            except Exception:  # noqa: BLE001  市内衔接实测失败 → 占位，不阻断
+                minutes = None
+        if isinstance(minutes, (int, float)) and minutes > 0:
+            # 填充态换高德实测文案；占位态 note 保持原文（金标准用例逐字段断言）
+            return {
+                "kind": "local", "from": a, "to": b,
+                "duration_min": int(minutes), "mode": "driving",
+                "source": "live",
+                "note": f"市内衔接（高德驾车实测 {int(minutes)}min）",
+            }
         return {
             "kind": "local", "from": a, "to": b,
             "duration_min": None, "mode": "", "source": "", "note": note,
@@ -182,7 +207,7 @@ def _build_route_legs(route: Any) -> List[Dict[str, Any]]:
         return [intercity_leg(first)]
 
     legs: List[Dict[str, Any]] = [
-        local_leg(head_city, first.from_station, "市内衔接（阶段三 map 真源填充）")
+        local_leg(head_city, first.from_station, "市内衔接（阶段三 map 真源填充）", use_fn=fill_head)
     ]
     prev_to = first.to_station or first.destination
     for i, e in enumerate(edges):
@@ -195,7 +220,7 @@ def _build_route_legs(route: Any) -> List[Dict[str, Any]]:
         prev_to = e.to_station or e.destination
     legs.append(local_leg(
         last.to_station or prev_to or tail_city, tail_city,
-        "市内衔接（阶段三 map 真源填充）",
+        "市内衔接（阶段三 map 真源填充）", use_fn=fill_tail,
     ))
     return legs
 
@@ -270,11 +295,20 @@ def build_trip_segments(
     plan: Dict[str, Any],
     requirement: Dict[str, Any],
     travel_provider: Optional[Callable[[str, str], Optional[Any]]] = None,
+    local_route_fn: Optional[Callable[[str, str], Optional[int]]] = None,
+    origin_address: Optional[str] = None,
+    return_address: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """按 origin + travel_schedule 生成城际来去程行程段（时间轴头尾，不占每日时长）。
 
     ``travel_provider``：``fn(origin, dest) -> Optional[CityTravelEdge]``——真实数据
     接入时由 ``live_data.make_live_city_travel_provider`` 注入；给定优先。
+
+    ``local_route_fn``（市内衔接真源化，2026-09-04）：``fn(from_place, to_place)
+    -> Optional[int]``——高德驾车实测分钟；给定且地址可用时，去程首条 local
+    （出发详细地址 → 首站）与返程末条 local（末站 → 到家地址）填真实时长，
+    其余 local 保持占位；``origin_address`` / ``return_address``：用户原始出发/
+    到家地址文本（归一化 stash），缺省回退城市级 origin。
 
     路线选择（批次 2.5 区域模板）：直达（≤12h）优先 → 多段联运（区域枢纽候选
     枚举取最短，含 air 值机缓冲）→ truant 直达兜底如实给出。段 details 透传
@@ -300,6 +334,16 @@ def build_trip_segments(
     schedule = content.get("travel_schedule") or {}
     if not origin or not destination:
         return []
+    # 市内衔接真源化（2026-09-04）：原始地址优先取参数（hook 直传），缺省回退
+    # content 归一化 stash（_normalize_intercity_places 写入）
+    origin_address = (
+        origin_address
+        or (str(content.get("origin_address") or "").strip() or None)
+    )
+    return_address = (
+        return_address
+        or (str(content.get("return_address") or "").strip() or None)
+    )
 
     # 城际交通偏好（批次「偏好驱动选方式」）：rail/air/speed/earliest/cost/None。
     # 影响直达方式选择（find_city_travel_preferred）与联运各段方式
@@ -331,6 +375,12 @@ def build_trip_segments(
         edges = route.edges
         first, last = edges[0], edges[-1]
         chain = route.is_chain
+        if kind == "outbound":
+            head_place = origin_address or origin
+            tail_place = None  # 到达侧市内衔接由接驳缓冲口径承载，保持占位
+        else:
+            head_place = None  # 出发侧市内衔接（酒店→站）由离开缓冲口径承载
+            tail_place = return_address or origin
         return {
             "type": "transport",
             "name": name,
@@ -350,7 +400,9 @@ def build_trip_segments(
                 "stops": (
                     [e.destination for e in edges[:-1]] if chain else []
                 ),
-                "legs": _build_route_legs(route),
+                "legs": _build_route_legs(
+                    route, local_route_fn, head_place, tail_place
+                ),
             },
         }
 

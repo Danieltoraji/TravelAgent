@@ -155,6 +155,7 @@ def _select_return_combination(
     return_seg: Dict[str, Any],
     earliest_departure: int,
     transfer_buffer_minutes: int = 60,
+    local_arrive_minutes: int = 0,
 ) -> Optional[Tuple[int, int, float]]:
     """按「到家 ≤ return_time」从真源候选选「出发 ≥ earliest 的最晚班次组合」。
 
@@ -169,6 +170,9 @@ def _select_return_combination(
     - 段级粗选 + 换乘粗卡（前段到达 ≤ 后段发车 − transfer_buffer），
       **不做 Day 4 级真实接续校验**（交接 §四.2）；
     - 跨日班次（arrive < depart）当天到不了家 → 直接排除；
+    - **到家语义升级（2026-09-04）**：``local_arrive_minutes`` = 返程末条 local
+      腿（末站→家）的高德实测分钟——「到家」= 末腿到达 + 市内真实时间，约束
+      从「站到 ≤ return_time」收紧为「真到家 ≤ return_time」；
     - 返回 (整链起点分钟, 到家分钟, 组合票价和)；无可行 → None。
     """
     per_leg = _intercity_leg_candidates(return_seg)
@@ -211,8 +215,8 @@ def _select_return_combination(
                 dep_first_chain = dep_chain
             elif prev_arrive is not None and dep < prev_arrive + transfer_buffer_minutes:
                 continue  # 换乘粗卡：下段发车 ≥ 上段到达 + 缓冲
-            if is_last and arr > return_time:
-                continue  # 到家 ≤ 最晚到家时间
+            if is_last and arr + local_arrive_minutes > return_time:
+                continue  # 到家 ≤ 最晚到家时间（含末站→家市内真实时间）
             price = cand.get("price") or cand.get("cost_per_person")
             walk(
                 leg_index + 1,
@@ -272,13 +276,24 @@ def _rebuild_return_with_schedule(
     if not ends:
         return segments
     earliest_departure = int(max(ends)) + _DEPARTURE_BUFFER_MINUTES
-    combo = _select_return_combination(return_seg, earliest_departure)
+    # 到家语义升级（2026-09-04）：末条 local 腿（末站→家）的高德实测分钟参与
+    # 「真到家 ≤ return_time」约束与段 end 计算（此前把「站到」当「到家」）
+    local_arrive = 0
+    for leg in reversed((return_seg.get("details") or {}).get("legs") or []):
+        if isinstance(leg, dict) and leg.get("kind") == "local":
+            lm = leg.get("duration_min")
+            if isinstance(lm, (int, float)) and lm > 0:
+                local_arrive = int(lm)
+            break
+    combo = _select_return_combination(
+        return_seg, earliest_departure, local_arrive_minutes=local_arrive
+    )
     if combo is None:
         return segments
     dep_min, arr_min, cost = combo
     return_seg["start_minutes"] = dep_min
-    return_seg["end_minutes"] = arr_min
-    return_seg["duration_minutes"] = arr_min - dep_min
+    return_seg["end_minutes"] = arr_min + local_arrive  # 真到家（含市内实测）
+    return_seg["duration_minutes"] = return_seg["end_minutes"] - dep_min
     details = dict(return_seg.get("details") or {})
     if cost > 0:
         details["cost_per_person"] = round(cost, 2)
@@ -296,13 +311,15 @@ def _select_outbound_combination(
     outbound_seg: Dict[str, Any],
     departure_time_minutes: Optional[int] = None,
     priority: Optional[str] = None,
+    local_departure_minutes: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """去程班次组合搜索：从真源候选选「偏好感知」的可行组合。
 
     镜像 ``_select_return_combination``（9.2b 返程精排）的去程方向，约束：
 
-    - 首个带真源候选的 intercity 腿：班次发车 ≥ ``departure_time_minutes``
-      （语义 = 从家出发；None = 不约束）；
+    - 首个带真源候选的 intercity 腿：班次发车 ≥ ``departure_time_minutes +
+      local_departure_minutes``（departure_time 语义 = 从家出发；市内分钟来自
+      首条 local 腿的高德实测，家→站真实可赶；departure_time None = 不约束）；
     - 相邻两个**真源**腿接续 ≥ ``required_gap_minutes``（leg_connection 用户
       拍板口径：出站/出机场 + 转场（确定性表，未收录回退 45min）+ 进站/值机
       ——比返程的粗卡 60min 更严，转场分钟查表见 ``lookup_transfer_minutes``）；
@@ -384,8 +401,10 @@ def _select_outbound_combination(
                 continue
             dep, arr = times
             if prev_arrive is None:
-                # 首个真源腿：发车 ≥ 用户从家出发时刻
-                if departure_time_minutes is not None and dep < departure_time_minutes:
+                # 首个真源腿：发车 ≥ 从家出发时刻 + 市内真实时间（家→站高德实测）
+                if departure_time_minutes is not None and (
+                    dep < departure_time_minutes + local_departure_minutes
+                ):
                     continue
             else:
                 gap = required_gap_minutes(
@@ -438,7 +457,19 @@ def _realize_outbound_with_schedule(
             break
     if outbound_seg is None:
         return segments
-    combo = _select_outbound_combination(outbound_seg, departure_time_minutes, priority)
+    # 精排约束升级（2026-09-04）：首条 local 腿有高德实测分钟时，约束改为
+    # 「首班发车 ≥ departure_time + 市内真实时间」——家离站远时早班推荐
+    # 不会再被误推（此前隐含假设家→站 0 分钟）
+    local_departure_minutes = 0
+    first_leg = ((outbound_seg.get("details") or {}).get("legs") or [None])[0]
+    if isinstance(first_leg, dict) and first_leg.get("kind") == "local":
+        lm = first_leg.get("duration_min")
+        if isinstance(lm, (int, float)) and lm > 0:
+            local_departure_minutes = int(lm)
+    combo = _select_outbound_combination(
+        outbound_seg, departure_time_minutes, priority,
+        local_departure_minutes=local_departure_minutes,
+    )
     if combo is None:
         return segments
 
@@ -536,6 +567,19 @@ class TripSegmentAttacher:
         except Exception as exc:  # noqa: BLE001  归一化层不可用不阻断规划
             logger.warning("PlaceNormalizer 初始化失败，城际地名不归一：%s", exc)
             return
+        # 市内衔接真源化（2026-09-04）：**先** stash 原始出发地/返程地（详细
+        # 地址或城市文本）——归一化随后把 origin 收敛成城市喂 12306，原始文本
+        # 留给 local_route_fn 算「家→车站」真实驾车时间（两份数据各喂各的
+        # 消费者）。无论归一成败都 stash（城市级 origin 也值得算真实市内时间）。
+        origin_raw = (content.get("origin") or "").strip()
+        if origin_raw:
+            content.setdefault("origin_address", origin_raw)
+        ret_loc = content.get("return_location")
+        if isinstance(ret_loc, str) and ret_loc.strip():
+            content.setdefault("return_address", ret_loc.strip())
+        elif origin_raw:
+            # 返程地 C 端默认「同出发地」：未单独填时随出发地（返程末段到家）
+            content.setdefault("return_address", origin_raw)
         for key in ("origin", "destination"):
             raw = (content.get(key) or "").strip()
             if not raw:
@@ -558,6 +602,67 @@ class TripSegmentAttacher:
                     "城际地名归一：%s=%s → %s（%s）", key, raw, canonical, result.method
                 )
                 content[key] = canonical
+
+    def _local_route_fn(self) -> Optional[Callable[[str, str], Optional[int]]]:
+        """市内衔接真源化（2026-09-04）：高德驾车实测「出发地→车站」分钟。
+
+        - 出发侧坐标优先：``content.departure_coords``（C 端 GPS [lat,lng]）→
+          "lng,lat" 直连免 geocode（仅出发地址那一腿适用）；否则用
+          ``origin_address`` 文本（高德 geocode，含小区级地址）；
+        - city 绑定 origin 城市（30001 教训：geocode 默认北京上下文，异城
+          出发必炸——出发城市与目的地不同，不能用 self.city）；
+        - 结果按 (from, to) 缓存（去/返程各调一次，不重复打高德）；
+        - 失败 → None（local 腿保持占位，不阻断规划）。
+        """
+        provider = getattr(self, "_tool_provider", None)
+        if provider is None:
+            return None
+        content = self.requirement.get("content") or {}
+        origin_city = (content.get("origin") or "").strip()
+        origin_address = str(content.get("origin_address") or "").strip()
+        coords = content.get("departure_coords")
+        cache: Dict[Tuple[str, str], Optional[int]] = {}
+
+        def fn(from_place: str, to_place: str) -> Optional[int]:
+            key = (from_place, to_place)
+            if key in cache:
+                return cache[key]
+            minutes: Optional[int] = None
+            try:
+                from data_transmission.live_data import (
+                    _minutes_from_payload,
+                    _tool_payload,
+                )
+
+                origin_param = from_place
+                if (
+                    origin_address
+                    and from_place == origin_address
+                    and isinstance(coords, (list, tuple))
+                    and len(coords) >= 2
+                ):
+                    try:
+                        origin_param = f"{float(coords[1])},{float(coords[0])}"
+                    except (TypeError, ValueError):
+                        origin_param = from_place
+                result = provider.call(
+                    "map",
+                    action="route",
+                    mode="driving",
+                    origin=origin_param,
+                    destination=to_place,
+                    city=origin_city or None,
+                )
+                payload = _tool_payload(result)
+                minutes = _minutes_from_payload(payload or {})
+            except Exception as exc:  # noqa: BLE001  实测失败 → 占位，不阻断
+                logger.warning(
+                    "市内衔接实测失败（%s→%s）：%s", from_place, to_place, exc
+                )
+            cache[key] = minutes
+            return minutes
+
+        return fn
 
     def _build_trip_segments(self) -> List[Dict[str, Any]]:
         """构建城际来去程段（**一次**查询：demo 候选 → 主链 build_trip_segments）。
@@ -611,7 +716,10 @@ class TripSegmentAttacher:
             return demo_segments
         try:
             segments = build_trip_segments(
-                {}, self.requirement, travel_provider=provider
+                {},
+                self.requirement,
+                travel_provider=provider,
+                local_route_fn=self._local_route_fn(),
             )
         except Exception as exc:  # noqa: BLE001  城际段失败不阻断规划
             logger.warning("build_trip_segments failed: %s", exc)
