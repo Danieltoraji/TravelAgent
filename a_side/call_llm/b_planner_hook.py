@@ -272,11 +272,22 @@ class BPlannerHook(
 
         # P5.7-S3：center_schedule（多中心按日）→ 按日 affinity_fn 传给分配器；
         # None（门控关/单中心/LLM 失败）→ affinity_fn=None，原路径零回归。
+        # P5.7 修复 A（2026-09-04）：同一份 schedule 解析出的按日锚点（day_anchors）
+        # 同时喂 must 分天（beam 中心偏离惩罚）——此前 must 分天不感知簇计划，
+        # 必去被排进与簇冲突的天（张掖实测：平山湖落 Day1 市区簇日、Day5-6
+        # 平山湖簇日被掏空），可选分配的亲和救不了已错位的锚。
         affinity_fn = None
+        day_anchors = None
         if spots and getattr(self, "_live_center_schedule", None):
-            from algorithoms.select_spots import build_center_affinity_fn
+            from algorithoms.select_spots import (
+                build_center_affinity_fn,
+                resolve_day_anchors,
+            )
 
             day_count = int((requirement.get("content") or {}).get("days") or 0)
+            day_anchors = resolve_day_anchors(
+                self._live_center_schedule, spots, day_count,
+            )
             affinity_fn = build_center_affinity_fn(
                 self._live_center_schedule, spots, day_count,
             )
@@ -292,6 +303,7 @@ class BPlannerHook(
                 first_day_start_time=first_day_start_time,
                 last_day_end_minutes=last_day_end_minutes,
                 affinity_fn=affinity_fn,
+                day_anchors=day_anchors,
             )
         return plan_multi_day(
             requirement,
@@ -300,6 +312,7 @@ class BPlannerHook(
             first_day_start_time=first_day_start_time,
             last_day_end_minutes=last_day_end_minutes,
             affinity_fn=affinity_fn,
+            day_anchors=day_anchors,
         )
 
     def _empty_timeline(self) -> TripTimeline:

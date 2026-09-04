@@ -172,6 +172,7 @@ def assign_must_spots_to_days(
     restaurants=None,
     beam_width: int = 200,
     day1_skip_spots: bool = False,
+    day_anchors: Optional[Sequence[Optional[Tuple[float, float]]]] = None,
 ) -> Dict[str, Any]:
     """Allocate every confirmed must-visit attraction across multiple days.
 
@@ -188,6 +189,14 @@ def assign_must_spots_to_days(
 
     **晚到达日空天（9.2）**：``day1_skip_spots=True`` 时 Day1 不接受任何景点
     （到达日 18:00 后到 → 当天纯交通日，不排行程），must 全部落后续天。
+
+    **按日簇锚（P5.7 修复 A，2026-09-04）**：``day_anchors``（``resolve_day_anchors``
+    的产物，逐日坐标或 None）非 None 时，beam 的 ``state_rank`` 加入**中心偏离
+    惩罚**——必去落点相对当日簇锚超出 25km 亲和半径的部分按 2 min/km（≈30km/h
+    驾车）计入状态代价。此前 must 分天完全不感知 LLM center_schedule：必去被
+    beam 排进与簇计划冲突的天（张掖 9.4 实测：平山湖大峡谷落 Day1 市区簇日、
+    Day5-6 平山湖簇日被掏空），可选分配的亲和救不了已错位的锚。None → 惩罚
+    恒 0，行为与现状完全一致（零回归）。
     """
     try:
         content = requirement["content"]
@@ -321,12 +330,37 @@ def assign_must_spots_to_days(
     assigned_count = 0
     failed_task = None
 
+    # 中心偏离惩罚常量（P5.7 修复 A）：亲和半径与 select_spots 层三/亲和同刻度；
+    # 2 min/km ≈ 30km/h 城市均速，把「公里偏差」折算成与 loads 同单位的分钟代价。
+    _CENTER_AFFINITY_RADIUS_KM = 25.0
+    _CENTER_PENALTY_MIN_PER_KM = 2.0
+
+    def _center_penalty_minutes(state) -> float:
+        """must 落点相对当日簇锚的偏离惩罚（分钟当量，仅 day_anchors 非 None 时）。"""
+        if not day_anchors:
+            return 0.0
+        penalty = 0.0
+        for day_index, route in enumerate(state):
+            if day_index >= len(day_anchors):
+                break
+            anchor = day_anchors[day_index]
+            if anchor is None:
+                continue
+            for spot in route:
+                coord = _spot_coord(spot)
+                if coord is None:
+                    continue
+                over_km = _haversine_km(coord, anchor) - _CENTER_AFFINITY_RADIUS_KM
+                if over_km > 0:
+                    penalty += over_km * _CENTER_PENALTY_MIN_PER_KM
+        return penalty
+
     def state_rank(state):
         loads = [elapsed(route) for route in state]
         non_empty_loads = [value for value in loads if value > 0]
         return (
             max(loads, default=0),
-            sum(loads),
+            sum(loads) + _center_penalty_minutes(state),
             max(non_empty_loads, default=0) - min(non_empty_loads, default=0),
         )
 

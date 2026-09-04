@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -959,6 +959,7 @@ def plan_multi_day(
     perturbation: int = 0,
     min_spots: int = 0,
     affinity_fn: Optional[Callable[[Spot, int], float]] = None,
+    day_anchors: Optional[Sequence[Optional[Tuple[float, float]]]] = None,
 ) -> Dict[str, Any]:
     """Plan all requested days: beam must-assignment + optional allocator + full
     per-day pipeline.
@@ -972,6 +973,11 @@ def plan_multi_day(
     非 None → 可选景点预分配（``_allocate_optional_spots``）优先落「最契合
     中心」的可行天；None（门控关 / 单中心 / LLM 失败走默认）→ 行为与现状
     完全一致（零回归）。
+
+    ``day_anchors``（P5.7 修复 A，2026-09-04，可选）：``resolve_day_anchors``
+    的按日锚点坐标列表（逐日坐标或 None）——非 None 时 must 分天分配器
+    （``assign_must_spots_to_days``）的 beam 评分加入中心偏离惩罚，必去景点
+    倾向落进簇计划对应的天；None → must 分天行为与现状完全一致（零回归）。
 
     ``first_day_start_time``（到达日时间轴重叠修复，方案 A）：可选。仅覆盖
     **第 1 天执行排程**的起点（如城际到达 + 接驳缓冲），其余天仍用
@@ -1053,6 +1059,7 @@ def plan_multi_day(
         restaurants=restaurants,
         beam_width=beam_width,
         day1_skip_spots=day1_skip,
+        day_anchors=day_anchors,
     )
     if not allocation["feasible"]:
         return {
@@ -1133,6 +1140,8 @@ def generate_route_candidates(
     score_band: float = 5.0,
     fine_tune_max_pool: Optional[int] = 10,
     min_spots: int = 2,
+    affinity_fn: Optional[Callable[[Spot, int], float]] = None,
+    day_anchors: Optional[Sequence[Optional[Tuple[float, float]]]] = None,
 ) -> Dict[str, Any]:
     """Return concise feasible alternatives after repair and fine-tuning.
 
@@ -1143,6 +1152,10 @@ def generate_route_candidates(
 
     ``min_spots``：完整的一天至少排多少个景点（硬规则，达标路由优先），
     已透传到单日候选与多日执行（plan_multi_day）。
+
+    ``affinity_fn`` / ``day_anchors``（P5.7 多中心按日决策 + 修复 A）：透传给
+    多日种子的 ``plan_multi_day``——此前多种子循环未转发 affinity_fn，经本
+    入口的调用（main.py 离线演示）会静默丢失多中心计划。
     """
     if max_routes <= 0 or max_evaluations <= 0:
         raise ValueError("max_routes 和 max_evaluations 必须大于 0")
@@ -1248,6 +1261,8 @@ def generate_route_candidates(
             allocator=strategy,
             perturbation=perturbation,
             min_spots=min_spots,
+            affinity_fn=affinity_fn,
+            day_anchors=day_anchors,
         )
         if plan["feasible"]:
             seeds.append(plan)

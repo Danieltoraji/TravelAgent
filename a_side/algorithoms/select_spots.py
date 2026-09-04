@@ -378,23 +378,27 @@ def select_spots(
     return [must_spots,unresolved_conflicts,scored_spots]
 
 
-def build_center_affinity_fn(
+def resolve_day_anchors(
     center_schedule: list,
     candidate_spots: Sequence[Sequence[dict]],
     day_count: int,
-) -> Optional[Callable[[dict, int], float]]:
-    """P5.7-S3：把 LLM center_schedule + 候选池映射成 planner 的按日亲和函数。
+) -> Optional[List[Optional[Tuple[float, float]]]]:
+    """P5.7 修复：把 LLM center_schedule 解析成按日锚点坐标（纯函数）。
 
-    返回 ``(spot, day_index0) -> float``（≥0，越大越契合当日中心），或 None
-    （schedule 空 → 调用方走原分配路径，零回归）。
+    返回 ``day_count`` 长度的列表（每项坐标或 None=当日无锚）；schedule 空 /
+    非法 / 池空 → None（调用方回退无锚路径，零回归）。
 
-    锚点解析（与 select_spots 层三同口径）：
-    - poi 簇：在池内（must/scored/conflict 各组）按 ``match_name`` 找该景点坐标；
-    - city_center 簇：池质心（全部有坐标景点的平均）；
-    - poi 未命中 / 无坐标 → 当日无锚（亲和 0，不偏好）。
-    亲和 = max(0, 25km − 距当日锚 km)——越近越高，>25km 不奖励（与惩罚阈值
-    同刻度）；供 ``plan_multi_day(affinity_fn=...)`` 可选分配择优，换中心成本
-    仍由 daily_travel_time 硬约束兜底。
+    锚点解析（两遍：先 poi 后 city_center——city_center 的排除集依赖
+    全部 poi 锚先就位）：
+    - poi 簇：池内（must/scored/conflict 各组）按 ``match_name`` 找该景点
+      坐标；未命中 / 无坐标 → 该簇无锚（当日保持 None）；
+    - city_center 簇（修复 B，2026-09-04）：**排除被 poi 簇认领的景点后**
+      的质心——此前用全池质心，远郊 poi（丹霞 40km / 平山湖 50km）会把
+      「市区」锚拉离市区，市区景点的亲和整体失真（张掖 9.4 实测：市区
+      景点被错误导向远郊簇日）。排除口径 = 距任一 poi 锚
+      ``> _DISTANCE_PENALTY_THRESHOLD_KM`` 的池内景点；全被认领 → 回退
+      全池质心（宁缺毋滥的反面：有锚总比没锚好）；
+    - 同一天被多个簇覆盖时**先到先得**（schedule 顺序即 LLM 意图优先级）。
     """
     if not center_schedule or day_count <= 0:
         return None
@@ -402,36 +406,70 @@ def build_center_affinity_fn(
         s for group in candidate_spots if isinstance(group, (list, tuple))
         for s in group
     ]
+    if not pool:
+        return None
     coords = [c for s in pool if (c := _spot_coord(s)) is not None]
-    centroid: Optional[Tuple[float, float]] = (
-        (sum(c[0] for c in coords) / len(coords),
-         sum(c[1] for c in coords) / len(coords))
-        if coords else None
-    )
 
-    def _resolve_center(center: dict) -> Optional[Tuple[float, float]]:
+    def _centroid(points: List[Tuple[float, float]]) -> Optional[Tuple[float, float]]:
+        if not points:
+            return None
+        return (
+            sum(p[0] for p in points) / len(points),
+            sum(p[1] for p in points) / len(points),
+        )
+
+    pool_centroid = _centroid(coords)
+    poi_anchors: List[Tuple[float, float]] = []
+
+    def _resolve_poi_center(center: dict) -> Optional[Tuple[float, float]]:
         if not isinstance(center, dict):
             return None
-        ctype = str(center.get("type") or "")
-        if ctype == "poi":
-            poi_name = str(center.get("poi") or "").strip()
-            if not poi_name:
-                return None
-            for s in pool:
-                if match_name(s, poi_name):
-                    coord = _spot_coord(s)
-                    if coord is not None:
-                        return coord
+        if str(center.get("type") or "") != "poi":
             return None
-        if ctype == "city_center":
-            return centroid
+        poi_name = str(center.get("poi") or "").strip()
+        if not poi_name:
+            return None
+        for s in pool:
+            if match_name(s, poi_name):
+                coord = _spot_coord(s)
+                if coord is not None:
+                    return coord
         return None
 
-    day_anchors: List[Optional[Tuple[float, float]]] = [None] * int(day_count)
+    def _resolve_city_center() -> Optional[Tuple[float, float]]:
+        if not coords:
+            return None
+        unclaimed = [
+            c for c in coords
+            if all(
+                _haversine_km(c, anchor) > _DISTANCE_PENALTY_THRESHOLD_KM
+                for anchor in poi_anchors
+            )
+        ]
+        return _centroid(unclaimed) or pool_centroid
+
+    # 第一遍：解析全部 poi 锚（city_center 的排除集依赖它们）
+    cluster_centers: List[Tuple[dict, Optional[Tuple[float, float]]]] = []
     for cluster in center_schedule:
         if not isinstance(cluster, dict):
             continue
-        anchor = _resolve_center(cluster.get("center"))
+        center = cluster.get("center")
+        ctype = str((center or {}).get("type") or "") if isinstance(center, dict) else ""
+        if ctype == "city_center":
+            cluster_centers.append((cluster, None))  # 占位，第二遍填
+            continue
+        anchor = _resolve_poi_center(center if isinstance(center, dict) else {})
+        if anchor is not None:
+            poi_anchors.append(anchor)
+        cluster_centers.append((cluster, anchor))
+
+    # 第二遍：city_center 用完整 poi 锚集解析；铺 day_anchors（先到先得）
+    day_anchors: List[Optional[Tuple[float, float]]] = [None] * int(day_count)
+    for cluster, anchor in cluster_centers:
+        if anchor is None:
+            center = cluster.get("center")
+            if isinstance(center, dict) and str(center.get("type") or "") == "city_center":
+                anchor = _resolve_city_center()
         if anchor is None:
             continue
         try:
@@ -443,6 +481,34 @@ def build_center_affinity_fn(
             if day_anchors[d] is None:
                 day_anchors[d] = anchor
 
+    return day_anchors
+
+
+def build_center_affinity_fn(
+    center_schedule: list,
+    candidate_spots: Sequence[Sequence[dict]],
+    day_count: int,
+) -> Optional[Callable[[dict, int], float]]:
+    """P5.7-S3：把 LLM center_schedule + 候选池映射成 planner 的按日亲和函数。
+
+    返回 ``(spot, day_index0) -> float``，或 None（schedule 空 → 调用方走原
+    分配路径，零回归）。
+
+    亲和语义（修复 C，2026-09-04：由「只奖励」改为**带符号奖惩**）：
+    - 有锚日：``25km − 距锚km``，钳制在 ``[−25, +25]``——近锚正分（最高
+      +25），远锚**负分**（最低 −25）。此前 ``max(0, …)`` 只奖励不惩罚：
+      真中心日塞不下时，远锚日按 elapsed 兜底照收市区景点 → 混合日大通勤
+      （张掖 Day4 实测：丹霞簇日混入市区景点，单段通勤 128min）；
+    - 无锚日 / 无坐标：0（中性，不偏好）——全 0 时分配排序退化为原行为，
+      零回归；
+    - 锚点解析见 ``resolve_day_anchors``（修复 B 的 city_center 排除口径）。
+    供 ``plan_multi_day(affinity_fn=...)`` 可选分配择优，换中心成本仍由
+    daily_travel_time 硬约束兜底。
+    """
+    day_anchors = resolve_day_anchors(center_schedule, candidate_spots, day_count)
+    if day_anchors is None:
+        return None
+
     def affinity(spot: dict, index: int) -> float:
         if not (0 <= index < len(day_anchors)):
             return 0.0
@@ -453,6 +519,9 @@ def build_center_affinity_fn(
         if coord is None:
             return 0.0
         dist_km = _haversine_km(coord, anchor)
-        return max(0.0, _DISTANCE_PENALTY_THRESHOLD_KM - dist_km)
+        return max(
+            -_DISTANCE_PENALTY_THRESHOLD_KM,
+            _DISTANCE_PENALTY_THRESHOLD_KM - dist_km,
+        )
 
-    return affinity   
+    return affinity
