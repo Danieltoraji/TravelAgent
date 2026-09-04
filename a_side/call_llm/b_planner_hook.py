@@ -162,6 +162,9 @@ class BPlannerHook(
         # A 侧内部计划缓存：首次规划后保留，可被决策钩子（replan）复用
         self._current_plan: Optional[Dict[str, Any]] = None
         self._current_timeline: Optional[TripTimeline] = None
+        # P5.7-S3：live 路径的 LLM 按日簇中心计划（center_schedule）——由
+        # _live_loader 惰性赋值，_planner 据此构造 affinity_fn 按日择优。
+        self._live_center_schedule: Optional[list] = None
 
         if spots_provider is None:
             requirement_ref = self.requirement
@@ -209,13 +212,22 @@ class BPlannerHook(
             def _live_loader(_city: str) -> Any:
                 from algorithoms.select_spots import select_spots
 
-                # 9.2 十二节 A：LLM 定制候选池搜索计划（惰性一次，gate off → None）。
-                # search_plan = {"buckets": [...], "trip_center": {...}}；
-                # buckets 透传 B 侧 scenic；trip_center 交给 select_spots 做层三锚点。
+                # 9.2 十二节 A / P5.7-S3：LLM 定制候选池搜索计划（惰性一次，
+                # gate off → None）。search_plan = {"buckets": [...],
+                # "center_schedule": [...], "trip_center": 过渡字段}；
+                # buckets 透传 B 侧 scenic；center_schedule（多中心）交给
+                # select_spots 做「最近中心」层三锚点、并保存在实例上供
+                # _planner 构造按日 affinity_fn（S3）；无 schedule 时回退单
+                # trip_center 过渡字段（12 节行为不变）。
                 search_plan = self._search_plan_once(_city)
                 trip_center = None
+                center_schedule = None
                 if isinstance(search_plan, dict):
                     trip_center = search_plan.get("trip_center")
+                    cs = search_plan.get("center_schedule")
+                    if isinstance(cs, list) and cs:
+                        center_schedule = cs
+                self._live_center_schedule = center_schedule
 
                 # select_spots 的 spots_provider 是 fn(city) 单参：这里用闭包
                 # 注入天数联动的 limit + 必去景点强拉名单（LiveSpotsSource 支持）。
@@ -232,6 +244,7 @@ class BPlannerHook(
                     ask_user_on_conflict=ask,
                     spots_provider=_source_with_limit,
                     trip_center=trip_center,
+                    center_schedule=center_schedule,
                 )
 
             self._live_spots_provider = _live_loader
@@ -257,6 +270,17 @@ class BPlannerHook(
             return self._planner_fn(requirement, spots)
         from algorithoms.planner import plan_multi_day
 
+        # P5.7-S3：center_schedule（多中心按日）→ 按日 affinity_fn 传给分配器；
+        # None（门控关/单中心/LLM 失败）→ affinity_fn=None，原路径零回归。
+        affinity_fn = None
+        if spots and getattr(self, "_live_center_schedule", None):
+            from algorithoms.select_spots import build_center_affinity_fn
+
+            day_count = int((requirement.get("content") or {}).get("days") or 0)
+            affinity_fn = build_center_affinity_fn(
+                self._live_center_schedule, spots, day_count,
+            )
+
         # 8.28：restaurants 可为真源 RestaurantResolver（meal 段锚定真实餐厅）；
         # 为 None 时 plan_multi_day 内部照旧走 _resolve_restaurants（假池）。
         if travel_time_provider is not None:
@@ -267,6 +291,7 @@ class BPlannerHook(
                 restaurants=restaurants,
                 first_day_start_time=first_day_start_time,
                 last_day_end_minutes=last_day_end_minutes,
+                affinity_fn=affinity_fn,
             )
         return plan_multi_day(
             requirement,
@@ -274,6 +299,7 @@ class BPlannerHook(
             restaurants=restaurants,
             first_day_start_time=first_day_start_time,
             last_day_end_minutes=last_day_end_minutes,
+            affinity_fn=affinity_fn,
         )
 
     def _empty_timeline(self) -> TripTimeline:
