@@ -188,3 +188,125 @@ class TestEnrichTransportDetails(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# 地理保真（十一节，2026-09-04）：市内段 enrich 距离 sanity + same_city 透传
+# ---------------------------------------------------------------------------
+
+import unittest as _ut
+
+from tools.map_tool import _resolve_coord_fallback  # noqa: E402
+
+
+class TestEnrichDistanceSanity(_ut.TestCase):
+    """市内段（无 kind）enrich 距离 > 80km（POI 漂移跨市）→ 放弃合并保留矩阵值；
+    城际段（kind=outbound）跨城距离正常合并。"""
+
+    def _tl(self, kind=None):
+        details = {"from": "A", "to": "B", "duration_min": 5}
+        if kind:
+            details["kind"] = kind
+        place = Place(name=f"{details['from']} → {details['to']}",
+                      category="transport", arrival="10:00", end_time="10:05",
+                      details=details)
+        day = DayPlan(day=1, date=None, items=[place])
+        return TripTimeline(id="t", city="天津", start_date=None, end_date=None,
+                            days=[day])
+
+    def test_intra_city_far_distance_not_merged(self) -> None:
+        tl = self._tl()  # 市内段（无 kind）
+        fake_result = mock.MagicMock()
+        fake_result.status.value = "ok"
+        fake_result.data = {"mode": "transit", "distance_km": 86.95,
+                            "duration_min": 141, "transit_text": "霸州1路 9站",
+                            "source": "live"}
+        with mock.patch.object(runtime, "registry") as reg:
+            reg.call.return_value = fake_result
+            runtime.enrich_transport_details(tl)
+        seg = tl.days[0].items[0]
+        self.assertNotIn("distance_km", seg.details)  # 漂移值未合并
+        self.assertNotIn("transit_text", seg.details)
+        self.assertEqual(seg.details["duration_min"], 5)  # 矩阵值保留
+
+    def test_intra_city_normal_distance_merged(self) -> None:
+        tl = self._tl()
+        fake_result = mock.MagicMock()
+        fake_result.status.value = "ok"
+        fake_result.data = {"mode": "transit", "distance_km": 2.43,
+                            "duration_min": 16, "transit_text": "地铁6号线 2站",
+                            "source": "live"}
+        with mock.patch.object(runtime, "registry") as reg:
+            reg.call.return_value = fake_result
+            runtime.enrich_transport_details(tl)
+        seg = tl.days[0].items[0]
+        self.assertEqual(seg.details["distance_km"], 2.43)
+
+    def test_intercity_far_distance_still_merged(self) -> None:
+        tl = self._tl(kind="outbound")  # 城际段跨城属正常，豁免 sanity
+        fake_result = mock.MagicMock()
+        fake_result.status.value = "ok"
+        fake_result.data = {"mode": "transit", "distance_km": 153.79,
+                            "duration_min": 236, "transit_text": "地铁13号线 3站",
+                            "source": "live"}
+        with mock.patch.object(runtime, "registry") as reg:
+            reg.call.return_value = fake_result
+            runtime.enrich_transport_details(tl)
+        seg = tl.days[0].items[0]
+        self.assertEqual(seg.details["distance_km"], 153.79)
+
+    def test_enrich_passes_same_city_flag_for_intra_city(self) -> None:
+        tl = self._tl()  # 市内段 → same_city=True 透传（城市归属校验）
+        fake_result = mock.MagicMock()
+        fake_result.status.value = "ok"
+        fake_result.data = {"mode": "transit", "distance_km": 2.0,
+                            "duration_min": 10, "source": "live"}
+        with mock.patch.object(runtime, "registry") as reg:
+            reg.call.return_value = fake_result
+            runtime.enrich_transport_details(tl)
+        _, kwargs = reg.call.call_args
+        self.assertTrue(kwargs.get("same_city"))
+
+
+class TestResolveCoordSameCityGuard(_ut.TestCase):
+    """全国兜底城市归属校验：require_same_city 时命中外省行政区 → 拒绝。"""
+
+    def _client_stub(self, limited_raises: bool, matched_city: str):
+        client = mock.MagicMock()
+
+        def geocode(address, city=""):
+            if limited_raises and city:
+                raise ValueError("高德地理编码未找到地址")  # 仅限定 city 失败
+            return (39.1, 117.2)  # 全国兜底（city=""）正常返回
+
+        def geocode_detail(address, city=""):
+            # 全国兜底（city=""）：正常返回命中行政区（漂移与否由 matched_city 决定）
+            return (39.1, 117.2, matched_city)
+
+        client.geocode = geocode
+        client.geocode_detail = geocode_detail
+        return client
+
+    def test_nationwide_other_province_rejected(self) -> None:
+        client = self._client_stub(limited_raises=True, matched_city="霸州市")
+        with self.assertRaises(ValueError):
+            _resolve_coord_fallback(
+                "蛋先生餐车", "天津", client.geocode,
+                geocode_detail=client.geocode_detail, require_same_city=True,
+            )
+
+    def test_nationwide_same_city_accepted(self) -> None:
+        client = self._client_stub(limited_raises=True, matched_city="天津市")
+        lat, lng = _resolve_coord_fallback(
+            "某店", "天津", client.geocode,
+            geocode_detail=client.geocode_detail, require_same_city=True,
+        )
+        self.assertEqual((lat, lng), (39.1, 117.2))
+
+    def test_default_off_keeps_cross_city_fallback(self) -> None:
+        """require_same_city=False（城际 driving 跨城场景）→ 全国兜底照常。"""
+        client = self._client_stub(limited_raises=True, matched_city="霸州市")
+        lat, lng = _resolve_coord_fallback(
+            "某地", "天津", client.geocode, geocode_detail=client.geocode_detail,
+        )
+        self.assertEqual((lat, lng), (39.1, 117.2))
