@@ -39,6 +39,8 @@ SYNC_FILES = [
     "live_errors.py",
     "adapters.py",
     "tool_specs.py",
+    # 去程班次精排：换乘接续共享口径（2026-09-04）
+    "leg_connection.py",
 ]
 
 # 9.4（P5.6/P5.7 后补）：call_llm 编排层文件也纳入内容级漂移守卫——

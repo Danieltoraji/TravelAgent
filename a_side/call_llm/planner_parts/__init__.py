@@ -19,7 +19,9 @@ from call_llm.planner_parts.trip_segments import (  # noqa: F401
     TripSegmentAttacher,
     _first_day_start_from_segments,
     _last_day_end_from_segments,
+    _realize_outbound_with_schedule,
     _rebuild_return_with_schedule,
+    _select_outbound_combination,
     _select_return_combination,
     _windowed_last_day_end,
 )
@@ -33,7 +35,9 @@ __all__ = [
     "_collect_plan_spot_names",
     "_first_day_start_from_segments",
     "_last_day_end_from_segments",
+    "_realize_outbound_with_schedule",
     "_rebuild_return_with_schedule",
+    "_select_outbound_combination",
     "_select_return_combination",
     "_windowed_last_day_end",
 ]

@@ -78,7 +78,9 @@ from call_llm.planner_parts.restaurants import (  # noqa: E402
 from call_llm.planner_parts.trip_segments import (  # noqa: E402
     _first_day_start_from_segments,
     _last_day_end_from_segments,
+    _realize_outbound_with_schedule,
     _rebuild_return_with_schedule,
+    _select_outbound_combination,
     _select_return_combination,
     _find_return_segment,
     _windowed_last_day_end,

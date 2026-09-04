@@ -32,6 +32,10 @@ logger = logging.getLogger("call_llm.planner_parts.trip_segments")
 
 from data_transmission.b_contract import _as_date  # noqa: E402
 from data_transmission.enums import Source  # noqa: E402
+from data_transmission.leg_connection import (  # noqa: E402
+    lookup_transfer_minutes,
+    required_gap_minutes,
+)
 
 
 # 到达日接驳缓冲（方案 A，用户 9.1 拍板）：城际到达后到第一个景点的缓冲分钟。
@@ -284,6 +288,197 @@ def _rebuild_return_with_schedule(
 
 
 # ---------------------------------------------------------------------------
+# 去程班次精排（2026-09-04，镜像 _select_return_combination / 9.2b 返程精排）
+# ---------------------------------------------------------------------------
+
+
+def _select_outbound_combination(
+    outbound_seg: Dict[str, Any],
+    departure_time_minutes: Optional[int] = None,
+    priority: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """去程班次组合搜索：从真源候选选「偏好感知」的可行组合。
+
+    镜像 ``_select_return_combination``（9.2b 返程精排）的去程方向，约束：
+
+    - 首个带真源候选的 intercity 腿：班次发车 ≥ ``departure_time_minutes``
+      （语义 = 从家出发；None = 不约束）；
+    - 相邻两个**真源**腿接续 ≥ ``required_gap_minutes``（leg_connection 用户
+      拍板口径：出站/出机场 + 转场（确定性表，未收录回退 45min）+ 进站/值机
+      ——比返程的粗卡 60min 更严，转场分钟查表见 ``lookup_transfer_minutes``）；
+    - 跨日班次（arrive < dep）排除——去程必须当日到达（跨日击穿 Day1 到达日
+      结构，v1 不支持）；
+    - 无候选的腿（estimated 航段等）不选班，按既有 duration_min + buffer_min
+      推进到达时刻（估算段如实保留，绝不虚构班次时刻）；
+    - 目标（偏好感知）：``priority=="cost"`` → 组合票价和最低（并列取早到）；
+      其余（earliest/speed/rail/air/缺省）→ 末腿最早到达（并列取便宜）。
+
+    返回 ``{"dep_first": 首班发车分钟, "arr_last": 末腿到达分钟, "cost": 票价和,
+    "choices": [逐 intercity 腿选中的候选 dict 或 None（无候选腿）]}``；
+    无可行组合 → None（调用方回落推演，不谎报班次）。
+    """
+    legs = (outbound_seg.get("details") or {}).get("legs") or []
+    intercity = [
+        leg for leg in legs if isinstance(leg, dict) and leg.get("kind") == "intercity"
+    ]
+    if not intercity:
+        return None
+    best: Optional[Dict[str, Any]] = None
+    best_key: Optional[Tuple[float, int]] = None
+
+    def _candidate_times(cand: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+        dep = _hhmm_to_minutes_loose(cand.get("depart_time"))
+        arr = _hhmm_to_minutes_loose(cand.get("arrive_time"))
+        if dep is None or arr is None or arr < dep:
+            return None  # 不可解析 / 跨日（去程必须当日到达）
+        return dep, arr
+
+    def walk(
+        idx: int,
+        prev_arrive: Optional[int],
+        prev_mode: Optional[str],
+        prev_to_place: Optional[str],
+        dep_first: Optional[int],
+        arr_last: Optional[int],
+        cost: float,
+        choices: List[Optional[Dict[str, Any]]],
+    ) -> None:
+        nonlocal best, best_key
+        if idx == len(intercity):
+            if dep_first is None:
+                return  # 整链无任何真源班次 → 无从精排
+            if priority == "cost":
+                key = (round(cost, 2), int(arr_last or 0))
+            else:
+                key = (int(arr_last or 0), round(cost, 2))
+            if best_key is None or key < best_key:
+                best_key = key
+                best = {
+                    "dep_first": int(dep_first),
+                    "arr_last": int(arr_last or 0),
+                    "cost": cost,
+                    "choices": list(choices),
+                }
+            return
+        leg = intercity[idx]
+        mode = str(leg.get("mode") or "")
+        cands = [c for c in (leg.get("candidates") or []) if isinstance(c, dict)]
+        if not cands:
+            # 无候选腿（estimated 等）：不选班，按既有历时推进到达时刻
+            dur = int(leg.get("duration_min") or 0) + int(leg.get("buffer_min") or 0)
+            nxt_arrive = None if prev_arrive is None else prev_arrive + dur
+            walk(
+                idx + 1,
+                nxt_arrive,
+                mode,
+                leg.get("to_station"),
+                dep_first,
+                nxt_arrive if prev_arrive is not None else arr_last,
+                cost,
+                choices + [None],
+            )
+            return
+        for cand in cands:
+            times = _candidate_times(cand)
+            if times is None:
+                continue
+            dep, arr = times
+            if prev_arrive is None:
+                # 首个真源腿：发车 ≥ 用户从家出发时刻
+                if departure_time_minutes is not None and dep < departure_time_minutes:
+                    continue
+            else:
+                gap = required_gap_minutes(
+                    prev_mode or "",
+                    mode,
+                    lookup_transfer_minutes(
+                        prev_to_place or "", leg.get("from_station") or ""
+                    ),
+                )
+                if dep < prev_arrive + gap:
+                    continue  # 接续不可行（用户拍板缓冲口径）
+            price = cand.get("price") or cand.get("cost_per_person")
+            walk(
+                idx + 1,
+                arr,
+                mode,
+                leg.get("to_station"),
+                dep if dep_first is None else dep_first,
+                arr,
+                cost + (float(price) if isinstance(price, (int, float)) else 0.0),
+                choices + [cand],
+            )
+
+    walk(0, None, None, None, None, None, 0.0, [])
+    return best
+
+
+def _realize_outbound_with_schedule(
+    segments: List[Dict[str, Any]],
+    departure_time_minutes: Optional[int] = None,
+    priority: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """去程段按真实班次精排（镜像 ``_rebuild_return_with_schedule`` 的去程方向）。
+
+    - 找 ``kind=="outbound"`` 段 → ``_select_outbound_combination``；
+    - 选中 → 逐 intercity 腿写回 ``service_no/depart_time/arrive_time/
+      duration_min``（同一完整班次，I-05：时刻/历时/价格来自同一行，绝不拼
+      不同班次的字段）；候选列表原样保留（C 端可展示备选班次）；
+    - 段 ``end_minutes`` = 末腿真实到达 → ``_first_day_start_from_segments``
+      自动拿到真实到达（Day1 起点联动，9.1 管道零改动受益）；
+    - ``start_minutes``：departure_time 给定 → 保持「从家出发」语义（出发到
+      首班的市内衔接 + 候车由段内 local 占位腿与既有展示表达）；未给定 →
+      首班发车；
+    - 无可行组合 → 原段原样返回（推演兜底，不谎报班次）。
+    """
+    outbound_seg = None
+    for seg in segments or []:
+        if isinstance(seg, dict) and (seg.get("details") or {}).get("kind") == "outbound":
+            outbound_seg = seg
+            break
+    if outbound_seg is None:
+        return segments
+    combo = _select_outbound_combination(outbound_seg, departure_time_minutes, priority)
+    if combo is None:
+        return segments
+
+    intercity = [
+        leg
+        for leg in (outbound_seg.get("details") or {}).get("legs") or []
+        if isinstance(leg, dict) and leg.get("kind") == "intercity"
+    ]
+    for leg, cand in zip(intercity, combo["choices"]):
+        if cand is None:
+            continue
+        dep = _hhmm_to_minutes_loose(cand.get("depart_time"))
+        arr = _hhmm_to_minutes_loose(cand.get("arrive_time"))
+        if dep is None or arr is None:
+            continue
+        leg["service_no"] = str(
+            cand.get("code") or cand.get("flight_no") or leg.get("service_no") or ""
+        )
+        leg["depart_time"] = cand.get("depart_time")
+        leg["arrive_time"] = cand.get("arrive_time")
+        leg["duration_min"] = arr - dep  # 真实在途（同班次行内推导，不拼字段）
+        leg["outbound_realized"] = True
+
+    dep_first = combo["dep_first"]
+    arr_last = combo["arr_last"]
+    outbound_seg["end_minutes"] = arr_last
+    if departure_time_minutes is not None:
+        outbound_seg["start_minutes"] = int(departure_time_minutes)
+    else:
+        outbound_seg["start_minutes"] = dep_first
+    outbound_seg["duration_minutes"] = max(0, arr_last - outbound_seg["start_minutes"])
+    details = dict(outbound_seg.get("details") or {})
+    if combo["cost"] > 0:
+        details["cost_per_person"] = round(combo["cost"], 2)
+    details["outbound_realized"] = True
+    outbound_seg["details"] = details
+    return segments
+
+
+# ---------------------------------------------------------------------------
 # Mixin：TripSegmentAttacher（BPlannerHook 继承，method 签名同原私有方法）
 # ---------------------------------------------------------------------------
 
@@ -415,12 +610,22 @@ class TripSegmentAttacher:
         if demo_segments:
             return demo_segments
         try:
-            return build_trip_segments(
+            segments = build_trip_segments(
                 {}, self.requirement, travel_provider=provider
             )
         except Exception as exc:  # noqa: BLE001  城际段失败不阻断规划
             logger.warning("build_trip_segments failed: %s", exc)
             return []
+        # 去程班次精排（2026-09-04）：真实班次写回 legs（service_no/发到时刻）
+        # + 段 end_minutes=末腿真实到达 → _first_day_start_from_segments 自动
+        # 拿真实到达（Day1 起点联动）；无可行组合 → 推演兜底原样返回。
+        # demo 链路（上方早退）本身已是真实班次时刻，不重复处理。
+        content = self.requirement.get("content") or {}
+        dep_min = _hhmm_to_minutes_loose(
+            (content.get("travel_schedule") or {}).get("departure_time")
+        )
+        priority = (content.get("preferences") or {}).get("travel_priority") or None
+        return _realize_outbound_with_schedule(segments, dep_min, priority)
 
     def _inject_trip_segments(
         self, plan: Dict[str, Any], segments: List[Dict[str, Any]]

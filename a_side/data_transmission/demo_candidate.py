@@ -53,50 +53,19 @@ DEFAULT_MAX_TOTAL_MINUTES = 720  # 单程 12h 硬约束（与 city_travel 表口
 DEFAULT_TOP_K = 4                # 每城市对航班验证上限（验收：Top-K ≤4）
 DEFAULT_MID_CITIES_MAX = 6       # 模板「火车→飞机」候选池截断（保持"有限"模板）
 
-# -- 换乘缓冲 / 转场（阶段 2 口径，用户拍板；转场为 Demo 确定性值，后续高德实算） --
-AIR_ARRIVE_BUFFER_MIN = 30       # 飞→火：航班到达 + 出机场/行李缓冲
-RAIL_CHECKIN_BUFFER_MIN = 30     # 飞→火：进站/安检缓冲
-RAIL_ARRIVE_BUFFER_MIN = 20      # 火→飞：火车到达 + 出站缓冲
-AIR_CHECKIN_BUFFER_MIN = 90      # 火→飞：提前 1.5h 到机场（值机/安检）
-DEFAULT_TRANSFER_MIN = 45        # 转场兜底（站/机场未收录时）
-
-# Demo 确定性转场分钟（站/机场中文名对）；键名尽量与 legs 的
-# from/to_station_or_airport 一致（查表前做「去 站/机场 后缀」归一化）
-DEMO_TRANSFER_MINUTES: Dict[Tuple[str, str], int] = {
-    ("常州奔牛机场", "常州北站"): 45,
-    ("常州奔牛机场", "常州站"): 50,
-    ("北京大兴机场", "北京南站"): 50,
-    ("北京首都机场", "北京南站"): 60,
-    ("上海虹桥国际机场", "上海虹桥站"): 15,
-    ("上海浦东国际机场", "上海站"): 60,
-}
-
-
-def _norm_place(name: str) -> str:
-    """站/机场名归一化：去空白与「站/机场/国际机场」尾缀（常州北 vs 常州北站）。"""
-    text = str(name or "").strip()
-    for suffix in ("国际机场", "机场", "站"):
-        if text.endswith(suffix) and len(text) > len(suffix):
-            text = text[: -len(suffix)]
-            break
-    return text
-
-
-def lookup_transfer_minutes(
-    from_place: str,
-    to_place: str,
-    table: Optional[Dict[Tuple[str, str], int]] = None,
-) -> int:
-    """站/机场名 → 转场分钟；未收录回退 ``DEFAULT_TRANSFER_MIN``（Demo 确定性值）。
-
-    后续接入高德实算（AmapClient）时由调用方注入 ``transfer_provider`` 替换本表。
-    """
-    table = table if table is not None else DEMO_TRANSFER_MINUTES
-    f, t = _norm_place(from_place), _norm_place(to_place)
-    for (a, b), minutes in table.items():
-        if _norm_place(a) == f and _norm_place(b) == t:
-            return minutes
-    return DEFAULT_TRANSFER_MIN
+# -- 换乘缓冲 / 转场：口径单点定义在 leg_connection.py（2026-09-04 抽取，
+#    去程班次精排与 Demo 链路共用）；此处 re-export 保持历史 import 路径兼容 --
+from data_transmission.leg_connection import (  # noqa: F401
+    AIR_ARRIVE_BUFFER_MIN,
+    AIR_CHECKIN_BUFFER_MIN,
+    DEFAULT_TRANSFER_MIN,
+    DEMO_TRANSFER_MINUTES,
+    RAIL_ARRIVE_BUFFER_MIN,
+    RAIL_CHECKIN_BUFFER_MIN,
+    _norm_place,
+    lookup_transfer_minutes,
+    required_gap_minutes,
+)
 
 
 # ---------------------------------------------------------------------------
