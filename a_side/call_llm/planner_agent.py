@@ -22,11 +22,26 @@ BaseClient 的**审查轮**（``review_schema``）——每批 tool 结果后强
 随结果透出；executor 改走 ``QuotaManager.cached_call``（同参命中缓存不耗
 额度 = P5.5 护栏 1）并配 per-mode 预算（拍板 B-1：与主链同默认 6），超限
 ``QuotaExceeded`` 接成结构化 error 回填模型（错误被回路消费，不静默兜底）。
+
+P5.6-S3（2026-09-08）：城际班次核验**注册为首个技能**（``SKILL_SPECS`` 的
+``intercity_verify`` 条目，见 ``call_llm/skill_specs.py``）。核心逻辑抽成
+模块级执行器 ``intercity_verify_executor(ctx, params)``——同时被两类入口调用：
+- ``PlannerAgent.intercity_verify``（P5.2 兼容壳，保留自有的 quota/缓存实例，
+  测试与调用点零改动）与
+- ``SkillRunner.run_skill("intercity_verify", ...)``（``call_llm/skill_runner.py``，
+  P5.6 形态 A 通用入口：按注册表 executor 点路径执行）。
+
+执行器契约（ctx 鸭子类型，S3 定，后续技能遵守）：ctx 需含 ``tools``
+（子工具名列表）/ ``review_enabled`` / ``tool_executor``（None = 门控关，
+不注入工具面）/ ``model_name`` / ``api_key`` / ``base_url`` / ``timeout`` /
+``max_tool_rounds``；executor 返回 {chosen/reasons/checked/unavailable/
+tool_rounds/tools_degraded/tools_enabled/reviews/uncertain}。
 """
 
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from call_llm.client_factory import create_llm_client
@@ -109,6 +124,20 @@ INTERCITY_VERIFY_SCHEMA: Dict[str, Any] = {
     "required": ["chosen", "reasons", "checked", "unavailable"],
 }
 
+INTERCITY_INPUT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "from_city": {"type": "string", "description": "出发城市"},
+        "to_city": {"type": "string", "description": "到达城市"},
+        "date": {"type": "string", "description": "YYYY-MM-DD"},
+        "preferred_mode": {
+            "type": "string",
+            "description": "用户偏好交通方式（可选）",
+        },
+    },
+    "required": ["from_city", "to_city", "date"],
+}
+
 
 def _user_verify_prompt(
     from_city: str, to_city: str, date: str, preferred_mode: Optional[str]
@@ -121,6 +150,76 @@ def _user_verify_prompt(
         f"{mode_hint}"
         "\n先查火车，再视情况比对航班，最后按 schema 输出 JSON。"
     )
+
+
+def intercity_verify_executor(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
+    """城际班次核验技能的执行器（P5.6-S3，模块级 = SkillSpec executor 点路径目标）。
+
+    同时被 ``PlannerAgent.intercity_verify``（P5.2 兼容壳）与
+    ``SkillRunner.run_skill("intercity_verify", ...)`` 调用。ctx 鸭子类型
+    （见模块 docstring 契约）：
+    ``tools``（子工具名）/ ``review_enabled`` / ``tool_executor``（None =
+    门控关，不注入工具面）/ ``model_name`` / ``api_key`` / ``base_url`` /
+    ``timeout`` / ``max_tool_rounds``。
+
+    ``params`` 按 ``INTERCITY_INPUT_SCHEMA``：from_city / to_city / date
+    （必填）+ preferred_mode（可选）。返回 dict：chosen/reasons/checked/
+    unavailable + tool_rounds/tools_degraded/tools_enabled + reviews/uncertain
+    （P5.6-S2 审查轨迹透出）。
+    """
+    from_city = str(params["from_city"])
+    to_city = str(params["to_city"])
+    date = str(params["date"])
+    preferred_mode = (
+        str(params["preferred_mode"]) if params.get("preferred_mode") else None
+    )
+
+    client = create_llm_client(
+        model_name=ctx.model_name,
+        api_key=ctx.api_key,
+        base_url=ctx.base_url,
+        timeout=ctx.timeout,
+        ask_user_if_missing=False,
+        system_instruction=INTERCITY_VERIFY_SYSTEM,
+        max_tokens=1000,
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": _user_verify_prompt(from_city, to_city, date, preferred_mode),
+        }
+    ]
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_executor: Optional[Callable[[str, Dict[str, Any]], Any]] = None
+    review_schema: Optional[Dict[str, Any]] = None
+    if ctx.tool_executor is not None:
+        tools = to_openai_tools(names=list(ctx.tools))
+        tool_executor = ctx.tool_executor
+        if ctx.review_enabled:
+            # P5.6-S2：审查轮（P5.5 改动 1/2/5）——工具回路每批结果后
+            # 强制常识审查，可疑即重调；reviews/uncertain 随结果透出。
+            review_schema = INTERCITY_REVIEW_SCHEMA
+
+    result = client.generate(
+        messages=messages,
+        response_schema=INTERCITY_VERIFY_SCHEMA,
+        tools=tools,
+        tool_executor=tool_executor,
+        max_tool_rounds=ctx.max_tool_rounds,
+        review_schema=review_schema,
+    )
+    content = result["content"] or {}
+    return {
+        "chosen": content.get("chosen"),
+        "reasons": list(content.get("reasons") or []),
+        "checked": list(content.get("checked") or []),
+        "unavailable": bool(content.get("unavailable")),
+        "tool_rounds": int(result.get("tool_rounds") or 0),
+        "tools_degraded": bool(result.get("tools_degraded")),
+        "tools_enabled": bool(tools),
+        "reviews": list(result.get("reviews") or []),
+        "uncertain": bool(result.get("uncertain")),
+    }
 
 
 class PlannerAgent:
@@ -207,7 +306,7 @@ class PlannerAgent:
         date: str,
         preferred_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """城际候选验证子链路：LLM 自主查真源工具并给出结论。
+        """城际候选验证子链路（P5.2 兼容壳）：委托给模块级 executor（P5.6-S3）。
 
         返回 dict：::
 
@@ -223,52 +322,24 @@ class PlannerAgent:
         门控关闭时模型无法查真源——结论可能不准确（如凭常识猜测），
         ``tools_enabled=False`` 明确标注，调用方（探针/演示）自行判断可信度。
         """
-        client = create_llm_client(
+        # P5.6-S3：组装执行器 ctx（保留本实例自有的 quota/缓存 与门控判定），
+        # 与 SkillRunner.run_skill("intercity_verify") 走同一条 executor 实现。
+        ctx = SimpleNamespace(
+            tools=["train_trip", "train_ticket", "flight_search"],
+            review_enabled=self.review_enabled,
+            tool_executor=self._executor if self.tools_enabled else None,
             model_name=self.model_name,
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=self.timeout,
-            ask_user_if_missing=False,
-            system_instruction=INTERCITY_VERIFY_SYSTEM,
-            max_tokens=1000,
-        )
-        messages = [
-            {
-                "role": "user",
-                "content": _user_verify_prompt(from_city, to_city, date, preferred_mode),
-            }
-        ]
-        tools: Optional[List[Dict[str, Any]]] = None
-        tool_executor: Optional[Callable[[str, Dict[str, Any]], Any]] = None
-        review_schema: Optional[Dict[str, Any]] = None
-        if self.tools_enabled:
-            tools = to_openai_tools(names=["train_trip", "train_ticket", "flight_search"])
-            tool_executor = self._executor
-            if self.review_enabled:
-                # P5.6-S2：审查轮（P5.5 改动 1/2/5）——工具回路每批结果后
-                # 强制常识审查，可疑即重调；reviews/uncertain 随结果透出。
-                review_schema = INTERCITY_REVIEW_SCHEMA
-
-        result = client.generate(
-            messages=messages,
-            response_schema=INTERCITY_VERIFY_SCHEMA,
-            tools=tools,
-            tool_executor=tool_executor,
             max_tool_rounds=self.max_tool_rounds,
-            review_schema=review_schema,
         )
-        content = result["content"] or {}
-        return {
-            "chosen": content.get("chosen"),
-            "reasons": list(content.get("reasons") or []),
-            "checked": list(content.get("checked") or []),
-            "unavailable": bool(content.get("unavailable")),
-            "tool_rounds": int(result.get("tool_rounds") or 0),
-            "tools_degraded": bool(result.get("tools_degraded")),
-            "tools_enabled": bool(tools),
-            "reviews": list(result.get("reviews") or []),
-            "uncertain": bool(result.get("uncertain")),
-        }
+        return intercity_verify_executor(ctx, {
+            "from_city": from_city,
+            "to_city": to_city,
+            "date": date,
+            "preferred_mode": preferred_mode,
+        })
 
 
 def intercity_mode_names() -> List[str]:

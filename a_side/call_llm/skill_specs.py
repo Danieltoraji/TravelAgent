@@ -1,4 +1,4 @@
-"""技能层注册表（架构整理方案 §三 P5.6 技能层，S1 骨架）。
+"""技能层注册表（架构整理方案 §三 P5.6 技能层）。
 
 背景与拍板（2026-09-08）：
 - **形态 A**：技能 = TravelAgent 产品运行时 agent **可直接调用的具名能力**。
@@ -7,21 +7,23 @@
   可解释决策；
 - **审查内置**：结果审查 + 可疑重调 + ``uncertain`` 诚实标记（P5.5）是
   SkillRunner 的**共用横切环节**，每个技能自带，不复制；
-- **首批技能 = 城际班次核验**（迁移 ``PlannerAgent.intercity_verify``）；
-  ScenicSearchPlanner / trip_center / 决策打分等暂不技能化（范围未定）。
+- **首批技能 = 城际班次核验**（``intercity_verify``，S3 已注册，executor =
+  ``call_llm.planner_agent:intercity_verify_executor``）；ScenicSearchPlanner /
+  trip_center / 决策打分等暂不技能化（范围未定，S6 搁置）。
 
 本模块 = 技能层的**数据面**（仿 ``data_transmission/tool_specs.py`` 模式）：
 - ``SkillSpec``：单个技能的元数据——名称 / 何时用 / 入参出参 schema /
   子工具面（tools）/ 审查开关 / 实现入口，**A 侧权威定义**；
-- ``SKILL_SPECS``：技能注册表（S1 为空骨架，S3 写入首个技能
-  ``intercity_verify``）；
+- ``SKILL_SPECS``：技能注册表（S1 空骨架，S3 起含真实条目）；
 - ``validate_skill_spec``：守卫校验（工具子集必须落在 ToolSpec 注册表内、
-  技能名不得与真源工具重名/不得带 ``skill__`` 前缀、schema 形状合法），
-  供守卫测试逐条断言——技能层不依赖 AI 自觉。
+  技能名不得与真源工具重名/不得带 ``skill__`` 前缀、schema 形状合法、
+  已注册技能必须接 executor 点路径），供守卫测试逐条断言——技能层不依赖
+  AI 自觉。
 
-S1 只建类型 + 注册表 + 守卫（**零行为**）；通用执行器 ``SkillRunner``（S2，
-内置审查）与首个技能条目（S3）在后续阶段接入。``executor`` 字段预留实现
-入口（点路径），S2/S3 接线。
+通用执行器 ``SkillRunner``（``call_llm/skill_runner.py``）按 ``executor``
+点路径惰性导入并执行技能；``params_schema``/``result_schema`` 直接引用
+执行器模块的权威 schema（此处 import planner_agent 仅为取常量，无循环：
+planner_agent 不 import 本模块）。
 """
 
 from __future__ import annotations
@@ -29,6 +31,10 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from call_llm.planner_agent import (
+    INTERCITY_INPUT_SCHEMA,
+    INTERCITY_VERIFY_SCHEMA,
+)
 from data_transmission.tool_specs import TOOL_SPECS
 
 # 工具面命名空间：技能以外层 ``skill__<name>`` 形态暴露，防止与真源工具
@@ -38,7 +44,7 @@ _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
 class SkillSpec:
-    """单个技能的元数据（A 侧权威定义；S1 骨架，S3 起写真实条目）。"""
+    """单个技能的元数据（A 侧权威定义；S3 起含真实条目）。"""
 
     __slots__ = (
         "name",
@@ -79,10 +85,27 @@ class SkillSpec:
 
 
 # ---------------------------------------------------------------------------
-# 注册表（S1 空骨架——S3 写入首个技能「城际班次核验」前保持为空）
+# 注册表（S3：首个技能「城际班次核验」；新增技能 = 在此加一条 + 实现 executor）
 # ---------------------------------------------------------------------------
 
-SKILL_SPECS: Dict[str, SkillSpec] = {}
+SKILL_SPECS: Dict[str, SkillSpec] = {
+    "intercity_verify": SkillSpec(
+        name="intercity_verify",
+        description=(
+            "城际班次核验：核验两个城市之间某一天的可行出行班次"
+            "（铁路/航空的直达、历时、票价）并给出选定结论"
+        ),
+        when_to_use=(
+            "需要核对/验证两城之间某天可行班次时：有无直达、耗时与价格量级、"
+            "偏好方式是否可行（如出发地小城市需查中转）"
+        ),
+        params_schema=INTERCITY_INPUT_SCHEMA,
+        result_schema=INTERCITY_VERIFY_SCHEMA,
+        tools=["train_trip", "train_ticket", "flight_search"],
+        review_enabled=True,
+        executor="call_llm.planner_agent:intercity_verify_executor",
+    ),
+}
 
 
 def get_skill_spec(name: str) -> Optional[SkillSpec]:
@@ -91,18 +114,19 @@ def get_skill_spec(name: str) -> Optional[SkillSpec]:
 
 
 def skill_names() -> tuple:
-    """已注册的全部技能名（排序；S1 为空）。"""
+    """已注册的全部技能名（排序）。"""
     return tuple(sorted(SKILL_SPECS))
 
 
 def validate_skill_spec(spec: SkillSpec) -> List[str]:
     """守卫校验：返回问题列表（空列表 = 通过）。
 
-    检查项（S1 定义，S3 写入条目后由守卫测试逐条强约束）：
+    检查项（S1 定义，S3 起守卫测试对每条真实条目强约束）：
     - 技能名合法（小写蛇形）、不带 ``skill__`` 前缀、不得与真源工具重名；
     - description / when_to_use 非空（否则外层 agent 无法判断何时用）；
     - params_schema 为 JSON object 形状（properties 为 dict）；
-    - tools 子工具名必须落在 ``TOOL_SPECS`` 注册表内（工具面隔离的前提）。
+    - tools 子工具名必须落在 ``TOOL_SPECS`` 注册表内（工具面隔离的前提）；
+    - 已注册技能必须接 executor 点路径（``SkillRunner`` 按它执行）。
     """
     problems: List[str] = []
     name = spec.name
@@ -119,6 +143,11 @@ def validate_skill_spec(spec: SkillSpec) -> List[str]:
         problems.append(f"{name!r} 缺 description（外层 agent 摘要需要）")
     if not spec.when_to_use:
         problems.append(f"{name!r} 缺 when_to_use（外层 agent 判断何时调用的依据）")
+    if not spec.executor:
+        problems.append(f"{name!r} 缺 executor 点路径（SkillRunner 按它惰性导入执行）")
+    elif ":" not in spec.executor or not spec.executor.partition(":")[0] \
+            or not spec.executor.partition(":")[2]:
+        problems.append(f"{name!r} executor 需为 module:attr 点路径，实际: {spec.executor!r}")
     schema = spec.params_schema
     if not isinstance(schema, dict) or schema.get("type") != "object":
         problems.append(f"{name!r} params_schema 需为 JSON object schema（type=object）")
