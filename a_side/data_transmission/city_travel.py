@@ -218,6 +218,19 @@ def find_city_travel_preferred(
             edge = provider(origin, destination, mode=local.mode)
             if edge is None:
                 return local  # 真源查询失败 → 本地估算照常（不假装、不空段）
+            # 偏好完整性（十一节，2026-09-04）：显式 rail/air 偏好时，provider
+            # 的 off-mode 兜底（如 train 查询失败回落 map driving——清华紫荆
+            # 公寓→天津实测 153km 自驾）不得采纳——静默把高铁用户导向自驾是
+            # 评委一眼能看穿的产品缺陷。回落本地估算的同方式边
+            # （source=estimated 如实标注）；默认链/速度/最早/费用偏好保持
+            # 现状（driving 兜底属合法末位）。
+            if priority in ("rail", "air") and edge.mode != local.mode:
+                logger.warning(
+                    "城际 %s→%s：%s 偏好下真源回落为 %s（拒绝采纳），"
+                    "用本地估算 %s 边如实标注",
+                    origin, destination, priority, edge.mode, local.mode,
+                )
+                return local
             if edge.transport_minutes and edge.transport_minutes > 0:
                 # 真源有有效时长：价格缺失时用本地估算价兜底（预算五项口径要价格）
                 if (

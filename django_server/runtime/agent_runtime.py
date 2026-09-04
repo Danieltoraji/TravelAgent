@@ -545,12 +545,23 @@ class AgentRuntime:
                     origin, destination = _split_name(item.name)
                 if not origin or not destination:
                     return
+                is_intercity = bool((item.details or {}).get("kind"))
                 result = self.registry.call(
                     "map", action="route",
                     origin=origin, destination=destination,
                     city=city, mode="transit",
+                    same_city=not is_intercity,  # 市内段：全国兜底城市校验（十一节）
                 )
                 if result.status.value != "ok" or not isinstance(result.data, dict):
+                    return
+                # 地理保真 sanity（十一节）：市内段 enrich 距离超 80km（POI 漂移
+                # 跨市残留）→ 放弃合并保留矩阵值；城际段（kind 有值）跨城属正常
+                dist = result.data.get("distance_km")
+                if (
+                    not is_intercity
+                    and isinstance(dist, (int, float))
+                    and dist > 80
+                ):
                     return
                 merged = dict(item.details or {})
                 for key in ("mode", "distance_km", "duration_min", "fare",

@@ -229,6 +229,22 @@ class PlaceNormalizer:
                     city=parent, raw=raw,
                     stations=self._stations_of(parent),
                 )
+        # 2c. 前缀城市提取（十一节，2026-09-04）：详细地址无行政区划尾缀
+        # （「北京市清华大学紫荆公寓一号楼」以「楼」结尾）也能剥出城市——
+        # 城市名后必须紧跟「市/省」分隔（「马鞍山路」这类街道名不误判），
+        # 最长名优先防「吉林市/省」歧义。命中即 matched（canonical 保留全文，
+        # hook 优先取 result.city）。
+        prefix_city = None
+        for city in sorted(self._cities, key=len, reverse=True):
+            if raw.startswith(f"{city}市") or raw.startswith(f"{city}省"):
+                prefix_city = city
+                break
+        if prefix_city is not None:
+            return NormalizeResult(
+                canonical=raw, matched=True, method="prefix",
+                city=prefix_city, raw=raw,
+                stations=self._stations_of(prefix_city),
+            )
         # 3. 别名表
         alias = self._aliases.get(raw)
         if alias is not None and alias in self._cities:

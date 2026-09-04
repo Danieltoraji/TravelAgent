@@ -102,11 +102,18 @@ class AmapClient:
         raise last_error  # pragma: no cover（循环内必 return/raise）
 
     def geocode(self, address: str, city: str = "") -> Tuple[float, float]:
-        """地理编码：地址 → 坐标 (lat, lng)。
+        """地理编码：地址 → 坐标 (lat, lng)。委托 ``geocode_detail``。"""
+        lat, lng, _ = self.geocode_detail(address, city=city)
+        return lat, lng
 
-        调用 ``/v3/geocode/geo``，带缓存避免重复请求。
+    def geocode_detail(self, address: str, city: str = "") -> Tuple[float, float, str]:
+        """地理编码：地址 → (lat, lng, 命中行政区城市名)。
+
+        第三个返回值取自 ``geocodes[0].city``（直辖市可能为空串）——供
+        市内路线的**全国搜索兜底城市归属校验**使用（十一节：全国兜底命中
+        外省同名 POI → 跨市路线漂移，霸州 87km 实测）。带独立缓存键。
         """
-        cache_key = f"{address}|{city}"
+        cache_key = f"detail|{address}|{city}"
         if cache_key in self._geocode_cache:
             return self._geocode_cache[cache_key]
 
@@ -119,15 +126,23 @@ class AmapClient:
         if not geocodes:
             raise ValueError(f"高德地理编码未找到地址: {address}")
 
-        location = geocodes[0].get("location", "")  # "116.397428,39.90923"
+        g0 = geocodes[0]
+        location = g0.get("location", "")  # "116.397428,39.90923"
         if not location:
             raise ValueError(f"高德地理编码返回无坐标: {address}")
 
         lng_str, lat_str = location.split(",")
         lat, lng = float(lat_str), float(lng_str)
-        self._geocode_cache[cache_key] = (lat, lng)
-        logger.info("Geocode: %s → (%.6f, %.6f)", address, lat, lng)
-        return lat, lng
+        city_field = g0.get("city")
+        if isinstance(city_field, list):
+            matched_city = str(city_field[0]) if city_field else ""
+        else:
+            matched_city = str(city_field or "")
+        self._geocode_cache[cache_key] = (lat, lng, matched_city)
+        logger.info(
+            "Geocode: %s → (%.6f, %.6f) city=%s", address, lat, lng, matched_city
+        )
+        return lat, lng, matched_city
 
     # v5 show_fields 固定参数：请求营业时间、评分、人均消费、特色菜等深度信息
     _SHOW_FIELDS = "business,opentime_today,opentime_week,rating,cost,tag,alias"

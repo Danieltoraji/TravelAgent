@@ -91,11 +91,37 @@ def _resolve_coord(name: str, city: str, geocode) -> Tuple[float, float]:
     return geocode(name, city=city)
 
 
-def _resolve_coord_fallback(name: str, city: str, geocode) -> Tuple[float, float]:
+def _same_city_name(matched: str, requested: str) -> bool:
+    """命中行政区 vs 请求城市是否同城（剥「市/省」尾缀后互含；空串=直辖市等
+    无法判定场景，宽松放行）。"""
+    def _norm(name: str) -> str:
+        text = str(name or "").strip()
+        for suffix in ("市", "省"):
+            if text.endswith(suffix) and len(text) > len(suffix):
+                return text[: -len(suffix)]
+        return text
+    m, r = _norm(matched), _norm(requested)
+    if not m or not r:
+        return True
+    return m in r or r in m
+
+
+def _resolve_coord_fallback(
+    name: str,
+    city: str,
+    geocode,
+    geocode_detail=None,
+    require_same_city: bool = False,
+) -> Tuple[float, float]:
     """地理编码带全国搜索兜底：限定 ``city`` 失败（如跨城 driving 用统一默认 city
     解析他城城市名 → 高德 30001）→ 降级为不限城市全国搜索；仍失败才抛错。
 
     市内正常路径不受影响（限定 city 命中即返回，避免同名歧义）。
+
+    **城市归属校验（十一节，2026-09-04）**：``require_same_city=True``（市内
+    transit 路线）时，全国兜底命中的行政区必须与请求 ``city`` 同城——否则
+    同名/近名 POI 漂移到外省 → 跨市路线（霸州 87km 实测）。不匹配视为解析
+    失败抛错（调用方静默降级保留矩阵值），绝不返回跨市坐标。
     """
     coord = _parse_coord(name)
     if coord is not None:
@@ -103,6 +129,22 @@ def _resolve_coord_fallback(name: str, city: str, geocode) -> Tuple[float, float
     try:
         return geocode(name, city=city)
     except ValueError:
+        if require_same_city and geocode_detail is not None:
+            try:
+                lat, lng, matched_city = geocode_detail(name, city="")
+                if _same_city_name(matched_city, city):
+                    logger.warning(
+                        "geocode(%r, city=%r) 限定失败，全国兜底同城命中（%s）",
+                        name, city, matched_city or "直辖市/未知",
+                    )
+                    return lat, lng
+                logger.warning(
+                    "geocode(%r, city=%r) 全国兜底命中外省行政区（%s ≠ %s），"
+                    "拒绝采纳（防市内路线跨市漂移）", name, city, matched_city, city
+                )
+            except ValueError:
+                pass
+            raise ValueError(f"高德地理编码未找到地址(限定 {city}): {name}")
         logger.warning(
             "geocode(%r, city=%r) 失败，回退全国搜索（可能为城际 driving 跨城场景）", name, city
         )
@@ -146,6 +188,14 @@ class MapTool(BaseTool):
                 "batch_route 仅支持 driving / walk；train/air 为城际模式"
                 "（估算表兜底，source=estimate，批次 1a）",
             },
+            "same_city": {
+                "type": "boolean",
+                "description": (
+                    "市内路线标记（默认 false）：true 时地理编码全国兜底命中的"
+                    "行政区必须与 city 同城，防止同名 POI 漂移到外省产生跨市路线"
+                    "（十一节：霸州 87km 实测）"
+                ),
+            },
         },
         "required": ["action"],
     }
@@ -155,11 +205,14 @@ class MapTool(BaseTool):
              origins: Optional[List[str]] = None,
              destinations: Optional[List[str]] = None,
              city: str = "北京",
+             same_city: bool = False,
              **kwargs: Any) -> Any:
         if action == "search_poi":
             return self._search(query)
         if action == "route":
-            return self._route(origin, destination, mode, city=city)
+            return self._route(
+                origin, destination, mode, city=city, same_city=same_city
+            )
         if action == "batch_route":
             # 批量测量仅支持 driving / walk（v3/distance）；默认 transit 解析为驾车近似
             batch_mode = mode if mode in ("driving", "walk") else "driving"
@@ -188,7 +241,7 @@ class MapTool(BaseTool):
         return results
 
     def _route(self, origin: str, destination: str, mode: str = "transit",
-               city: str = "北京") -> Dict[str, Any]:
+               city: str = "北京", same_city: bool = False) -> Dict[str, Any]:
         """单对路线：train/air 走城际估算（``_intercity``），其余走市内固定值（Mock）。"""
         if mode in _INTERCITY_MODES:
             return self._intercity(origin, destination, mode, city=city)
@@ -309,17 +362,20 @@ class MapToolLive(MapTool):
         ]
 
     def _route(self, origin: str, destination: str, mode: str = "transit",
-               city: str = "北京") -> Dict[str, Any]:
+               city: str = "北京", same_city: bool = False) -> Dict[str, Any]:
         """调高德路线规划 API，返回距离和耗时。
 
         先地理编码获取起终点坐标，再调路线规划 API。
         地理编码时限定 ``city``（默认北京，避免同名地点歧义）。
         train/air 城际模式在调用高德前拦截（走 ``_intercity`` 估算/兜底）。
+        ``same_city``（十一节）：市内路线地理编码全国兜底做城市归属校验。
         """
         if mode in _INTERCITY_MODES:
             # 批次 1a：必须在 get_route 前拦截，否则 ValueError「不支持的路线模式」
             return self._intercity(origin, destination, mode, city=city)
-        return self._route_live(origin, destination, mode, city=city)
+        return self._route_live(
+            origin, destination, mode, city=city, require_same_city=same_city
+        )
 
     def _route_driving(self, origin: str, destination: str,
                        city: str = "北京") -> Dict[str, Any]:
@@ -336,11 +392,13 @@ class MapToolLive(MapTool):
     def _route_live(self, origin: str, destination: str, mode: str,
                     city: str = "北京",
                     origin_city: Optional[str] = None,
-                    dest_city: Optional[str] = None) -> Dict[str, Any]:
+                    dest_city: Optional[str] = None,
+                    require_same_city: bool = False) -> Dict[str, Any]:
         """高德市内/驾车路线真源实现（geocode + get_route + 字段映射）。
 
         ``origin_city`` / ``dest_city``：城际回退用（两端各自城市名限定编码，
         防 30001）；None 时退化为统一 ``city``（市内默认行为）。
+        ``require_same_city``（十一节）：市内路线全国兜底做城市归属校验。
         """
         if origin_city is None:
             origin_city = city
@@ -349,10 +407,14 @@ class MapToolLive(MapTool):
         # 地理编码：地址 → 坐标（限定城市，避免同名歧义；跨城场景自动全国搜索兜底）；
         # "lng,lat" 坐标直连跳过编码
         origin_coord: Tuple[float, float] = _resolve_coord_fallback(
-            origin, origin_city, self._client.geocode
+            origin, origin_city, self._client.geocode,
+            geocode_detail=self._client.geocode_detail,
+            require_same_city=require_same_city,
         )
         dest_coord: Tuple[float, float] = _resolve_coord_fallback(
-            destination, dest_city, self._client.geocode
+            destination, dest_city, self._client.geocode,
+            geocode_detail=self._client.geocode_detail,
+            require_same_city=require_same_city,
         )
 
         # 路线规划
