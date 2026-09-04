@@ -367,29 +367,47 @@ class LLMClient:
                         )[:8000],
                     })
                 tool_trace.append({"round": tool_rounds, "calls": executed})
-                # P5.6-S2：每批 tool 结果后强制审查轮（可选开启）
+                # P5.6-S2 / 9.4 审查轮（可选开启）：
+                # - 成本控制：整批都是结构化 error（服务端明确说不行、无"常识
+                #   合理性"可审）→ 跳过该批审查（不额外花一次完整 LLM 调用）；
+                # - 降级：审查是增强能力——审查轮 LLM 失败绝不拖垮主线，记
+                #   warning 后按"无审查"继续（与 scenic_search_planner
+                #   「失败→None+warning」同哲学，P5.5 设计意图的落实）。
                 if review_schema is not None:
-                    review = self._request_review(
-                        conversation, review_schema, max_retries
+                    results_only = [call["result"] for call in executed]
+                    all_service_errors = bool(results_only) and all(
+                        isinstance(r, dict) and r.get("status") == "error"
+                        for r in results_only
                     )
-                    reviews.append({
-                        "round": tool_rounds,
-                        "tools": [call["name"] for call in executed],
-                        "review": review.get("review"),
-                        "reason": review.get("reason"),
-                    })
-                    conversation.append({
-                        "role": "assistant",
-                        "content": f"[审查] {json.dumps(review, ensure_ascii=False)}",
-                    })
-                    conversation.append({
-                        "role": "user",
-                        "content": (
-                            REVIEW_SUSPICIOUS_GUIDE
-                            if review.get("review") == "suspicious"
-                            else REVIEW_OK_GUIDE
-                        ),
-                    })
+                    if not all_service_errors:
+                        try:
+                            review = self._request_review(
+                                conversation, review_schema, max_retries
+                            )
+                        except Exception as exc:  # noqa: BLE001 - 审查失败只降级
+                            logger.warning(
+                                "审查轮失败（%s），降级为无审查继续主线: %s",
+                                type(exc).__name__, exc,
+                            )
+                            continue
+                        reviews.append({
+                            "round": tool_rounds,
+                            "tools": [call["name"] for call in executed],
+                            "review": review.get("review"),
+                            "reason": review.get("reason"),
+                        })
+                        conversation.append({
+                            "role": "assistant",
+                            "content": f"[审查] {json.dumps(review, ensure_ascii=False)}",
+                        })
+                        conversation.append({
+                            "role": "user",
+                            "content": (
+                                REVIEW_SUSPICIOUS_GUIDE
+                                if review.get("review") == "suspicious"
+                                else REVIEW_OK_GUIDE
+                            ),
+                        })
                 continue
 
             if not expect_json:

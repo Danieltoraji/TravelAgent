@@ -41,6 +41,28 @@ SYNC_FILES = [
     "tool_specs.py",
 ]
 
+# 9.4（P5.6/P5.7 后补）：call_llm 编排层文件也纳入内容级漂移守卫——
+# ``test_ab_no_stale_files`` 的 rglob 只查「多了/少了文件」，查不到内容漂移；
+# chat / 技能层 / 审查轮 / 搜索计划 等文件此前只有文件名级保护（连续多轮提醒的缺口）。
+SYNC_FILES_CALL_LLM = [
+    # P5.1 chat 编排回 A
+    "b_chat_hook.py",
+    "chat_intents.py",
+    # P5.2/P5.6 技能层 + 审查轮（BaseClient）
+    "planner_agent.py",
+    "llm_clients/BaseClient.py",
+    "skill_specs.py",
+    "skill_runner.py",
+    # 9.2 十二节 A / P5.7 候选池搜索计划 + 多中心
+    "scenic_search_planner.py",
+    # P4 拆 Hook 产物（mixin 子目录；内容也守卫）
+    "b_planner_hook.py",
+    "planner_parts/trip_segments.py",
+    "planner_parts/restaurants.py",
+    "planner_parts/hotels.py",
+    "planner_parts/data_source.py",
+]
+
 
 def _norm(text: bytes) -> bytes:
     return text.replace(b"\r\n", b"\n")
@@ -56,6 +78,27 @@ def test_ab_core_files_in_sync():
         b_data = _norm(b_path.read_bytes())
         assert a_data == b_data, (
             f"A/B 漂移: {name}\n"
+            f"  A: {a_path}\n  B: {b_path}\n"
+            "请以 A 主目录为唯一编辑源，重新同步 a_side。"
+        )
+
+
+def test_ab_call_llm_files_in_sync():
+    """9.4：call_llm 编排层（chat/技能/审查/搜索计划/planner_parts）内容级守卫。
+
+    与 data_transmission 同语义：内容漂移即失败。覆盖
+    ``b_chat_hook / chat_intents / planner_agent / BaseClient / skill_specs /
+    skill_runner / scenic_search_planner / b_planner_hook / planner_parts/*``。
+    """
+    for name in SYNC_FILES_CALL_LLM:
+        a_path = _A_ROOT / "call_llm" / name
+        b_path = _B_ROOT / "a_side" / "call_llm" / name
+        assert a_path.is_file(), f"A 侧缺失: {a_path}"
+        assert b_path.is_file(), f"B 侧缺失（未同步）: {b_path}"
+        a_data = _norm(a_path.read_bytes())
+        b_data = _norm(b_path.read_bytes())
+        assert a_data == b_data, (
+            f"A/B 漂移: call_llm/{name}\n"
             f"  A: {a_path}\n  B: {b_path}\n"
             "请以 A 主目录为唯一编辑源，重新同步 a_side。"
         )
