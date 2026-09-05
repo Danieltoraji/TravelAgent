@@ -418,12 +418,15 @@ def _refine_outbound_arrival(
     seg: Dict[str, Any],
     station_to_hotel: Callable[[str], Optional[int]],
     hotel_name: str,
+    departure_time_minutes: Optional[int] = None,
 ) -> bool:
     """到达侧站对精修（十三节阶段2）：outbound 最后一程 intercity 在真源候选
     里重选到达班次，目标 = **最早到酒店**（班次到达 + 站→酒店实测）。
 
-    - 硬约束：班次到达 ≤ 当前骨架到达（规划用旧到达定 Day1，晚到会击穿已排
-      行程）；多段链须满足与前段的接续 gap（用户拍板缓冲口径）；
+    - 硬约束：**班次发车 ≥ departure_time（用户从家出发时刻，rv8 复验拍板
+      补入——缺失会选中 00:22 过夜车"最早到酒店"）**；班次到达 ≤ 当前骨架
+      到达（规划用旧到达定 Day1，晚到会击穿已排行程）；多段链须满足与前段
+      的接续 gap（用户拍板缓冲口径）；
     - 实测不到「站→酒店」的候选不参与比较（防假赢）；当前站也测不到 → 保守
       不动（无比较基线）；
     - 选中更优 → 写回最后一程（service_no/发到时刻/站对/费用，镜像 realize）
@@ -465,6 +468,8 @@ def _refine_outbound_arrival(
         arr = _hhmm_to_minutes_loose(cand.get("arrive_time"))
         if dep is None or arr is None or arr < dep:
             continue
+        if departure_time_minutes is not None and dep < departure_time_minutes:
+            continue  # 发车约束：不得早于用户从家出发的时刻（rv8：00:22 过夜车）
         if arr > current_arr:  # 骨架约束：到达不晚于现值
             continue
         st = _candidate_station(cand, "to_airport_name", "to_station", "to_airport")
@@ -1068,6 +1073,9 @@ class TripSegmentAttacher:
         hotel_name = str(hotel.get("hotel_name") or hotel.get("name") or "酒店")
         content = self.requirement.get("content") or {}
         city = (content.get("destination") or "").strip()
+        departure_time_minutes = _hhmm_to_minutes_loose(
+            (content.get("travel_schedule") or {}).get("departure_time")
+        )
         hotel_coord = f"{lng},{lat}"  # 高德坐标口径 lng,lat
         cache: Dict[Tuple[str, str], Optional[int]] = {}
 
@@ -1108,7 +1116,10 @@ class TripSegmentAttacher:
                 continue
             kind = (seg.get("details") or {}).get("kind")
             if kind == "outbound":
-                changed |= _refine_outbound_arrival(seg, station_to_hotel, hotel_name)
+                changed |= _refine_outbound_arrival(
+                    seg, station_to_hotel, hotel_name,
+                    departure_time_minutes=departure_time_minutes,
+                )
             elif kind == "return":
                 changed |= _fill_return_head(seg, hotel_to_station, hotel_name)
         if changed:
