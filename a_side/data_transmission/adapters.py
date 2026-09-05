@@ -392,14 +392,20 @@ def _pick_representative(
     """从真源候选行里选代表边 + 透传全量 candidates。
 
     代表策略（无 priority 上下文，取折中口径）：
-    - 时长 = 候选里**最短**（BFS speed/earliest 决策口径）；
-    - 价格 = 候选里**最低**（cost 决策与预算口径都想要最低价）；
-    - candidates 全量透传（展示 + 未来班次级 earliest 优化用）。
+    - **站对聚类（十二节缺陷1，2026-09-05）**：12306 子票含全部中途站对
+      （北京→天津 292 张票拆出 北京南→天津 78 条 + 亦庄→武清 16min 碎片段
+      等），代表边若全局取「最短行」会命中碎片段，站对元数据与 local 腿全被
+      带偏——先按 (from_station, to_station) 聚类，选**车次最多**的站对
+      （频次 = 主干度；有站对优先于缺站对），站对内再取折中；
+    - 时长 = 站对内**最短**（BFS speed/earliest 决策口径）；
+    - 价格 = 站对内**最低**（cost 决策与预算口径都想要最低价）；
+    - candidates 全量透传（展示 + 班次级精排 `_realize_outbound_with_schedule`
+      从全量候选里按时刻选班，不受站对聚类限制）。
     行字段缺失（时长不可解析 / 无航班号）逐条跳过。
     """
     if not rows:
         return None
-    parsed: List[Tuple[float, float, Dict[str, Any]]] = []
+    parsed: List[Tuple[float, float, str, str, Dict[str, Any]]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -407,16 +413,30 @@ def _pick_representative(
         if minutes is None:
             continue
         price = _as_float(row.get(price_key))
-        parsed.append((minutes, price, row))
+        st_from = _as_str(row.get("from_station") or row.get("from_airport"))
+        st_to = _as_str(row.get("to_station") or row.get("to_airport"))
+        parsed.append((minutes, price, st_from, st_to, row))
     if not parsed:
         return None
-    shortest = min(parsed, key=lambda item: item[0])
-    cheapest = min(parsed, key=lambda item: (item[1], item[0]))
+    groups: Dict[Tuple[str, str], List[Tuple[float, float, str, str, Dict[str, Any]]]] = {}
+    for item in parsed:
+        groups.setdefault((item[2], item[3]), []).append(item)
+    (st_from, st_to), pool = min(
+        groups.items(),
+        key=lambda kv: (
+            0 if kv[0] != ("", "") else 1,  # 有站对的组优先于缺站对
+            -len(kv[1]),  # 车次最多 = 主干站对
+            min(item[0] for item in kv[1]),  # 并列取最短
+            min((item[1] for item in kv[1] if item[1] > 0), default=0.0),  # 再取最低价
+        ),
+    )
+    shortest = min(pool, key=lambda item: item[0])
     best_minutes = int(shortest[0])
-    best_price = cheapest[1] if cheapest[1] > 0 else shortest[1]
-    best_row = shortest[2]
+    best_row = shortest[4]
+    priced = [item[1] for item in pool if item[1] > 0]
+    best_price = min(priced) if priced else _as_float(best_row.get(price_key))
     candidates: List[Dict[str, Any]] = []
-    for minutes, price, row in parsed:
+    for minutes, price, _sf, _st, row in parsed:
         candidate = dict(row)
         candidate.setdefault("transport_minutes", int(minutes))
         candidate.setdefault("cost_per_person", price)
@@ -427,8 +447,8 @@ def _pick_representative(
         transport_minutes=best_minutes,
         mode=mode,
         cost_per_person=best_price or _as_float(best_row.get(price_key)),
-        from_station=_as_str(best_row.get("from_station") or best_row.get("from_airport")),
-        to_station=_as_str(best_row.get("to_station") or best_row.get("to_airport")),
+        from_station=st_from,
+        to_station=st_to,
         source=Source.LIVE.value,
         candidates=tuple(candidates),
     )

@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _REPO_ROOT not in sys.path:
@@ -31,6 +31,7 @@ import logging
 logger = logging.getLogger("call_llm.planner_parts.trip_segments")
 
 from data_transmission.b_contract import _as_date  # noqa: E402
+from data_transmission.city_travel import mode_text  # noqa: E402
 from data_transmission.enums import Source  # noqa: E402
 from data_transmission.leg_connection import (  # noqa: E402
     lookup_transfer_minutes,
@@ -436,6 +437,7 @@ def _realize_outbound_with_schedule(
     segments: List[Dict[str, Any]],
     departure_time_minutes: Optional[int] = None,
     priority: Optional[str] = None,
+    local_route_fn: Optional[Callable[[str, str], Optional[int]]] = None,
 ) -> List[Dict[str, Any]]:
     """去程段按真实班次精排（镜像 ``_rebuild_return_with_schedule`` 的去程方向）。
 
@@ -443,6 +445,16 @@ def _realize_outbound_with_schedule(
     - 选中 → 逐 intercity 腿写回 ``service_no/depart_time/arrive_time/
       duration_min``（同一完整班次，I-05：时刻/历时/价格来自同一行，绝不拼
       不同班次的字段）；候选列表原样保留（C 端可展示备选班次）；
+    - **站对元数据同步（十二节缺陷2，2026-09-05）**：精排从全量候选选班，
+      选中班次的乘车站可能不同于组合阶段代表边（清华紫荆→天津实测：代表边
+      亦庄→武清，实际 ride G981 北京南→天津南）→ 同步写回 leg
+      ``from/to/from_station/to_station/cost_per_person``、段 details
+      ``from_station/to_station``、末条 local 腿出发站，非联运段名按真实
+      站对重建——展示与实际 ride 一致；
+    - **首条 local 腿重指真实乘车站（两遍法）**：乘车站变化时用
+      ``local_route_fn`` 重测「家→真实乘车站」，测到 → 更新腿 + 以新市内
+      分钟重选组合（保证「首班 ≥ 出发 + 市内实测」约束对真实乘车站成立）；
+      重测失败或新约束下无可行组合 → 原段推演兜底（不谎报能赶上）；
     - 段 ``end_minutes`` = 末腿真实到达 → ``_first_day_start_from_segments``
       自动拿到真实到达（Day1 起点联动，9.1 管道零改动受益）；
     - ``start_minutes``：departure_time 给定 → 保持「从家出发」语义（出发到
@@ -473,11 +485,57 @@ def _realize_outbound_with_schedule(
     if combo is None:
         return segments
 
+    legs = (outbound_seg.get("details") or {}).get("legs") or []
     intercity = [
-        leg
-        for leg in (outbound_seg.get("details") or {}).get("legs") or []
-        if isinstance(leg, dict) and leg.get("kind") == "intercity"
+        leg for leg in legs if isinstance(leg, dict) and leg.get("kind") == "intercity"
     ]
+
+    def _cand_station(cand: Dict[str, Any], *keys: str) -> str:
+        for key in keys:
+            value = str(cand.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    # 两遍法（≤2 轮收敛）：选中首班乘车站 ≠ 首条 local 目的地 → 重测后重选，
+    # 保证约束与展示都对齐真实乘车站（local_route_fn 有 (from,to) 缓存，
+    # 同站对不重复打高德）。
+    first_local = first_leg if (
+        isinstance(first_leg, dict) and first_leg.get("kind") == "local"
+    ) else None
+    for _ in range(2):
+        first_cand = next((c for c in combo["choices"] if c is not None), None)
+        if first_cand is None or first_local is None:
+            break
+        boarding = _cand_station(first_cand, "from_station", "from_airport")
+        if not boarding or boarding == first_local.get("to"):
+            break
+        measured: Optional[int] = None
+        origin_place = str(first_local.get("from") or "").strip()
+        if local_route_fn is not None and origin_place:
+            try:
+                measured = local_route_fn(origin_place, boarding)
+            except Exception:  # noqa: BLE001  市内重测失败 → 兜底分支
+                measured = None
+        if not (isinstance(measured, (int, float)) and measured > 0):
+            logger.warning(
+                "去程精排：首班乘车站 %s 与首条 local 目的地 %s 不一致且重测失败"
+                "→ 原段推演兜底（不谎报能赶上）",
+                boarding, first_local.get("to"),
+            )
+            return segments
+        first_local["to"] = boarding
+        first_local["duration_min"] = int(measured)
+        first_local["mode"] = "driving"
+        first_local["source"] = "live"
+        first_local["note"] = f"市内衔接（高德驾车实测 {int(measured)}min）"
+        combo = _select_outbound_combination(
+            outbound_seg, departure_time_minutes, priority,
+            local_departure_minutes=int(measured),
+        )
+        if combo is None:
+            return segments  # 真实市内时间下无可行组合 → 保持原段（不谎报）
+
     for leg, cand in zip(intercity, combo["choices"]):
         if cand is None:
             continue
@@ -492,6 +550,27 @@ def _realize_outbound_with_schedule(
         leg["arrive_time"] = cand.get("arrive_time")
         leg["duration_min"] = arr - dep  # 真实在途（同班次行内推导，不拼字段）
         leg["outbound_realized"] = True
+        # 站对/费用同步（十二节缺陷2）：展示站对与实际 ride 一致
+        st_from = _cand_station(cand, "from_station", "from_airport")
+        st_to = _cand_station(cand, "to_station", "to_airport")
+        if st_from:
+            leg["from"] = st_from
+            leg["from_station"] = st_from
+        if st_to:
+            leg["to"] = st_to
+            leg["to_station"] = st_to
+        price = cand.get("price") or cand.get("cost_per_person")
+        if isinstance(price, (int, float)) and price > 0:
+            leg["cost_per_person"] = float(price)
+    # 末条 local 腿出发站对齐真实到达站（占位腿，只改名不重测）
+    realized = [c for c in combo["choices"] if c is not None]
+    if realized:
+        last_st_to = _cand_station(realized[-1], "to_station", "to_airport")
+        for leg in reversed(legs):
+            if isinstance(leg, dict) and leg.get("kind") == "local":
+                if last_st_to:
+                    leg["from"] = last_st_to
+                break
 
     dep_first = combo["dep_first"]
     arr_last = combo["arr_last"]
@@ -505,6 +584,17 @@ def _realize_outbound_with_schedule(
     if combo["cost"] > 0:
         details["cost_per_person"] = round(combo["cost"], 2)
     details["outbound_realized"] = True
+    # 段级站对 + 非联运段名同步真实站对（联运段名 = 城市级 via，保持不变）
+    realized_first = _cand_station(realized[0], "from_station", "from_airport") if realized else ""
+    realized_last = _cand_station(realized[-1], "to_station", "to_airport") if realized else ""
+    if realized_first:
+        details["from_station"] = realized_first
+    if realized_last:
+        details["to_station"] = realized_last
+    if not details.get("stops") and realized_first and realized_last:
+        outbound_seg["name"] = (
+            f"{realized_first} → {realized_last}（{mode_text(str(details.get('mode') or ''))}）"
+        )
     outbound_seg["details"] = details
     return segments
 
@@ -733,7 +823,9 @@ class TripSegmentAttacher:
             (content.get("travel_schedule") or {}).get("departure_time")
         )
         priority = (content.get("preferences") or {}).get("travel_priority") or None
-        return _realize_outbound_with_schedule(segments, dep_min, priority)
+        return _realize_outbound_with_schedule(
+            segments, dep_min, priority, local_route_fn=self._local_route_fn()
+        )
 
     def _inject_trip_segments(
         self, plan: Dict[str, Any], segments: List[Dict[str, Any]]
