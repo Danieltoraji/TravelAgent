@@ -44,6 +44,7 @@ from data_transmission.adapters import (  # noqa: F401  re-export（历史 impor
     _str_list,
     _train_candidates_from_payload,
     normalize_live_spot,
+    pick_representative_edge,
 )
 from data_transmission.city_travel import CityTravelEdge
 from data_transmission.enums import Mode, Source
@@ -903,6 +904,17 @@ def make_live_train_trip_provider(tool_provider: Any, date: str = ""):
         payload = _tool_payload(result)
         if not isinstance(payload, dict):
             return None
+        # 主站对聚类（十二节补漏，2026-09-05）：payload["trains"] 含全部中途
+        # 站对子票，B 侧 payload 顶层 from/to 是「全局最短行」（16min 碎片段
+        # 武清→亦庄 曾据此成为代表边）——与 train_ticket 同口径按站对聚类选
+        # 主干站对（车次最多），候选全量保留供精排。
+        rows = payload.get("trains")
+        if isinstance(rows, list) and rows:
+            edge = pick_representative_edge(
+                rows, "duration", "price", Mode.TRAIN.value, origin, destination
+            )
+            if edge is not None:
+                return edge
         try:
             minutes = int(payload.get("transport_minutes"))
         except (TypeError, ValueError):

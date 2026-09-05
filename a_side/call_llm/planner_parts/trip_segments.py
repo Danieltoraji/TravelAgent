@@ -110,24 +110,25 @@ def _find_return_segment(
     return None
 
 
-def _intercity_leg_candidates(return_seg: Dict[str, Any]) -> List[Tuple[int, List[Dict[str, Any]]]]:
-    """return 段 legs 里各 intercity 段的真源候选 → [(前缀耗时, 候选列表), …]。
+def _intercity_leg_candidates(return_seg: Dict[str, Any]) -> List[Tuple[int, List[Dict[str, Any]], Dict[str, Any]]]:
+    """return 段 legs 里各 intercity 段的真源候选 → [(前缀耗时, 候选列表, leg), …]。
 
     - 候选：train: code/depart_time/arrive_time/price…；air:
       flight_no/depart_time/arrive_time…；
     - 前缀耗时 = 该段之前所有 intercity 段的 (duration_min + buffer_min) 之和
       （如 北京飞南宁 3h10+90 值机缓冲 后接 南宁高铁段 → 高铁段前缀 280min），
       用于把「段内发车时刻」倒推成「整链起点 = 离开目的地时刻」；
-    - 候选为空的段（如 estimated 航段无班次）跳过——选班只在实际有班次的段上发生。
+    - 候选为空的段（如 estimated 航段无班次）跳过——选班只在实际有班次的段上
+      发生（leg 引用随候选返回，供精排写回 service_no/站对）。
     """
-    out: List[Tuple[int, List[Dict[str, Any]]]] = []
+    out: List[Tuple[int, List[Dict[str, Any]], Dict[str, Any]]] = []
     prefix = 0
     for leg in (return_seg.get("details") or {}).get("legs") or []:
         if leg.get("kind") != "intercity":
             continue
         cands = [c for c in (leg.get("candidates") or []) if isinstance(c, dict)]
         if cands:
-            out.append((prefix, cands))
+            out.append((prefix, cands, leg))
         dur = leg.get("duration_min") or 0
         buf = leg.get("buffer_min") or 0
         try:
@@ -157,7 +158,7 @@ def _select_return_combination(
     earliest_departure: int,
     transfer_buffer_minutes: int = 60,
     local_arrive_minutes: int = 0,
-) -> Optional[Tuple[int, int, float]]:
+) -> Optional[Dict[str, Any]]:
     """按「到家 ≤ return_time」从真源候选选「出发 ≥ earliest 的最晚班次组合」。
 
     真源候选选「出发 ≥ earliest 的最晚班次组合」。
@@ -174,7 +175,10 @@ def _select_return_combination(
     - **到家语义升级（2026-09-04）**：``local_arrive_minutes`` = 返程末条 local
       腿（末站→家）的高德实测分钟——「到家」= 末腿到达 + 市内真实时间，约束
       从「站到 ≤ return_time」收紧为「真到家 ≤ return_time」；
-    - 返回 (整链起点分钟, 到家分钟, 组合票价和)；无可行 → None。
+    - 返回 ``{"dep_first": 整链起点分钟, "arr_last": 到家站到分钟,
+      "cost": 组合票价和, "choices": [逐候选腿选中的候选 dict 或 None]}``；
+      无可行 → None（choices 与 ``_intercity_leg_candidates`` 的候选腿一一对应，
+      供精排写回 service_no/站对）。
     """
     per_leg = _intercity_leg_candidates(return_seg)
     if not per_leg:
@@ -182,7 +186,7 @@ def _select_return_combination(
     return_time = return_seg.get("end_minutes")
     if not isinstance(return_time, (int, float)) or return_time <= 0:
         return None
-    best: Optional[Tuple[int, int, float]] = None
+    best: Optional[Dict[str, Any]] = None
 
     def walk(
         leg_index: int,
@@ -191,15 +195,21 @@ def _select_return_combination(
         arr_last: Optional[int],
         cost: float,
         prefix: int,
+        choices: List[Optional[Dict[str, Any]]],
     ) -> None:
         nonlocal best
         if leg_index == len(per_leg):
             if (
                 dep_first_chain is not None
                 and dep_first_chain >= earliest_departure
-                and (best is None or dep_first_chain > best[0])
+                and (best is None or dep_first_chain > best["dep_first"])
             ):
-                best = (dep_first_chain, int(arr_last or 0), cost)
+                best = {
+                    "dep_first": int(dep_first_chain),
+                    "arr_last": int(arr_last or 0),
+                    "cost": cost,
+                    "choices": list(choices),
+                }
             return
         is_last = leg_index == len(per_leg) - 1
         for cand in per_leg[leg_index][1]:
@@ -227,9 +237,10 @@ def _select_return_combination(
                 cost + (float(price) if isinstance(price, (int, float)) else 0.0),
                 per_leg[leg_index + 1][0]
                 if leg_index + 1 < len(per_leg) else 0,
+                choices + [cand],
             )
 
-    walk(0, None, None, None, 0.0, per_leg[0][0])
+    walk(0, None, None, None, 0.0, per_leg[0][0], [])
     return best
 
 
@@ -279,7 +290,7 @@ def _windowed_last_day_end(
     if return_seg is not None:
         combo = _select_return_combination(return_seg, earliest_departure=0)
         if combo is not None:
-            dep_min = combo[0]
+            dep_min = combo["dep_first"]
             return max(9 * 60, dep_min - buffer_minutes)
     return _last_day_end_from_segments(segments, buffer_minutes)
 
@@ -330,7 +341,9 @@ def _rebuild_return_with_schedule(
     )
     if combo is None:
         return segments
-    dep_min, arr_min, cost = combo
+    dep_min = combo["dep_first"]
+    arr_min = combo["arr_last"]
+    cost = combo["cost"]
     return_seg["start_minutes"] = dep_min
     return_seg["end_minutes"] = arr_min + local_arrive  # 真到家（含市内实测）
     return_seg["duration_minutes"] = return_seg["end_minutes"] - dep_min
@@ -338,6 +351,51 @@ def _rebuild_return_with_schedule(
     if cost > 0:
         details["cost_per_person"] = round(cost, 2)
         details["source"] = Source.LIVE.value
+    # 精排写回同步（2026-09-05，镜像去程 realize）：选中候选的
+    # service_no/发到时刻/站对/费用写回 legs——此前只改段级时刻，C 端看不到
+    # 「坐的是哪班机/哪趟车」（与去程不对称，rv7 复验实锤）
+    ret_legs = details.get("legs") or []
+    ret_intercity = [
+        leg for leg in ret_legs
+        if isinstance(leg, dict) and leg.get("kind") == "intercity"
+    ]
+    for leg, cand in zip(ret_intercity, combo["choices"]):
+        if cand is None:
+            continue
+        dep = _hhmm_to_minutes_loose(cand.get("depart_time"))
+        arr = _hhmm_to_minutes_loose(cand.get("arrive_time"))
+        if dep is None or arr is None:
+            continue
+        leg["service_no"] = str(
+            cand.get("code") or cand.get("flight_no") or leg.get("service_no") or ""
+        )
+        leg["depart_time"] = cand.get("depart_time")
+        leg["arrive_time"] = cand.get("arrive_time")
+        leg["duration_min"] = arr - dep  # 真实在途（同班次行内推导，不拼字段）
+        leg["return_realized"] = True
+        st_from = _candidate_station(cand, "from_station", "from_airport")
+        st_to = _candidate_station(cand, "to_station", "to_airport")
+        if st_from:
+            leg["from"] = st_from
+            leg["from_station"] = st_from
+        if st_to:
+            leg["to"] = st_to
+            leg["to_station"] = st_to
+        price = cand.get("price") or cand.get("cost_per_person")
+        if isinstance(price, (int, float)) and price > 0:
+            leg["cost_per_person"] = float(price)
+    realized = [c for c in combo["choices"] if c is not None]
+    if realized:
+        first_st = _candidate_station(realized[0], "from_station", "from_airport")
+        last_st = _candidate_station(realized[-1], "to_station", "to_airport")
+        if first_st:
+            details["from_station"] = first_st
+        if last_st:
+            details["to_station"] = last_st
+        if not details.get("stops") and first_st and last_st and details.get("mode"):
+            return_seg["name"] = (
+                f"{first_st} → {last_st}（{mode_text(str(details.get('mode') or ''))}）"
+            )
     return_seg["details"] = details
     return segments
 
@@ -345,6 +403,178 @@ def _rebuild_return_with_schedule(
 # ---------------------------------------------------------------------------
 # 去程班次精排（2026-09-04，镜像 _select_return_combination / 9.2b 返程精排）
 # ---------------------------------------------------------------------------
+
+
+def _candidate_station(cand: Dict[str, Any], *keys: str) -> str:
+    """候选行取站点名（train: from_station/to_station；air: from_airport/…）。"""
+    for key in keys:
+        value = str(cand.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _refine_outbound_arrival(
+    seg: Dict[str, Any],
+    station_to_hotel: Callable[[str], Optional[int]],
+    hotel_name: str,
+) -> bool:
+    """到达侧站对精修（十三节阶段2）：outbound 最后一程 intercity 在真源候选
+    里重选到达班次，目标 = **最早到酒店**（班次到达 + 站→酒店实测）。
+
+    - 硬约束：班次到达 ≤ 当前骨架到达（规划用旧到达定 Day1，晚到会击穿已排
+      行程）；多段链须满足与前段的接续 gap（用户拍板缓冲口径）；
+    - 实测不到「站→酒店」的候选不参与比较（防假赢）；当前站也测不到 → 保守
+      不动（无比较基线）；
+    - 选中更优 → 写回最后一程（service_no/发到时刻/站对/费用，镜像 realize）
+      + 段级站对/段名/end 联动；
+    - 无论是否换站，尾条 local 腿（到达站→酒店）尽量用当前站实测填充
+      （顺带消灭末腿占位；实测失败保持占位如实）。返回是否改动了段。
+    """
+    details = seg.get("details") or {}
+    legs = details.get("legs") or []
+    intercity = [
+        leg for leg in legs if isinstance(leg, dict) and leg.get("kind") == "intercity"
+    ]
+    if not intercity:
+        return False
+    last = intercity[-1]
+    cands = [c for c in (last.get("candidates") or []) if isinstance(c, dict)]
+    if not cands:
+        return False
+    current_station = _candidate_station(
+        last, "to_airport_name", "to_station", "to_airport"
+    )
+    current_arr = _hhmm_to_minutes_loose(last.get("arrive_time"))
+    if not current_station or current_arr is None:
+        return False  # 未 realize（无真实班次）→ 精修无从谈起
+    current_hotel_min = station_to_hotel(current_station)
+    if not (isinstance(current_hotel_min, (int, float)) and current_hotel_min > 0):
+        return False  # 现站测不到 → 无比较基线，保守不动
+    prev_arrive: Optional[int] = None
+    prev_mode: Optional[str] = None
+    prev_to: Optional[str] = None
+    if len(intercity) >= 2:
+        prev = intercity[-2]
+        prev_arrive = _hhmm_to_minutes_loose(prev.get("arrive_time"))
+        prev_mode = str(prev.get("mode") or "") or None
+        prev_to = _candidate_station(prev, "to_station") or str(prev.get("to") or "")
+    best: Optional[Tuple[int, Dict[str, Any], int, str, int]] = None
+    for cand in cands:
+        dep = _hhmm_to_minutes_loose(cand.get("depart_time"))
+        arr = _hhmm_to_minutes_loose(cand.get("arrive_time"))
+        if dep is None or arr is None or arr < dep:
+            continue
+        if arr > current_arr:  # 骨架约束：到达不晚于现值
+            continue
+        st = _candidate_station(cand, "to_airport_name", "to_station", "to_airport")
+        if not st:
+            continue
+        if prev_arrive is not None:
+            gap = required_gap_minutes(
+                prev_mode or "",
+                str(last.get("mode") or ""),
+                lookup_transfer_minutes(
+                    prev_to or "",
+                    _candidate_station(cand, "from_station", "from_airport"),
+                ),
+            )
+            if dep < prev_arrive + gap:
+                continue  # 接续不可行
+        m = station_to_hotel(st)
+        if not (isinstance(m, (int, float)) and m > 0):
+            continue  # 实测不到的站不参与比较（防假赢）
+        key = arr + int(m)
+        if best is None or key < best[0]:
+            best = (key, cand, int(m), st, arr)
+    current_key = current_arr + int(current_hotel_min)
+    switched = False
+    if best is not None and best[0] < current_key:
+        _, cand, _m, st, arr = best
+        dep = _hhmm_to_minutes_loose(cand.get("depart_time"))
+        last["service_no"] = str(
+            cand.get("code") or cand.get("flight_no") or last.get("service_no") or ""
+        )
+        last["depart_time"] = cand.get("depart_time")
+        last["arrive_time"] = cand.get("arrive_time")
+        last["duration_min"] = arr - dep
+        last["outbound_realized"] = True
+        st_from = _candidate_station(
+            cand, "from_airport_name", "from_station", "from_airport"
+        )
+        if st_from:
+            last["from"] = st_from
+            last["from_station"] = st_from
+        last["to"] = st
+        last["to_station"] = st
+        price = cand.get("price") or cand.get("cost_per_person")
+        if isinstance(price, (int, float)) and price > 0:
+            last["cost_per_person"] = float(price)
+        details["to_station"] = st
+        if not details.get("stops") and details.get("mode"):
+            from_st = str(details.get("from_station") or last.get("from") or "")
+            if from_st:
+                seg["name"] = (
+                    f"{from_st} → {st}（{mode_text(str(details.get('mode') or ''))}）"
+                )
+        start = seg.get("start_minutes")
+        seg["end_minutes"] = max(int(start) if isinstance(start, (int, float)) else 0, arr)
+        seg["duration_minutes"] = max(
+            0, int(seg["end_minutes"]) - int(seg.get("start_minutes") or 0)
+        )
+        switched = True
+    final_station = _candidate_station(
+        last, "to_airport_name", "to_station", "to_airport"
+    )
+    final_min = station_to_hotel(final_station)
+    tail = legs[-1] if legs and isinstance(legs[-1], dict) and legs[-1].get("kind") == "local" else None
+    if tail is None or not final_station:
+        return switched
+    if not (isinstance(final_min, (int, float)) and final_min > 0):
+        return switched  # 实测失败 → 尾腿保持占位（如实）
+    tail["from"] = final_station
+    tail["to"] = hotel_name
+    tail["duration_min"] = int(final_min)
+    tail["mode"] = "driving"
+    tail["source"] = "live"
+    tail["note"] = f"市内衔接（高德驾车实测 {int(final_min)}min）"
+    return switched
+
+
+def _fill_return_head(
+    seg: Dict[str, Any],
+    hotel_to_station: Callable[[str], Optional[int]],
+    hotel_name: str,
+) -> bool:
+    """出发侧（return 首条 local 腿）：酒店→出发站实测分钟填充（出发站选择
+    不影响「真到家 ≤ return_time」可行性，v1 仅补实测不重选）。"""
+    details = seg.get("details") or {}
+    legs = details.get("legs") or []
+    intercity = [
+        leg for leg in legs if isinstance(leg, dict) and leg.get("kind") == "intercity"
+    ]
+    if not intercity:
+        return False
+    boarding = _candidate_station(
+        intercity[0], "from_airport_name", "from_station", "from_airport"
+    ) or str(intercity[0].get("from") or "")
+    head = (
+        legs[0]
+        if legs and isinstance(legs[0], dict) and legs[0].get("kind") == "local"
+        else None
+    )
+    if not boarding or head is None:
+        return False
+    m = hotel_to_station(boarding)
+    if not (isinstance(m, (int, float)) and m > 0):
+        return False  # 实测失败 → 保持占位（如实）
+    head["from"] = hotel_name
+    head["to"] = boarding
+    head["duration_min"] = int(m)
+    head["mode"] = "driving"
+    head["source"] = "live"
+    head["note"] = f"市内衔接（高德驾车实测 {int(m)}min）"
+    return True
 
 
 def _select_outbound_combination(
@@ -493,7 +723,9 @@ def _realize_outbound_with_schedule(
     - **首条 local 腿重指真实乘车站（两遍法）**：乘车站变化时用
       ``local_route_fn`` 重测「家→真实乘车站」，测到 → 更新腿 + 以新市内
       分钟重选组合（保证「首班 ≥ 出发 + 市内实测」约束对真实乘车站成立）；
-      重测失败或新约束下无可行组合 → 原段推演兜底（不谎报能赶上）；
+      重测失败 → 首条 local 腿降级占位 + 按「首班 ≥ departure_time」兜底
+      口径照常 realize（方案 a，rv6 复验拍板）；兜底口径下无可行组合才整段
+      推演；
     - 段 ``end_minutes`` = 末腿真实到达 → ``_first_day_start_from_segments``
       自动拿到真实到达（Day1 起点联动，9.1 管道零改动受益）；
     - ``start_minutes``：departure_time 给定 → 保持「从家出发」语义（出发到
@@ -529,13 +761,6 @@ def _realize_outbound_with_schedule(
         leg for leg in legs if isinstance(leg, dict) and leg.get("kind") == "intercity"
     ]
 
-    def _cand_station(cand: Dict[str, Any], *keys: str) -> str:
-        for key in keys:
-            value = str(cand.get(key) or "").strip()
-            if value:
-                return value
-        return ""
-
     # 两遍法（≤2 轮收敛）：选中首班乘车站 ≠ 首条 local 目的地 → 重测后重选，
     # 保证约束与展示都对齐真实乘车站（local_route_fn 有 (from,to) 缓存，
     # 同站对不重复打高德）。
@@ -546,7 +771,7 @@ def _realize_outbound_with_schedule(
         first_cand = next((c for c in combo["choices"] if c is not None), None)
         if first_cand is None or first_local is None:
             break
-        boarding = _cand_station(first_cand, "from_station", "from_airport")
+        boarding = _candidate_station(first_cand, "from_station", "from_airport")
         if not boarding or boarding == first_local.get("to"):
             break
         measured: Optional[int] = None
@@ -554,15 +779,31 @@ def _realize_outbound_with_schedule(
         if local_route_fn is not None and origin_place:
             try:
                 measured = local_route_fn(origin_place, boarding)
-            except Exception:  # noqa: BLE001  市内重测失败 → 兜底分支
+            except Exception:  # noqa: BLE001  市内重测失败 → 方案 a 兜底分支
                 measured = None
         if not (isinstance(measured, (int, float)) and measured > 0):
+            # 方案 a（2026-09-05 rv6 复验拍板）：重测失败 → 首条 local 腿降级
+            # 为占位（如实标注）+ 以「首班 ≥ departure_time」兜底口径照常
+            # realize 真实班次——比整段推演有用（rv6：Z12 锦州南被藏进 13:43
+            # 推演）；市内衔接的可达性由展示层占位如实表达。仅当兜底口径下
+            # 无可行组合才整段推演。
             logger.warning(
                 "去程精排：首班乘车站 %s 与首条 local 目的地 %s 不一致且重测失败"
-                "→ 原段推演兜底（不谎报能赶上）",
+                "→ local 腿降级占位，按「首班 ≥ departure_time」兜底 realize",
                 boarding, first_local.get("to"),
             )
-            return segments
+            first_local["to"] = boarding
+            first_local["duration_min"] = None
+            first_local["mode"] = ""
+            first_local["source"] = ""
+            first_local["note"] = "市内衔接（阶段三 map 真源填充）"
+            combo = _select_outbound_combination(
+                outbound_seg, departure_time_minutes, priority,
+                local_departure_minutes=0,
+            )
+            if combo is None:
+                return segments
+            break
         first_local["to"] = boarding
         first_local["duration_min"] = int(measured)
         first_local["mode"] = "driving"
@@ -590,8 +831,8 @@ def _realize_outbound_with_schedule(
         leg["duration_min"] = arr - dep  # 真实在途（同班次行内推导，不拼字段）
         leg["outbound_realized"] = True
         # 站对/费用同步（十二节缺陷2）：展示站对与实际 ride 一致
-        st_from = _cand_station(cand, "from_station", "from_airport")
-        st_to = _cand_station(cand, "to_station", "to_airport")
+        st_from = _candidate_station(cand, "from_station", "from_airport")
+        st_to = _candidate_station(cand, "to_station", "to_airport")
         if st_from:
             leg["from"] = st_from
             leg["from_station"] = st_from
@@ -604,7 +845,7 @@ def _realize_outbound_with_schedule(
     # 末条 local 腿出发站对齐真实到达站（占位腿，只改名不重测）
     realized = [c for c in combo["choices"] if c is not None]
     if realized:
-        last_st_to = _cand_station(realized[-1], "to_station", "to_airport")
+        last_st_to = _candidate_station(realized[-1], "to_station", "to_airport")
         for leg in reversed(legs):
             if isinstance(leg, dict) and leg.get("kind") == "local":
                 if last_st_to:
@@ -624,8 +865,8 @@ def _realize_outbound_with_schedule(
         details["cost_per_person"] = round(combo["cost"], 2)
     details["outbound_realized"] = True
     # 段级站对 + 非联运段名同步真实站对（联运段名 = 城市级 via，保持不变）
-    realized_first = _cand_station(realized[0], "from_station", "from_airport") if realized else ""
-    realized_last = _cand_station(realized[-1], "to_station", "to_airport") if realized else ""
+    realized_first = _candidate_station(realized[0], "from_station", "from_airport") if realized else ""
+    realized_last = _candidate_station(realized[-1], "to_station", "to_airport") if realized else ""
     if realized_first:
         details["from_station"] = realized_first
     if realized_last:
@@ -792,6 +1033,87 @@ class TripSegmentAttacher:
             return minutes
 
         return fn
+
+    def _refine_intercity_stations(self, plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """城际两阶段·阶段2（十三节，2026-09-05）：酒店已知后的站对精修。
+
+        时机：``_attach_hotels`` 之后、``plan_to_trip_timeline`` 之前——行程
+        依赖城际的是时刻与费用（骨架已在规划前定型），站对级选择放到酒店
+        已知后做，「站→酒店」成本才可见（rv6/rv7：武清/亦庄/锦州南类中间站
+        被时刻/费用口径选中，对酒店位置而言并非最优）。
+
+        - 到达侧：``_refine_outbound_arrival``（最后一程重选 + 尾腿实测填充）；
+        - 出发侧：``_fill_return_head``（返程首条 local 腿酒店→站实测填充）；
+        - 路线实测走 map driving（酒店端坐标直连、车站端站名 geocode 绑目的地
+          城市，(o,d) 缓存；distinct 站 ≤ ~8/方向，符合额度纪律）；
+        - 无酒店坐标 / 无 tool_provider → 原段返回（不阻断）。
+        """
+        segments = plan.get("trip_segments") or []
+        if not segments:
+            return segments
+        provider = getattr(self, "_tool_provider", None)
+        if provider is None:
+            return segments
+        acc = plan.get("accommodation") or {}
+        hotel = acc.get("constant_hotel") or ((acc.get("bookings") or [None])[0])
+        if not isinstance(hotel, dict):
+            return segments
+        try:
+            lat = float(hotel.get("lat") or 0.0)
+            lng = float(hotel.get("lng") or 0.0)
+        except (TypeError, ValueError):
+            return segments
+        if lat == 0.0 and lng == 0.0:
+            return segments  # 假池/真源均无坐标 → 精修无从谈起
+        hotel_name = str(hotel.get("hotel_name") or hotel.get("name") or "酒店")
+        content = self.requirement.get("content") or {}
+        city = (content.get("destination") or "").strip()
+        hotel_coord = f"{lng},{lat}"  # 高德坐标口径 lng,lat
+        cache: Dict[Tuple[str, str], Optional[int]] = {}
+
+        def _minutes(origin: str, destination: str) -> Optional[int]:
+            key = (origin, destination)
+            if key in cache:
+                return cache[key]
+            minutes: Optional[int] = None
+            try:
+                from data_transmission.live_data import (
+                    _minutes_from_payload,
+                    _tool_payload,
+                )
+
+                result = provider.call(
+                    "map",
+                    action="route",
+                    mode="driving",
+                    origin=origin,
+                    destination=destination,
+                    city=city or None,
+                )
+                minutes = _minutes_from_payload(_tool_payload(result) or {})
+            except Exception:  # noqa: BLE001  实测失败 → None（不阻断）
+                minutes = None
+            cache[key] = minutes
+            return minutes
+
+        def station_to_hotel(station: str) -> Optional[int]:
+            return _minutes(station, hotel_coord)
+
+        def hotel_to_station(station: str) -> Optional[int]:
+            return _minutes(hotel_coord, station)
+
+        changed = False
+        for seg in segments:
+            if not isinstance(seg, dict) or seg.get("type") != "transport":
+                continue
+            kind = (seg.get("details") or {}).get("kind")
+            if kind == "outbound":
+                changed |= _refine_outbound_arrival(seg, station_to_hotel, hotel_name)
+            elif kind == "return":
+                changed |= _fill_return_head(seg, hotel_to_station, hotel_name)
+        if changed:
+            logger.info("城际站对精修（阶段2）：到达站/市内腿按酒店位置优化")
+        return segments
 
     def _build_trip_segments(self) -> List[Dict[str, Any]]:
         """构建城际来去程段（**一次**查询：demo 候选 → 主链 build_trip_segments）。

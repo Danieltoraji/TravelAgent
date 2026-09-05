@@ -220,6 +220,9 @@ class DataSourceResolver:
             plan, _rebuild_return_with_schedule(plan, segments, self.requirement)
         )
         self._attach_hotels(plan)
+        # 城际两阶段·阶段2（十三节）：酒店已知后站对精修（到达站重选 +
+        # 尾/首腿实测填充）；无酒店坐标/无工具时原段返回
+        self._refine_intercity_stations(plan)
         timeline = plan_to_trip_timeline(
             plan,
             city=self.city,
@@ -278,6 +281,9 @@ class DataSourceResolver:
             plan, _rebuild_return_with_schedule(plan, segments, self.requirement)
         )
         self._attach_hotels(plan)
+        # 城际两阶段·阶段2（十三节）：酒店已知后站对精修（到达站重选 +
+        # 尾/首腿实测填充）；无酒店坐标/无工具时原段返回
+        self._refine_intercity_stations(plan)
         timeline = plan_to_trip_timeline(
             plan,
             city=self.city,
