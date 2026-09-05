@@ -213,6 +213,10 @@ def _attach_trip_segment_places(
     - 段含 ``day_label``（YYYY-MM-DD）→ 匹配 ``DayPlan.date``；找不到该日 → 跳过；
     - 去程（``details.kind == "outbound"``）插到当天 **items 头部**（先出发再游玩），
       返程（``return``）追加 **items 尾部**（游玩毕再返程）；
+    - **返程日语义（待办二，2026-09-05）**：return 段的 ``day_label`` 晚于行程
+      末日 → **追加一天返程日**（day=末日+1、date=return_date、items=[返程段]）
+      ——此前匹配不到即静默跳过，返程的真源构建/费用都在、唯独前端看不到
+      「怎么回家」；不可解析或非晚于末日 → 维持跳过（现状）；
     - ``Place.details`` 透传段 details（mode / from_station / to_station /
       cost_per_person / source / legs），C 端可读客运站对与两段式衔接结构；
       ``price`` 带人均费用（批次 3 起计入 ``cost_breakdown.transit``）。
@@ -220,12 +224,9 @@ def _attach_trip_segment_places(
     segments = plan.get("trip_segments") or []
     if not segments:
         return
-    day_by_label = {d.date.isoformat(): d for d in days}
+    day_by_label = {d.date.isoformat(): d for d in days if d.date is not None}
     for seg in segments:
         if not isinstance(seg, dict) or seg.get("type") != "transport":
-            continue
-        day = day_by_label.get(str(seg.get("day_label") or ""))
-        if day is None:
             continue
         details = seg.get("details") or {}
         place = Place(
@@ -236,10 +237,26 @@ def _attach_trip_segment_places(
             price=float(details.get("cost_per_person") or 0.0),
             details=dict(details),
         )
-        if details.get("kind") == "return":
-            day.items.append(place)
-        else:
-            day.items.insert(0, place)
+        day = day_by_label.get(str(seg.get("day_label") or ""))
+        if day is not None:
+            if details.get("kind") == "return":
+                day.items.append(place)
+            else:
+                day.items.insert(0, place)
+            continue
+        if details.get("kind") != "return":
+            continue
+        label_date = _as_date(seg.get("day_label"))
+        if (
+            label_date is None
+            or not days
+            or days[-1].date is None
+            or label_date <= days[-1].date
+        ):
+            continue
+        new_day = DayPlan(day=len(days) + 1, date=label_date, items=[place])
+        days.append(new_day)
+        day_by_label[label_date.isoformat()] = new_day
 
 
 def plan_to_trip_timeline(
@@ -333,6 +350,13 @@ def plan_to_trip_timeline(
     # 返程（kind=return）追加尾部；段 details 透传 mode/车站对/cost/source/legs
     # （两段式决策：城际方式已定，市内衔接 legs 预留供阶段三填充）。
     _attach_trip_segment_places(plan, days)
+    # 返程日追加（待办二）→ 时间轴 end_date 覆盖到返程日（只延不缩）
+    for _d in reversed(days):
+        if _d.date is None:
+            continue
+        if _d.date > end:
+            end = _d.date
+        break
     # 8.30 预算口径（批次 3 扩展五项：门票/讲解/餐饮/酒店/城际交通），
     # 单一来源 _plan_cost_summary
     from algorithoms._common import _plan_cost_summary

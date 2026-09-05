@@ -133,7 +133,7 @@ class DataSourceResolver:
         segments = self._build_trip_segments()
         first_day_start_time = _first_day_start_from_segments(segments)
         # 末日截止优先真源离散班次（最晚可行班出发 − 缓冲），无候选走反推兜底
-        last_day_end_minutes = _windowed_last_day_end(segments)
+        last_day_end_minutes = _windowed_last_day_end(segments, self.requirement)
         base_matrix: Dict[Tuple[str, str], Tuple[float, int]] = {}
         live_hotels = self._live_hotel_pool()  # 8.29：假池酒店候选（坐标并入矩阵 → 通勤真源）
         try:
@@ -217,7 +217,7 @@ class DataSourceResolver:
         self.last_data_source = PipelineSource.LIVE.value
         # 末日行程排定后按实际离开时间重选返程班次（无候选保留反推占位）
         self._inject_trip_segments(
-            plan, _rebuild_return_with_schedule(plan, segments)
+            plan, _rebuild_return_with_schedule(plan, segments, self.requirement)
         )
         self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(
@@ -251,7 +251,7 @@ class DataSourceResolver:
         # + 90min 接驳 → 首日起点、返程出发 − 60min → 末日截止。
         segments = self._build_trip_segments()
         first_day_start_time = _first_day_start_from_segments(segments)
-        last_day_end_minutes = _windowed_last_day_end(segments)
+        last_day_end_minutes = _windowed_last_day_end(segments, self.requirement)
         try:
             plan = self._planner(
                 self.requirement,
@@ -275,7 +275,7 @@ class DataSourceResolver:
         self.last_error = None
         self.last_data_source = source
         self._inject_trip_segments(
-            plan, _rebuild_return_with_schedule(plan, segments)
+            plan, _rebuild_return_with_schedule(plan, segments, self.requirement)
         )
         self._attach_hotels(plan)
         timeline = plan_to_trip_timeline(

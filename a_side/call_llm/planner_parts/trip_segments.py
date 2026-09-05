@@ -233,8 +233,37 @@ def _select_return_combination(
     return best
 
 
+def _return_date_after_trip(requirement: Optional[Dict[str, Any]]) -> bool:
+    """return_date 晚于行程末日（start_date + days − 1）→ 返程是**独立返程日**。
+
+    待办二语义（2026-09-05 拍板「追加返程日」）：
+
+    - 末日**不**按返程出发钟点裁剪（`_windowed_last_day_end` → None，真末日
+      全天游玩）——此前会把真末日误裁到「返程日出发 − 缓冲」（张掖实测
+      Day6 只排到 14:11）；
+    - 返程班次选择不受「末日最后事件结束 + 缓冲」下界约束（返程日是专门的
+      赶路日，唯一硬约束是「真到家 ≤ return_time」）；
+    - 按**请求天数**判定（规划前窗口与规划后重选共用）；跨天搬移等导致实际
+      天数变化的场景以请求为准（v1 简化）。请求缺日期/解析失败 → False
+      （现状口径，返程按末日当天处理）。
+    """
+    content = (requirement or {}).get("content") or {}
+    schedule = content.get("travel_schedule") or {}
+    return_date = _as_date(schedule.get("return_date"))
+    start_date = _as_date(content.get("start_date"))
+    if return_date is None or start_date is None:
+        return False
+    try:
+        days = max(int(content.get("days") or 0), 0)
+    except (TypeError, ValueError):
+        return False
+    trip_last_date = start_date + timedelta(days=max(days - 1, 0))
+    return return_date > trip_last_date
+
+
 def _windowed_last_day_end(
     segments: List[Dict[str, Any]],
+    requirement: Optional[Dict[str, Any]] = None,
     buffer_minutes: int = _DEPARTURE_BUFFER_MINUTES,
 ) -> Optional[int]:
     """末日截止：优先用返程真源候选「最晚可行班次出发 − 缓冲」，否则反推兜底。
@@ -242,7 +271,10 @@ def _windowed_last_day_end(
     反推（return_time − 总耗时）把返程当连续可选；真源候选是**离散班次**——
     「末段到家 ≤ return_time 中首段出发最晚」的班次决定末日最晚能玩到几点，
     通常比反推松弛（如返程 19:30 有班 → 末日可玩到 18:30，而非 14:10）。
+    return_date 晚于行程末日（独立返程日，待办二）→ None：真末日不裁剪。
     """
+    if requirement is not None and _return_date_after_trip(requirement):
+        return None
     return_seg = _find_return_segment(segments)
     if return_seg is not None:
         combo = _select_return_combination(return_seg, earliest_departure=0)
@@ -255,10 +287,14 @@ def _windowed_last_day_end(
 def _rebuild_return_with_schedule(
     plan: Dict[str, Any],
     segments: List[Dict[str, Any]],
+    requirement: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """末日行程排定后按「实际离开目的地时间」从真源候选重选返程班次。
 
     - 最早可离开 = 末日最后事件结束 + 离开缓冲（60min，用户 9.2 拍板）；
+      return_date 晚于行程末日（独立返程日，待办二）→ 下界归 0：返程日是
+      专门的赶路日，唯一硬约束是「真到家 ≤ return_time」（末日本应完整
+      游玩，其结束时刻对次日的返程班次无意义）；
     - 选中班次 → 重建 return 段真实发到时刻（替换反推占位）；
     - 无候选 / 候选都不满足 → 保留原段（反推占位兜底），不谎报班次。
     """
@@ -276,7 +312,6 @@ def _rebuild_return_with_schedule(
     ]
     if not ends:
         return segments
-    earliest_departure = int(max(ends)) + _DEPARTURE_BUFFER_MINUTES
     # 到家语义升级（2026-09-04）：末条 local 腿（末站→家）的高德实测分钟参与
     # 「真到家 ≤ return_time」约束与段 end 计算（此前把「站到」当「到家」）
     local_arrive = 0
@@ -286,6 +321,10 @@ def _rebuild_return_with_schedule(
             if isinstance(lm, (int, float)) and lm > 0:
                 local_arrive = int(lm)
             break
+    if requirement is not None and _return_date_after_trip(requirement):
+        earliest_departure = 0  # 独立返程日：无「玩到最后一刻」下界（见 docstring）
+    else:
+        earliest_departure = int(max(ends)) + _DEPARTURE_BUFFER_MINUTES
     combo = _select_return_combination(
         return_seg, earliest_departure, local_arrive_minutes=local_arrive
     )
