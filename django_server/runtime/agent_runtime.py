@@ -514,6 +514,9 @@ class AgentRuntime:
         transit_text, walking_m, source:"live"}`` 合并进 ``Place.details``
         供 C 端展示公共交通具体信息与路程；失败/无真源静默降级
         （保留矩阵时长与透传的 from/to/distance_km）。
+        城际段（details.kind 有值，outbound/return）跳过 enrich（T5，
+        2026-09-05）：其 from/to 是城市级地名，transit 查询产生怪路线覆盖
+        展示，且真源班次数据已足够展示。
 
         并发 max_workers=3 对齐高德免费 key QPS（~3/s）：每线程同一时刻
         最多 1 个在途请求（geocode → route 顺序依赖），并发意义是重叠
@@ -539,18 +542,28 @@ class AgentRuntime:
 
         def _enrich(item: Any) -> None:
             try:
+                is_intercity = bool((item.details or {}).get("kind"))
+                if is_intercity:
+                    # T5（2026-09-05）：城际段（outbound/return）的 from/to 是
+                    # 城市级地名（「天津」/「北京」），按地名查 amap transit 会
+                    # 返回跨市/被夹转的怪路线并覆盖展示（实测：天津地铁+机场
+                    # 巴士 184.81km/362min、锦州→张掖联运段被覆盖 2657km/
+                    # 996min）——城际段已带真源班次（service_no/发到时刻/票价），
+                    # transit 路线文本无意义，跳过 enrich；距离展示由 C 端
+                    # haversine 兜底。十一节的 same_city 门控与 >80km sanity
+                    # 仍护市内段。
+                    return
                 origin = str((item.details or {}).get("from") or "").strip()
                 destination = str((item.details or {}).get("to") or "").strip()
                 if not origin or not destination:
                     origin, destination = _split_name(item.name)
                 if not origin or not destination:
                     return
-                is_intercity = bool((item.details or {}).get("kind"))
                 result = self.registry.call(
                     "map", action="route",
                     origin=origin, destination=destination,
                     city=city, mode="transit",
-                    same_city=not is_intercity,  # 市内段：全国兜底城市校验（十一节）
+                    same_city=True,  # 市内段：全国兜底城市校验（十一节）
                 )
                 if result.status.value != "ok" or not isinstance(result.data, dict):
                     return

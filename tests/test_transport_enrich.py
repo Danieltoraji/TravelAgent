@@ -201,7 +201,8 @@ from tools.map_tool import _resolve_coord_fallback  # noqa: E402
 
 class TestEnrichDistanceSanity(_ut.TestCase):
     """市内段（无 kind）enrich 距离 > 80km（POI 漂移跨市）→ 放弃合并保留矩阵值；
-    城际段（kind=outbound）跨城距离正常合并。"""
+    城际段（kind=outbound）整体跳过 enrich（T5，2026-09-05：城市级地名查
+    transit 产生跨市怪路线覆盖展示，真源班次数据已足够）。"""
 
     def _tl(self, kind=None):
         details = {"from": "A", "to": "B", "duration_min": 5}
@@ -242,18 +243,28 @@ class TestEnrichDistanceSanity(_ut.TestCase):
         seg = tl.days[0].items[0]
         self.assertEqual(seg.details["distance_km"], 2.43)
 
-    def test_intercity_far_distance_still_merged(self) -> None:
-        tl = self._tl(kind="outbound")  # 城际段跨城属正常，豁免 sanity
+    def test_intercity_kind_skipped_entirely(self) -> None:
+        """T5（2026-09-05）：城际段（kind=outbound）不做 transit enrich——
+        from/to 是城市级地名（「天津」/「北京」），查询返回跨市/被夹转怪路线
+        （实测 天津地铁+机场巴士 184.81km、锦州→张掖被覆盖 2657km），且真源
+        班次（service_no/时刻/票价）已足够展示 → registry 不调用、details
+        原样保留。"""
+        tl = self._tl(kind="outbound")
         fake_result = mock.MagicMock()
         fake_result.status.value = "ok"
-        fake_result.data = {"mode": "transit", "distance_km": 153.79,
-                            "duration_min": 236, "transit_text": "地铁13号线 3站",
+        fake_result.data = {"mode": "transit", "distance_km": 184.81,
+                            "duration_min": 362,
+                            "transit_text": "天津地铁5号线 4站 → 机场巴士",
                             "source": "live"}
         with mock.patch.object(runtime, "registry") as reg:
             reg.call.return_value = fake_result
             runtime.enrich_transport_details(tl)
+            reg.call.assert_not_called()
         seg = tl.days[0].items[0]
-        self.assertEqual(seg.details["distance_km"], 153.79)
+        self.assertNotIn("distance_km", seg.details)
+        self.assertNotIn("transit_text", seg.details)
+        self.assertNotIn("mode", seg.details)
+        self.assertEqual(seg.details["duration_min"], 5)  # 矩阵值原样
 
     def test_enrich_passes_same_city_flag_for_intra_city(self) -> None:
         tl = self._tl()  # 市内段 → same_city=True 透传（城市归属校验）
