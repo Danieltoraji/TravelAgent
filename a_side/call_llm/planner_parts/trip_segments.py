@@ -420,6 +420,12 @@ def _refine_outbound_arrival(
     hotel_name: str,
     departure_time_minutes: Optional[int] = None,
 ) -> bool:
+    """出发下界：优先骨架 ``departure_bound_minutes``（departure_time + 实测
+    市内分钟，realize 落盘），回退 departure_time。"""
+    dep_limit = departure_time_minutes
+    bound = (seg.get("details") or {}).get("departure_bound_minutes")
+    if isinstance(bound, (int, float)):
+        dep_limit = int(bound) if dep_limit is None else max(dep_limit, int(bound))
     """到达侧站对精修（十三节阶段2）：outbound 最后一程 intercity 在真源候选
     里重选到达班次，目标 = **最早到酒店**（班次到达 + 站→酒店实测）。
 
@@ -468,8 +474,8 @@ def _refine_outbound_arrival(
         arr = _hhmm_to_minutes_loose(cand.get("arrive_time"))
         if dep is None or arr is None or arr < dep:
             continue
-        if departure_time_minutes is not None and dep < departure_time_minutes:
-            continue  # 发车约束：不得早于用户从家出发的时刻（rv8：00:22 过夜车）
+        if dep_limit is not None and dep < dep_limit:
+            continue  # 发车约束：不得早于出发下界（rv8 过夜车 / rv9 更早发车）
         if arr > current_arr:  # 骨架约束：到达不晚于现值
             continue
         st = _candidate_station(cand, "to_airport_name", "to_station", "to_airport")
@@ -728,9 +734,9 @@ def _realize_outbound_with_schedule(
     - **首条 local 腿重指真实乘车站（两遍法）**：乘车站变化时用
       ``local_route_fn`` 重测「家→真实乘车站」，测到 → 更新腿 + 以新市内
       分钟重选组合（保证「首班 ≥ 出发 + 市内实测」约束对真实乘车站成立）；
-      重测失败 → 首条 local 腿降级占位 + 按「首班 ≥ departure_time」兜底
-      口径照常 realize（方案 a，rv6 复验拍板）；兜底口径下无可行组合才整段
-      推演；
+      重测失败 → 首条 local 腿降级占位 + 沿用实测市内分钟约束照常
+      realize（方案 a，rv6 复验拍板；出发下界不放松，rv9）——无可行组合
+      才整段推演；
     - 段 ``end_minutes`` = 末腿真实到达 → ``_first_day_start_from_segments``
       自动拿到真实到达（Day1 起点联动，9.1 管道零改动受益）；
     - ``start_minutes``：departure_time 给定 → 保持「从家出发」语义（出发到
@@ -754,6 +760,14 @@ def _realize_outbound_with_schedule(
         lm = first_leg.get("duration_min")
         if isinstance(lm, (int, float)) and lm > 0:
             local_departure_minutes = int(lm)
+    # 出发下界（rv9 复验拍板）：departure_time + 实测市内分钟——贯穿方案 a
+    # 兜底重选与阶段2 精修，防止"更早发车但赶不上"的班次被选中
+    # （rv9：C2559 08:01 发车 vs 实测家→北京南 30min → 08:30 才到站）
+    departure_bound_minutes = (
+        departure_time_minutes + local_departure_minutes
+        if departure_time_minutes is not None
+        else None
+    )
     combo = _select_outbound_combination(
         outbound_seg, departure_time_minutes, priority,
         local_departure_minutes=local_departure_minutes,
@@ -804,7 +818,7 @@ def _realize_outbound_with_schedule(
             first_local["note"] = "市内衔接（阶段三 map 真源填充）"
             combo = _select_outbound_combination(
                 outbound_seg, departure_time_minutes, priority,
-                local_departure_minutes=0,
+                local_departure_minutes=local_departure_minutes,  # 保守沿用实测约束
             )
             if combo is None:
                 return segments
@@ -869,6 +883,8 @@ def _realize_outbound_with_schedule(
     if combo["cost"] > 0:
         details["cost_per_person"] = round(combo["cost"], 2)
     details["outbound_realized"] = True
+    if departure_bound_minutes is not None:
+        details["departure_bound_minutes"] = int(departure_bound_minutes)
     # 段级站对 + 非联运段名同步真实站对（联运段名 = 城市级 via，保持不变）
     realized_first = _candidate_station(realized[0], "from_station", "from_airport") if realized else ""
     realized_last = _candidate_station(realized[-1], "to_station", "to_airport") if realized else ""
