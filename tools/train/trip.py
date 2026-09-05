@@ -230,13 +230,31 @@ class TrainTripSkillLive(TrainTripSkill):
             raise ValueError(f"未查到可预订车次（{from_code}→{to_code} {date}）")
         return trains
 
+    # 坐席回落链（待办四.2，2026-09-05）：Z/T 字头无二等座（只有硬座/无座）
+    # ——按「最低可购坐席」取真实 12306 票价。此前 price_map 只认 second_class
+    # → Z/T 全部缺价 → 组合费用漏火车票 + 「并列取便宜」被无票价班次扭曲
+    # （rv6 实锤：Z12 以 ¥752"假便宜"压过 ¥1029 的 G3624）。
+    _SEAT_FALLBACK = ("second_class", "hard_seat", "no_seat", "soft_seat")
+
     def _second_class_prices(self, from_code: str, to_code: str, date: str) -> Dict[str, float]:
+        """各车次票价：二等座优先，Z/T 等无二等座车次回落最低可购坐席
+        （硬座/无座，真实 12306 票价，非估算）。"""
         prices: Dict[str, float] = {}
         for dto in self._client.query_price(from_code, to_code, date):
             row = parse_price_row(dto)
-            second = row["prices"].get("second_class")
-            if second is not None:
-                prices[row["code"]] = float(second)
+            available = {
+                name: float(v)
+                for name, v in row["prices"].items()
+                if isinstance(v, (int, float)) and v > 0
+            }
+            if not available:
+                continue
+            for seat in self._SEAT_FALLBACK:
+                if seat in available:
+                    prices[row["code"]] = available[seat]
+                    break
+            else:
+                prices[row["code"]] = min(available.values())  # 回落链外坐席取最低
         return prices
 
     def _select(self, trains: List[Dict[str, Any]], from_code: str, to_code: str,

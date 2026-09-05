@@ -139,6 +139,9 @@ def normalize_live_spot(raw: Any, city: str, index: int = 0) -> Optional[Dict[st
     name = _as_str(_pick(raw, "name", "title", "poi_name"))
     if not name:
         return None
+    if _is_non_scenic_name(name):
+        logger.debug("adapters scenic: 剔除非游览类 POI（%s）", name)
+        return None
 
     location = raw.get("location") or raw.get("geo") or raw.get("position")
     lat = lng = 0.0
@@ -313,6 +316,19 @@ def _split_tags(text: Any) -> Tuple[str, ...]:
 # 酒吧（The Captain，type=娱乐场所）、主食铺（宫门口馒头铺）混进餐厅池，被
 # 时间轴选中后观感极差（「午餐=酒吧」）。
 _NON_RESTAURANT_TYPE_KEYWORDS = ("娱乐场所", "宾馆", "酒店", "旅馆", "住宿")
+
+# 非游览类 POI 名称关键词（待办四.1，2026-09-05）：真源搜索会把停车场/收费
+# 站/客运站等交通设施当作"景点"返回（张掖实测：「张掖丹霞收费站(G30连霍高速
+# 出口)」「张掖七彩丹霞景区北门停车场」进池排入行程）——名称命中即拒收，
+# 同 8.30 餐厅池挡宾馆思路。
+_NON_SCENIC_NAME_KEYWORDS = (
+    "停车场", "收费站", "客运站", "服务区", "加油站", "充电站", "售票处",
+)
+
+
+def _is_non_scenic_name(name: str) -> bool:
+    """POI 名称含非游览类设施关键词 → True（从景点池中过滤）。"""
+    return any(keyword in name for keyword in _NON_SCENIC_NAME_KEYWORDS)
 
 
 def _is_non_restaurant(item: Dict[str, Any]) -> bool:

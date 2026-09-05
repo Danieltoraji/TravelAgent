@@ -183,3 +183,53 @@ class TestLiveTrainTripProvider(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSeatPriceFallback(unittest.TestCase):
+    """待办四.2（2026-09-05）：Z/T 字头无二等座 → 票价回落最低可购坐席
+    （硬座，真实 12306 票价）——此前 price_map 缺失导致组合费用漏火车票、
+    「并列取便宜」被无票价班次扭曲（rv6：Z12 ¥752 假便宜压过 G3624）。"""
+
+    def _client(self):
+        client = MagicMock()
+        client.query_tickets.return_value = [
+            make_ticket_row(code="Z12", duration="09:05"),
+            make_ticket_row(code="G3624", duration="02:32"),
+        ]
+        client.query_price.return_value = [
+            # Z12：无 ze_price（二等座），有 yz_price（硬座）——此前被丢弃
+            {"station_train_code": "Z12", "yz_price": "1565"},
+            make_price_dto("G3624", 277.0),
+        ]
+        return client
+
+    def test_zt_train_gets_hard_seat_price(self) -> None:
+        skill = TrainTripSkillLive(self._client())
+        r = skill.execute(from_city="锦州", to_city="北京",
+                          date="2026-09-08", preference="cheapest")
+        self.assertEqual(r.status.value, "ok")
+        data = r.data
+        # cheapest：Z12 硬座 ¥156.5 < G3624 二等座 ¥277 → Z12 胜出（真实价）
+        self.assertEqual(data["code"], "Z12")
+        self.assertEqual(data["cost_per_person"], 156.5)
+        # 全量候选每条都带票价（不再有 None）
+        prices = {t["code"]: t["price"] for t in data["trains"]}
+        self.assertEqual(prices["Z12"], 156.5)
+        self.assertEqual(prices["G3624"], 277.0)
+
+    def test_fallback_prefers_second_class_when_available(self) -> None:
+        client = self._client()
+        client.query_tickets.return_value = [
+            make_ticket_row(code="G39", duration="05:24"),
+            make_ticket_row(code="G1", duration="04:54"),
+        ]
+        client.query_price.return_value = [
+            # 同车次既有硬座又有二等座 → 回落链优先二等座（与现状口径一致）
+            {"station_train_code": "G39", "ze_price": "6620", "yz_price": "3000"},
+            make_price_dto("G1", 795.0),
+        ]
+        skill = TrainTripSkillLive(client)
+        r = skill.execute(from_city="北京南", to_city="上海虹桥",
+                          date="2026-09-05", preference="cheapest")
+        self.assertEqual(r.data["code"], "G39")
+        self.assertEqual(r.data["cost_per_person"], 662.0)
