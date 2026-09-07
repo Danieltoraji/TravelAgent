@@ -10,6 +10,7 @@
 import json
 import unittest
 from datetime import date, timedelta
+_FUTURE_DATE = (date.today() + timedelta(days=10)).isoformat()  # 日期无关化（日期滚动教训）
 from unittest.mock import MagicMock, patch
 
 from core.schemas import ToolStatus
@@ -181,7 +182,10 @@ class TestParseJuheRow(unittest.TestCase):
         self.assertEqual(parsed["arrive_time"], "23:45")
         self.assertEqual(parsed["duration_min"], 105)      # 1h45m
         self.assertEqual(parsed["price"], 468.0)
-        self.assertEqual(parsed["date"], "2026-09-05")
+        self.assertEqual(
+            parsed["date"],
+            _SAMPLE_BJSHA["result"]["flightInfo"][0]["departureDate"],
+        )  # 跟随夹具自身值（夹具与断言自洽，日期无关化）
         self.assertEqual(parsed["transfer_num"], 1)
 
     def test_codeshare_row(self) -> None:
@@ -218,7 +222,7 @@ class TestFlightClient(unittest.TestCase):
     def test_juhe_query_url_and_parse(self, mock_urlopen) -> None:
         mock_urlopen.return_value = _fake_http_response(_SAMPLE_BJSHA)
         client = FlightClient(backend="juhe", api_key="testkey", timeout=10)
-        rows = client.query_flights("北京", "上海", "2026-09-05")
+        rows = client.query_flights("北京", "上海", _FUTURE_DATE)
 
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["flight_no"], "CA8341")
@@ -229,25 +233,25 @@ class TestFlightClient(unittest.TestCase):
         self.assertIn("key=testkey", url)
         self.assertIn("departure=PEK", url)
         self.assertIn("arrival=SHA", url)
-        self.assertIn("departureDate=2026-09-05", url)
+        self.assertIn(f"departureDate={_FUTURE_DATE}", url)
 
     @patch("urllib.request.urlopen")
     def test_juhe_empty_list(self, mock_urlopen) -> None:
         mock_urlopen.return_value = _fake_http_response(_SAMPLE_EMPTY)
         client = FlightClient(backend="juhe", api_key="testkey", timeout=10)
-        self.assertEqual(client.query_flights("锦州", "常州", "2026-09-05"), [])
+        self.assertEqual(client.query_flights("锦州", "常州", _FUTURE_DATE), [])
 
     @patch("urllib.request.urlopen")
     def test_juhe_error_code_raises(self, mock_urlopen) -> None:
         mock_urlopen.return_value = _fake_http_response(_SAMPLE_ERROR)
         client = FlightClient(backend="juhe", api_key="testkey", timeout=10)
         with self.assertRaises(ValueError):
-            client.query_flights("锦州", "常州", "2026-09-05")
+            client.query_flights("锦州", "常州", _FUTURE_DATE)
 
     def test_no_key_raises(self) -> None:
         client = FlightClient(backend="aviationstack", api_key="", timeout=10)
         with self.assertRaises(ValueError):
-            client.query_flights("北京", "上海", "2026-09-05")
+            client.query_flights("北京", "上海", _FUTURE_DATE)
 
     def test_unknown_backend_raises(self) -> None:
         with self.assertRaises(ValueError):
@@ -287,19 +291,19 @@ class TestFlightToolsLive(unittest.TestCase):
             {"flight_no": "CA8341", "airline": "中国国际航空公司",
              "from_airport": "PKX", "to_airport": "PVG",
              "depart_time": "22:00", "arrive_time": "23:45",
-             "duration_min": 105, "price": 468.0, "date": "2026-09-05"},
+             "duration_min": 105, "price": 468.0, "date": _FUTURE_DATE},
         ]
         r = FlightSearchToolLive(client).execute(
-            from_city="北京", to_city="上海", date="2026-09-05")
+            from_city="北京", to_city="上海", date=_FUTURE_DATE)
         self.assertEqual(r.status, ToolStatus.OK)
         self.assertEqual(r.data[0]["from_airport_name"], "北京大兴机场")
-        client.query_flights.assert_called_once_with("北京", "上海", "2026-09-05")
+        client.query_flights.assert_called_once_with("北京", "上海", _FUTURE_DATE)
 
     def test_live_empty_is_ok(self) -> None:
         client = self._client()
         client.query_flights.return_value = []
         r = FlightSearchToolLive(client).execute(
-            from_city="锦州", to_city="常州", date="2026-09-05")
+            from_city="锦州", to_city="常州", date=_FUTURE_DATE)
         self.assertEqual(r.status, ToolStatus.OK)
         self.assertEqual(r.data, [])
 
@@ -307,7 +311,7 @@ class TestFlightToolsLive(unittest.TestCase):
         # C5（PR#3）：base_tool 按 schema required 校验，空串在 execute 层
         # 即报「必填参数为空: from_city」，不会走到 _run 内单独的空值分支。
         r = FlightSearchToolLive(self._client()).execute(
-            from_city="", to_city="上海", date="2026-09-05")
+            from_city="", to_city="上海", date=_FUTURE_DATE)
         self.assertEqual(r.status, ToolStatus.ERROR)
         self.assertIn("必填参数为空", r.error)
         self.assertIn("from_city", r.error)

@@ -291,6 +291,7 @@ def _allocate_optional_spots(
     perturbation: int = 0,
     day1_skip_spots: bool = False,
     affinity_fn: Optional[Callable[[Spot, int], float]] = None,
+    min_spots: int = 0,
 ) -> List[List[Spot]]:
     """把可选景点预分配到各天（只决定「每天可选子池」，不排程）。
 
@@ -316,18 +317,50 @@ def _allocate_optional_spots(
     prealloc: List[List[Spot]] = [[] for _ in range(day_count)]
 
     # 远郊日识别：当天任一必去景点被 _remote_groups 判为远郊 → 整天保护。
-    from algorithoms.spot_assignment import _remote_groups
+    # 锚点退化兜底（待办三机制1）：must 全远郊（互距 > 半径）时密度锚点退化，
+    # 以**可选池质心**（市区候选占多数，张掖场景 ≈ 市区）为市区锚重判。
+    from algorithoms.spot_assignment import (
+        _haversine_km,
+        _remote_groups,
+        _spot_coord,
+        REMOTE_RADIUS_KM,
+    )
 
     all_must = {
         _spot_key(spot): spot
         for route in mandatory_routes
         for spot in route
     }
-    remote_cluster_of, _ = _remote_groups(all_must)
+    must_coords = {
+        _spot_key(spot): coord
+        for spot in (s for route in mandatory_routes for s in route)
+        if (coord := _spot_coord(spot)) is not None
+    }
+    pool_coords = [
+        coord for spot in optional_spots if (coord := _spot_coord(spot)) is not None
+    ]
+    urban_anchor: Optional[Tuple[float, float]] = None
+    if len(pool_coords) >= 3:
+        urban_anchor = (
+            sum(c[0] for c in pool_coords) / len(pool_coords),
+            sum(c[1] for c in pool_coords) / len(pool_coords),
+        )
+    remote_cluster_of, remote_clusters = _remote_groups(
+        all_must, urban_anchor=urban_anchor
+    )
     remote_day_indexes = {
         index
         for index, route in enumerate(mandatory_routes)
         if any(_spot_key(spot) in remote_cluster_of for spot in route)
+    }
+    # 远郊日 → 该日远郊必去 key 列表（机制2：同簇可选判定用）
+    remote_day_musts: Dict[int, List[str]] = {
+        index: [
+            _spot_key(spot)
+            for spot in mandatory_routes[index]
+            if _spot_key(spot) in remote_cluster_of
+        ]
+        for index in remote_day_indexes
     }
 
     def day_elapsed(index: int, extra: Optional[Spot] = None) -> Optional[int]:
@@ -379,14 +412,24 @@ def _allocate_optional_spots(
         ),
     )
     for spot in optional_sorted:
-        feasible = [
-            index
-            for index in range(day_count)
-            if not (day1_skip_spots and index == 0)  # 晚到达日：Day1 不落可选
-            and index not in remote_day_indexes  # 远郊日不塞市区可选
-            and (elapsed := day_elapsed(index, spot)) is not None
-            and elapsed <= daily_limit
-        ]
+        spot_coord = _spot_coord(spot)
+        feasible = []
+        for index in range(day_count):
+            if day1_skip_spots and index == 0:  # 晚到达日：Day1 不落可选
+                continue
+            if index in remote_day_indexes:
+                # 远郊日保护 + 同簇豁免（机制2）：市区可选不塞远郊日；与该日
+                # 远郊必去同簇（距 < 半径，顺路）的可选豁免保护。
+                cluster_keys = remote_day_musts.get(index) or []
+                same_cluster = spot_coord is not None and any(
+                    key in must_coords
+                    and _haversine_km(spot_coord, must_coords[key]) < REMOTE_RADIUS_KM
+                    for key in cluster_keys
+                )
+                if not same_cluster:
+                    continue
+            if (elapsed := day_elapsed(index, spot)) is not None and elapsed <= daily_limit:
+                feasible.append(index)
         if not feasible:
             continue
         if affinity_fn is not None:
@@ -401,7 +444,16 @@ def _allocate_optional_spots(
         elif strategy == "greedy":
             feasible.sort(key=lambda index: index)  # Day1 优先
         else:
-            feasible.sort(key=lambda index: day_elapsed(index) or 0)  # 最空优先
+            # 保底选择键（机制3）：景点数 < min_spots 的天优先补足（先补离
+            # min_spots 最近的， scarce 时也保证 must 天先达标），全部达标后
+            # 回到「最空优先」。min_spots=0（未传）→ 退化为原行为。
+            def _sort_key(index: int) -> Tuple[int, int, int]:
+                count = len(mandatory_routes[index]) + len(prealloc[index])
+                if min_spots and count < min_spots:
+                    return (0, -count, index)
+                return (1, day_elapsed(index) or 0, index)
+
+            feasible.sort(key=_sort_key)
         chosen = feasible[min(perturbation, len(feasible) - 1)]
         prealloc[chosen].append(spot)
     return prealloc
@@ -1100,6 +1152,7 @@ def plan_multi_day(
         perturbation=perturbation,
         day1_skip_spots=day1_skip,
         affinity_fn=affinity_fn,
+        min_spots=min_spots,
     )
     plan = _plan_multi_day_with_prealloc(
         requirement,

@@ -266,6 +266,7 @@ class BPlannerHook(
         restaurants: Any = None,
         first_day_start_time: Optional[str] = None,
         last_day_end_minutes: Optional[int] = None,
+        min_spots: int = 0,
     ) -> Dict[str, Any]:
         if self._planner_fn is not None:
             # 自定义 planner_fn 保持原契约 (requirement, spots)；真源接线由注入方负责
@@ -306,6 +307,7 @@ class BPlannerHook(
                 last_day_end_minutes=last_day_end_minutes,
                 affinity_fn=affinity_fn,
                 day_anchors=day_anchors,
+                min_spots=min_spots,
             )
         return plan_multi_day(
             requirement,
@@ -315,6 +317,7 @@ class BPlannerHook(
             last_day_end_minutes=last_day_end_minutes,
             affinity_fn=affinity_fn,
             day_anchors=day_anchors,
+            min_spots=min_spots,
         )
 
     def _empty_timeline(self) -> TripTimeline:

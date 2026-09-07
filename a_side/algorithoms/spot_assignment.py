@@ -59,6 +59,7 @@ def _spot_coord(spot: Spot) -> Optional[Tuple[float, float]]:
 
 def _remote_groups(
     all_must_options: Dict[str, Spot],
+    urban_anchor: Optional[Tuple[float, float]] = None,
 ) -> Tuple[Dict[str, int], List[List[str]]]:
     """远郊识别 + 聚簇（8.30 demo1：远郊必去必须同天或独占一天）。
 
@@ -69,6 +70,12 @@ def _remote_groups(
     2. 距市区锚 > 半径的景点为**远郊**；远郊之间再按同半径贪心聚簇
        （西线丹霞+高台一簇、山丹独立一簇）。
 
+    **锚点退化兜底（待办三机制1，2026-09-07）**：must 列表可能**全部远郊**
+    （张掖：丹霞 40km + 平山湖 56km，互距 70km）——密度锚点退化成"矮子里的
+    将军"（单个必去被误当市区锚，另一个真远郊必去的天反而失去保护）。此时
+    若调用方传入 ``urban_anchor``（可选池质心/酒店坐标，市区侧）→ 以它为
+    市区锚重新分类。
+
     返回 ``(spot_key → 簇号, 簇列表)``；市区景点不在映射里（不受约束）。
     缺坐标（假池无 location 等）→ 不识别（行为退化为原逻辑，保守不炸）。
     """
@@ -77,8 +84,10 @@ def _remote_groups(
         for key, spot in all_must_options.items()
         if (coord := _spot_coord(spot)) is not None
     }
-    if len(keyed) < 2:
+    if not keyed:
         return {}, []
+    # （原 len(keyed) < 2 守卫放宽 2026-09-07：单必去 + urban_anchor 也能识别
+    # 远郊——单远郊必去的天同样需要保护；无锚时单点保持旧行为不识别）
 
     # 最大本地簇（贪心：按「半径内邻居数」降序，从邻居最多的点生长）。
     keys = list(keyed)
@@ -96,12 +105,24 @@ def _remote_groups(
         sum(keyed[key][0] for key in best_anchor) / len(best_anchor),
         sum(keyed[key][1] for key in best_anchor) / len(best_anchor),
     )
+    # 锚点退化判定：最大本地簇只有 1 个成员（所有必去两两互远）→ 密度锚点
+    # 无从建立，urban_anchor（市区侧坐标）才是真锚。
+    anchor_degenerate = len(best_anchor) <= 1 and urban_anchor is not None
+    if anchor_degenerate:
+        anchor_center = urban_anchor
 
     remote_keys = [
         key for key in keys
         if key not in best_anchor
         and _haversine_km(anchor_center, keyed[key]) > REMOTE_RADIUS_KM
     ]
+    if anchor_degenerate:
+        # 兜底口径：退化锚下"本地簇"成员也须按真锚重判（距市区锚 ≤ 半径才算
+        # 市区；张掖场景丹霞/平山湖都 > 25km → 全远郊，各自成簇）
+        remote_keys = [
+            key for key in keys
+            if _haversine_km(anchor_center, keyed[key]) > REMOTE_RADIUS_KM
+        ]
     if not remote_keys:
         return {}, []
     # 远郊之间聚簇（贪心：与簇内任一成员 < 半径即并入）

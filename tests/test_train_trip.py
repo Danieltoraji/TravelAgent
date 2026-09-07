@@ -2,6 +2,8 @@
 
 import os
 import sys
+from datetime import date, timedelta
+_FUTURE_DATE = (date.today() + timedelta(days=10)).isoformat()  # 日期无关化（日期滚动教训）
 import unittest
 from unittest.mock import MagicMock
 
@@ -39,7 +41,7 @@ def make_price_dto(code, second):
 class TestTrainTripMock(unittest.TestCase):
     def test_mock_output_contract(self) -> None:
         r = TrainTripSkill().execute(from_city="北京", to_city="上海",
-                                     date="2026-09-05")
+                                     date=_FUTURE_DATE)
         self.assertEqual(r.status.value, "ok")
         data = r.data
         self.assertIsInstance(data["transport_minutes"], int)
@@ -48,7 +50,7 @@ class TestTrainTripMock(unittest.TestCase):
         self.assertEqual(data["source"], "mock")
 
     def test_mock_missing_city_errors(self) -> None:
-        r = TrainTripSkill().execute(to_city="上海", date="2026-09-05")
+        r = TrainTripSkill().execute(to_city="上海", date=_FUTURE_DATE)
         self.assertEqual(r.status.value, "error")
 
 
@@ -66,7 +68,7 @@ class TestTrainTripLive(unittest.TestCase):
 
     def test_earliest_picks_shortest_duration(self) -> None:
         skill = TrainTripSkillLive(self._client())
-        r = skill.execute(from_city="北京南", to_city="上海虹桥", date="2026-09-05")
+        r = skill.execute(from_city="北京南", to_city="上海虹桥", date=_FUTURE_DATE)
         self.assertEqual(r.status.value, "ok")
         data = r.data
         self.assertEqual(data["code"], "G1")            # 04:54 < 05:24
@@ -78,7 +80,7 @@ class TestTrainTripLive(unittest.TestCase):
     def test_cheapest_picks_lowest_second_class(self) -> None:
         skill = TrainTripSkillLive(self._client())
         r = skill.execute(from_city="北京南", to_city="上海虹桥",
-                          date="2026-09-05", preference="cheapest")
+                          date=_FUTURE_DATE, preference="cheapest")
         self.assertEqual(r.data["code"], "G39")         # 662 < 795
         self.assertEqual(r.data["cost_per_person"], 662.0)
 
@@ -86,7 +88,7 @@ class TestTrainTripLive(unittest.TestCase):
         # v1 城市对覆盖优先于站名直查："北京"按城市解析为北京南（而非北京站），
         # 避免漏掉同城其他车站
         skill = TrainTripSkillLive(self._client())
-        r = skill.execute(from_city="北京", to_city="上海", date="2026-09-05")
+        r = skill.execute(from_city="北京", to_city="上海", date=_FUTURE_DATE)
         self.assertEqual(r.status.value, "ok")
         self.assertEqual(r.data["from_station"], "北京南")
         self.assertEqual(r.data["to_station"], "上海虹桥")
@@ -94,13 +96,13 @@ class TestTrainTripLive(unittest.TestCase):
 
     def test_direct_station_names_still_work(self) -> None:
         skill = TrainTripSkillLive(self._client())
-        r = skill.execute(from_city="北京南", to_city="上海虹桥", date="2026-09-05")
+        r = skill.execute(from_city="北京南", to_city="上海虹桥", date=_FUTURE_DATE)
         self.assertEqual(r.status.value, "ok")
         self.assertEqual(r.data["from_station"], "北京南")
 
     def test_unknown_pair_raises(self) -> None:
         skill = TrainTripSkillLive(self._client())
-        r = skill.execute(from_city="火星", to_city="月球", date="2026-09-05")
+        r = skill.execute(from_city="火星", to_city="月球", date=_FUTURE_DATE)
         self.assertEqual(r.status.value, "error")
         self.assertIn("无法确定", r.error)
 
@@ -116,7 +118,7 @@ class TestTrainTripLive(unittest.TestCase):
         ]
         rows[1] = rows[1].replace("VNP", "BJP")
         skill = TrainTripSkillLive(self._client(rows=rows))
-        r = skill.execute(from_city="北京南", to_city="上海虹桥", date="2026-09-05")
+        r = skill.execute(from_city="北京南", to_city="上海虹桥", date=_FUTURE_DATE)
         data = r.data
         self.assertEqual(data["code"], "D7")
         self.assertEqual(data["from_station_code"], "BJP")
@@ -126,7 +128,7 @@ class TestTrainTripLive(unittest.TestCase):
     def test_no_bookable_trains_raises(self) -> None:
         stopped = make_ticket_row(code="G39").replace("|预订|", "|停运|")
         skill = TrainTripSkillLive(self._client(rows=[stopped]))
-        r = skill.execute(from_city="北京南", to_city="上海虹桥", date="2026-09-05")
+        r = skill.execute(from_city="北京南", to_city="上海虹桥", date=_FUTURE_DATE)
         self.assertEqual(r.status.value, "error")
         self.assertIn("未查到可预订车次", r.error)
 
@@ -148,7 +150,7 @@ class TestLiveTrainTripProvider(unittest.TestCase):
         from data_transmission.live_data import make_live_train_trip_provider
         tp = MagicMock()
         tp.call.return_value = tool_result
-        return make_live_train_trip_provider(tp, date="2026-09-05"), tp
+        return make_live_train_trip_provider(tp, date=_FUTURE_DATE), tp
 
     def _tool_result(self, payload):
         from core.schemas import ToolResult, ToolStatus
@@ -167,7 +169,7 @@ class TestLiveTrainTripProvider(unittest.TestCase):
         self.assertEqual(edge.cost_per_person, 795.0)
         self.assertEqual(edge.source, "live")
         tp.call.assert_called_once_with("train_trip", from_city="北京",
-                                        to_city="上海", date="2026-09-05")
+                                        to_city="上海", date=_FUTURE_DATE)
 
     def test_provider_air_mode_returns_none(self) -> None:
         provider, _ = self._provider(self._tool_result({"transport_minutes": 1}))
@@ -206,7 +208,7 @@ class TestSeatPriceFallback(unittest.TestCase):
     def test_zt_train_gets_hard_seat_price(self) -> None:
         skill = TrainTripSkillLive(self._client())
         r = skill.execute(from_city="锦州", to_city="北京",
-                          date="2026-09-08", preference="cheapest")
+                          date=_FUTURE_DATE, preference="cheapest")
         self.assertEqual(r.status.value, "ok")
         data = r.data
         # cheapest：Z12 硬座 ¥156.5 < G3624 二等座 ¥277 → Z12 胜出（真实价）
@@ -230,6 +232,6 @@ class TestSeatPriceFallback(unittest.TestCase):
         ]
         skill = TrainTripSkillLive(client)
         r = skill.execute(from_city="北京南", to_city="上海虹桥",
-                          date="2026-09-05", preference="cheapest")
+                          date=_FUTURE_DATE, preference="cheapest")
         self.assertEqual(r.data["code"], "G39")
         self.assertEqual(r.data["cost_per_person"], 662.0)

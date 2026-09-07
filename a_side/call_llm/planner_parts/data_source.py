@@ -36,6 +36,10 @@ from data_transmission.b_contract import (  # noqa: E402
 )
 from data_transmission.enums import PipelineSource  # noqa: E402
 
+# 待办三机制3（2026-09-07）：每天至少 2 个景点（保底选择键生效的最小合理值；
+# plan_multi_day 默认 0 = 不约束，其余调用方零回归）
+_PRODUCTION_MIN_SPOTS = 2
+
 from call_llm.planner_parts.trip_segments import (  # noqa: E402
     _first_day_start_from_segments,
     _rebuild_return_with_schedule,
@@ -182,18 +186,21 @@ class DataSourceResolver:
                     restaurants=None,
                     first_day_start_time=first_day_start_time,
                     last_day_end_minutes=last_day_end_minutes,
+                    min_spots=_PRODUCTION_MIN_SPOTS,
                 )
                 # 阶段 2：锚点确定后，只对候选景点 × 真源餐厅补增量矩阵再重排
                 plan = self._live_plan_with_restaurants(
                     plan1, spots, name_to_coord, base_matrix, live_hotels,
                     first_day_start_time=first_day_start_time,
                     last_day_end_minutes=last_day_end_minutes,
+                    min_spots=_PRODUCTION_MIN_SPOTS,
                 )
             else:
                 plan = self._planner(
                     self.requirement, spots,
                     first_day_start_time=first_day_start_time,
                     last_day_end_minutes=last_day_end_minutes,
+                    min_spots=_PRODUCTION_MIN_SPOTS,
                 )
         except Exception as exc:  # noqa: BLE001
             reason = f"真实数据接入失败，已回退假数据：{exc}"

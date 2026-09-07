@@ -124,6 +124,7 @@ class RestaurantOrchestrator:
         live_hotels: Sequence[Any],
         first_day_start_time: Optional[str] = None,
         last_day_end_minutes: Optional[int] = None,
+        min_spots: int = 0,
     ) -> Dict[str, Any]:
         """8.30 阶段 2：对「候选景点 × 真源餐厅」补增量矩阵后带餐厅重排。
 
@@ -265,6 +266,7 @@ class RestaurantOrchestrator:
                 restaurants=resolver,
                 first_day_start_time=first_day_start_time,
                 last_day_end_minutes=last_day_end_minutes,
+                min_spots=min_spots,  # 待办三机制3：生产口径由 data_source 传入
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("带餐厅重排失败，降级为无餐厅计划（阶段 1）：%s", exc)
