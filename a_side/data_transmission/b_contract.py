@@ -246,7 +246,15 @@ def _attach_trip_segment_places(
             continue
         if details.get("kind") != "return":
             continue
-        label_date = _as_date(seg.get("day_label"))
+        # 严格解析 day_label（_as_date 对不可解析串兜底 date.today()——会把
+        # 「返程」变成"今天"而被误追加，rv14 实测）；解析失败 → 维持跳过
+        label_date = None
+        label_text = str(seg.get("day_label") or "").strip()
+        if label_text:
+            try:
+                label_date = date.fromisoformat(label_text)
+            except ValueError:
+                label_date = None
         if (
             label_date is None
             or not days

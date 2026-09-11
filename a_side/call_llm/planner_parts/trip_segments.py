@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -260,8 +260,18 @@ def _return_date_after_trip(requirement: Optional[Dict[str, Any]]) -> bool:
     """
     content = (requirement or {}).get("content") or {}
     schedule = content.get("travel_schedule") or {}
-    return_date = _as_date(schedule.get("return_date"))
-    start_date = _as_date(content.get("start_date"))
+
+    def _strict_date(value: Any) -> Optional[date]:
+        # _as_date 对不可解析串兜底 date.today()，这里需要严格解析（失败=None）
+        if isinstance(value, date):
+            return value
+        try:
+            return date.fromisoformat(str(value or "").strip())
+        except ValueError:
+            return None
+
+    return_date = _strict_date(schedule.get("return_date"))
+    start_date = _strict_date(content.get("start_date"))
     if return_date is None or start_date is None:
         return False
     try:

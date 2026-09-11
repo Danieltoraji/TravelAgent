@@ -334,6 +334,17 @@ def build_trip_segments(
     schedule = content.get("travel_schedule") or {}
     if not origin or not destination:
         return []
+    # 同城守卫（待办十四机制1，2026-09-07）：出发地归一化出的城市 == 目的地
+    # 城市 → 纯市内游，不建城际来去程（rv13 实锤：此前会出现
+    # 「北京 → 北京（自驾）0min」的荒谬段；家↔景点的市内衔接本就不属于
+    # 城际管线）。非归一化的自由文本（如「清华大学」）不等值 → 走城际链，
+    # 由偏好完整性补口（机制2）拒绝 driving 兜底。
+    if str(origin).strip() == str(destination).strip():
+        logger.warning(
+            "build_trip_segments: 出发地 %s 与目的地同城 → 不建城际来去程",
+            origin,
+        )
+        return []
     # 市内衔接真源化（2026-09-04）：原始地址优先取参数（hook 直传），缺省回退
     # content 归一化 stash（_normalize_intercity_places 写入）
     origin_address = (

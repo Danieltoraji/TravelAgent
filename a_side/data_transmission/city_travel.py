@@ -243,7 +243,25 @@ def find_city_travel_preferred(
             # 真源时长缺失/为 0（如 driving 真源对短途城际返回空）
             # → 回落本地估算条目（时长+价格都补齐）
             return local
-        return provider(origin, destination)
+        edge = provider(origin, destination)
+        # 偏好完整性补口（待办十四机制2，2026-09-07）：估算表外城市对（local
+        # 为 None）此前直接采纳 provider 缺省兜底——train/flight 全挂后回落
+        # driving 且不做偏好检查（rv13 实锤：rail 用户被 10.5h 自驾接管，
+        # 「清华大学 → 北京」）。显式 rail/air 偏好下 driving 兜底不采纳
+        # （返回 None → 不建城际段并明示，宁缺不假）；无偏好保持 8.30 拍板
+        # （driving 被迫选项如实给出）。
+        if (
+            edge is not None
+            and priority in ("rail", "air")
+            and edge.mode == Mode.DRIVING.value
+        ):
+            logger.warning(
+                "城际 %s→%s：%s 偏好下缺省兜底回落 driving（估算表外城市对），"
+                "拒绝采纳，不建城际段",
+                origin, destination, priority,
+            )
+            return None
+        return edge
     return _pick_local_edge(origin, destination, modes, options, priority)
 
 
