@@ -18,7 +18,10 @@
   穿透后从任意设备触发（base 换成你的隧道地址）：
     python demo/inject_events.py --base http://节点地址:端口 storm
 
-  服务端设置了 DEBUG_INJECT_TOKEN 时：
+  多用户改造（2026-09）后所有端点需登录 token：
+    python demo/inject_events.py --bearer 你的登录token storm
+
+  服务端设置了 DEBUG_INJECT_TOKEN 时（二层防护）：
     python demo/inject_events.py --token 你的token storm
 """
 
@@ -42,10 +45,17 @@ except Exception:  # pragma: no cover
 SCENARIOS = ("storm", "queue", "traffic_jam", "hotel_full")
 
 
-def post(base: str, payload: Dict[str, Any], token: Optional[str]) -> Dict[str, Any]:
+def post(
+    base: str,
+    payload: Dict[str, Any],
+    token: Optional[str],
+    bearer: Optional[str] = None,
+) -> Dict[str, Any]:
     """POST /api/debug/inject/，返回响应 JSON；HTTP/连接错误直接退出。"""
     url = base.rstrip("/") + "/api/debug/inject/"
     headers = {"Content-Type": "application/json"}
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
     if token:
         headers["X-Debug-Token"] = token
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -87,8 +97,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="TravelAgent 演示突发事件注入")
     ap.add_argument("--base", default="http://127.0.0.1:8000",
                     help="后端地址（穿透后传隧道地址，如 http://节点:端口）")
+    ap.add_argument("--bearer", default=None,
+                    help="登录 token（多用户改造后所有 /api/* 需 Bearer；"
+                         "POST /api/auth/login/ 获取）")
     ap.add_argument("--token", default=None,
-                    help="DEBUG_INJECT_TOKEN（服务端已配置时必填）")
+                    help="DEBUG_INJECT_TOKEN（服务端已配置时的二层防护头）")
     ap.add_argument("--persist", action="store_true",
                     help="同步写入假池（后续轮询持续可见，慎用：可能重复触发决策）")
     ap.add_argument("--all", action="store_true",
@@ -114,7 +127,7 @@ def main() -> None:
             print(f"\n[{i}/{len(payloads)}] {payload['scenario']}")
             if args.persist:
                 payload["persist_world"] = True
-            summarize(post(args.base, payload, args.token))
+            summarize(post(args.base, payload, args.token, args.bearer))
             if i < len(payloads):
                 time.sleep(args.interval)
         return
@@ -142,7 +155,7 @@ def main() -> None:
         payload["persist_world"] = True
 
     print(f"⚡ 注入 {args.scenario}: {json.dumps(payload, ensure_ascii=False)}")
-    summarize(post(args.base, payload, args.token))
+    summarize(post(args.base, payload, args.token, args.bearer))
 
 
 if __name__ == "__main__":
