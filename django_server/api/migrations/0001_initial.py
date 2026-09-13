@@ -18,7 +18,7 @@ class Migration(migrations.Migration):
             name='AuthToken',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('key_hash', models.CharField(db_index=True, max_length=64, unique=True)),
+                ('key_hash', models.CharField(max_length=64, unique=True)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('last_seen_at', models.DateTimeField(auto_now=True)),
                 ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='api_tokens', to=settings.AUTH_USER_MODEL)),

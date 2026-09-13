@@ -20,6 +20,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 from django.contrib.auth.models import User
+from django.db import IntegrityError
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -79,6 +80,8 @@ def resolve_bearer(request: HttpRequest) -> Optional[User]:
     )
     if token is None:
         return None
+    if not token.user.is_active:
+        return None   # review P3：停用用户的 token 一律无效（纯防御，当前无停用入口）
     try:
         if token.last_seen_at is None or (
             timezone.now() - token.last_seen_at
@@ -104,8 +107,13 @@ def register(request: HttpRequest) -> JsonResponse:
         return _error("用户名已存在", status=409)
     try:
         user = User.objects.create_user(username=username, password=password)
-    except Exception as exc:  # noqa: BLE001
-        return _error(f"注册失败：{exc}", status=500)
+    except IntegrityError:
+        # review P3：exists() 检查与 create_user 之间的 TOCTOU 竞态——
+        # 并发同名注册在此处落入唯一约束，映射 409 固定文案（不泄漏异常）
+        return _error("用户名已存在", status=409)
+    except Exception:  # noqa: BLE001
+        logger.exception("register failed for %s", username)
+        return _error("注册失败（服务端内部错误）", status=500)
     return JsonResponse({
         "status": "ok",
         "token": issue_token(user),

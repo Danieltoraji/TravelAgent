@@ -34,7 +34,12 @@ class TokenAuthRuntimeMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        if request.path not in PUBLIC_PATHS:
+        # 白名单归一（review P3）：/api/health（无尾斜杠）也放行——否则会在
+        # 中间件层 401，走不到 CommonMiddleware 的 APPEND_SLASH 重定向
+        path = request.path
+        if not path.endswith("/"):
+            path = path + "/"
+        if path not in PUBLIC_PATHS:
             try:
                 user = resolve_bearer(request)
             except Exception:  # noqa: BLE001  DB 异常按未认证处理（fail-closed）

@@ -493,12 +493,21 @@ def tool_calls(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["POST"])
 def execution_poll(request: HttpRequest) -> JsonResponse:
+    """手动轮询。多用户 review 观察项（2026-09）：持锁尝试改非阻塞——
+
+    同用户 plan/chat 长写持锁 20-70s 期间，5s 一轮的 poll 不再占住 gthread
+    线程干等（多用户并发规划时会把线程池吃满），立即返回 busy 语义
+    （200 + status="busy"，C 端按空事件处理，契约超集零改动）。
+    """
     rt = request.runtime
-    with rt.lock:
-        try:
-            events = rt.poll()
-        except RuntimeError as exc:
-            return _error(str(exc), status=400)
+    if not rt.lock.acquire(timeout=0):
+        return JsonResponse({"status": "busy", "events": [], "count": 0})
+    try:
+        events = rt.poll()
+    except RuntimeError as exc:
+        return _error(str(exc), status=400)
+    finally:
+        rt.lock.release()
     return JsonResponse({
         "status": "ok",
         "events": [to_dict(e) for e in events],
@@ -511,7 +520,9 @@ def execution_poll(request: HttpRequest) -> JsonResponse:
 def execution_lookahead(request: HttpRequest) -> JsonResponse:
     payload = _json_body(request)
     rt = request.runtime
-    with rt.lock:
+    if not rt.lock.acquire(timeout=0):
+        return JsonResponse({"status": "busy", "events": [], "count": 0})
+    try:
         try:
             if payload and "now" in payload:
                 now = datetime.fromisoformat(payload["now"])
@@ -522,6 +533,8 @@ def execution_lookahead(request: HttpRequest) -> JsonResponse:
             return _error(str(exc), status=400)
         except ValueError as exc:
             return _error(str(exc), status=400)
+    finally:
+        rt.lock.release()
     return JsonResponse({
         "status": "ok",
         "events": [to_dict(e) for e in events],

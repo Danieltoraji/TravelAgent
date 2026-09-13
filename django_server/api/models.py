@@ -21,7 +21,8 @@ class AuthToken(models.Model):
     """API 访问令牌（key 明文只在签发响应里出现一次）。"""
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_tokens")
-    key_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    # unique 自带索引，不再显式 db_index（review P3）
+    key_hash = models.CharField(max_length=64, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(auto_now=True)
 
