@@ -20,3 +20,6 @@ logs/
 # pytest 缓存与沙箱只读残留（0o700 TemporaryDirectory，git 无法遍历）
 .pytest_cache/
 .pytest_tmp/
+
+# ZCode 本地会话工件（计划/缓存），review 发现 4ddbe2a 误入库后移出（2026-09）
+.zcode/

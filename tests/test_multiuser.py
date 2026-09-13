@@ -176,5 +176,59 @@ class TestUserRuntimeManager(unittest.TestCase):
         m.persist(999)              # 不在内存 → 不查库不报错
 
 
+class TestPollBusy(unittest.TestCase):
+    """review 修复（2026-09-13）：poll/lookahead 非阻塞持锁——同用户锁被
+    其他线程持有时立即返回 busy，不再占线程干等。
+
+    注意 RLock 同线程可重入：Django test Client 在测试线程内同步执行请求，
+    必须用辅助线程持锁才能模拟「另一线程正在 plan」的竞争。
+    """
+
+    def test_poll_returns_busy_when_lock_held_elsewhere(self) -> None:
+        import threading
+
+        from django.contrib.auth.models import User
+        from django.test import Client
+
+        from runtime.manager import manager
+
+        client = Client()
+        username = f"busy_{uuid.uuid4().hex[:8]}"
+        resp = client.post(
+            "/api/auth/register/",
+            data=json.dumps({"username": username, "password": "secret123"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200, resp.content
+        token = json.loads(resp.content)["token"]
+        uid = User.objects.get(username=username).id
+        rt = manager.get(uid)
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def holder() -> None:
+            with rt.lock:
+                entered.set()
+                release.wait(5)
+
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        try:
+            assert entered.wait(5)
+            resp = client.post("/api/execution/poll/",
+                               HTTP_AUTHORIZATION=f"Bearer {token}")
+            self.assertEqual(resp.status_code, 200)
+            body = json.loads(resp.content)
+            self.assertEqual(body["status"], "busy")
+            self.assertEqual(body["events"], [])
+            self.assertEqual(body["count"], 0)
+        finally:
+            release.set()
+            t.join(5)
+            manager.drop(uid)
+            User.objects.filter(username=username).delete()
+
+
 if __name__ == "__main__":
     unittest.main()

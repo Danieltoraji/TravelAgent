@@ -172,5 +172,62 @@ class TestAccountLifecycle(_Base):
         self.assertTrue(json.loads(self._get("/api/auth/me/", token=token).content)["has_plan"])
 
 
+class TestReviewFixes(_Base):
+    """review 修复回归（2026-09-13）：注册竞态映射 409 / 白名单斜杠归一 /
+    config_reload 门控。"""
+
+    def test_register_integrity_error_maps_409(self) -> None:
+        """TOCTOU：exists() 通过后 create_user 撞唯一约束 → 409 固定文案，
+        不再 500 + 异常文本泄漏。"""
+        from unittest import mock
+
+        from django.db import IntegrityError
+
+        username = f"race_{uuid.uuid4().hex[:8]}"
+        self._created.append(username)
+        with mock.patch("api.auth.User.objects.create_user",
+                        side_effect=IntegrityError):
+            resp = self.client.post(
+                "/api/auth/register/",
+                data=json.dumps({"username": username, "password": "secret123"}),
+                content_type="application/json",
+            )
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn("用户名已存在", json.loads(resp.content)["error"])
+
+    def test_health_without_trailing_slash(self) -> None:
+        """/api/health（无尾斜杠）也放行——中间件白名单归一，不再 401；
+        无斜杠形态由 APPEND_SLASH 301 重定向到带斜杠端点，跟随即 200。"""
+        direct = self.client.get("/api/health")
+        self.assertIn(direct.status_code, (200, 301, 308))
+        self.assertNotEqual(direct.status_code, 401)
+        followed = self.client.get("/api/health", follow=True)
+        self.assertEqual(followed.status_code, 200)
+
+    def test_config_reload_gating(self) -> None:
+        """CONFIG_RELOAD_TOKEN 非空 → 要求 X-Config-Token；空 → 开放。"""
+        from config.settings import settings as app_settings
+
+        username, token = self._register()
+        auth = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+        orig = app_settings.config_reload_token
+        try:
+            app_settings.config_reload_token = "sekrit"
+            resp = self.client.post("/api/config/reload/", data="{}",
+                                    content_type="application/json", **auth)
+            self.assertEqual(resp.status_code, 401)
+            resp = self.client.post("/api/config/reload/", data="{}",
+                                    content_type="application/json",
+                                    HTTP_X_CONFIG_TOKEN="sekrit", **auth)
+            self.assertEqual(resp.status_code, 200)
+            app_settings.config_reload_token = ""
+            resp = self.client.post("/api/config/reload/", data="{}",
+                                    content_type="application/json", **auth)
+            self.assertEqual(resp.status_code, 200)
+        finally:
+            app_settings.config_reload_token = orig
+
+
 if __name__ == "__main__":
     unittest.main()

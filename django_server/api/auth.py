@@ -48,12 +48,19 @@ def _hash(key: str) -> str:
 
 
 def issue_token(user: User) -> str:
-    """签发新 token 并轮换掉该用户的旧 token（单设备语义）。"""
+    """签发新 token 并轮换掉该用户的旧 token（单设备语义）。
+
+    review P3（2026-09）：delete+create 包事务——并发登录时轮换与签发
+    原子生效，避免短暂出现两个并存 token 打破单设备语义。
+    """
+    from django.db import transaction
+
     from api.models import AuthToken
 
-    AuthToken.objects.filter(user=user).delete()
-    key = secrets.token_urlsafe(32)
-    AuthToken.objects.create(user=user, key_hash=_hash(key))
+    with transaction.atomic():
+        AuthToken.objects.filter(user=user).delete()
+        key = secrets.token_urlsafe(32)
+        AuthToken.objects.create(user=user, key_hash=_hash(key))
     return key
 
 

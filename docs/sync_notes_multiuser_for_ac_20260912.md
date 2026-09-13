@@ -50,6 +50,7 @@ if (token) headers["Authorization"] = `Bearer ${token}`;
 - `decided_by` 从硬编码 `"c_end_user"` 变为真实用户名；`/api/profile/` 返回真实用户名。
 - 服务端重启：用户下次带 token 请求时自动恢复完整会话（timeline/预约/事件游标），前端无感；`/api/auth/me/` 的 `has_plan` 可用于启动时判断是否需要重新规划。
 - 会话内存上限 100 用户 / 2 小时不活跃淘汰（淘汰只丢内存，数据在 DB，下次请求自动重建）。
+- **poll busy 语义（review 修复，2026-09-13）**：`POST /api/execution/poll/`、`POST /api/execution/lookahead/` 改非阻塞持锁——同一用户正处规划/对话长写期间，轮询立即返回 `200 {"status": "busy", "events": [], "count": 0}` 而不是排队干等；C 端按空事件处理即可，契约超集。
 
 ## 三、部署变化（对 A/运维知悉）
 
@@ -57,6 +58,7 @@ if (token) headers["Authorization"] = `Bearer ${token}`;
 - 容器启动先 `manage.py migrate`（新表：`api_authtoken`、`api_trip` + Django auth 表）。
 - sqlite 路径环境变量 `TRAVELAGENT_DB_PATH`（compose 已挂 named volume `travelagent-data:/app/django_server/data/`，容器重建数据不丢）。
 - `BOOKING_PERSIST_PATH`（E5 文件持久化）降级为 legacy 兼容：HTTP 用户的预约状态一律走 Trip 表；该文件仅剩进程内单例（smoke 清单 2）在用。
+- **`POST /api/config/reload/` 加门控（review 修复）**：环境变量 `CONFIG_RELOAD_TOKEN` 非空时要求 `X-Config-Token` 头；进程级 reload 影响所有用户，公网部署务必在 Secrets 配置。
 - 部署冒烟新增清单 0（401/token）与清单 5（双用户隔离），并额外跑一个第二用户的完整 plan（smoke 总时长 +30~70s）。
 
 ## 四、A 侧边界确认
@@ -73,5 +75,9 @@ if (token) headers["Authorization"] = `Bearer ${token}`;
 
 ## 六、已知限制（明示不做）
 
-- 明文 http 传输 token（与 APK 现状一致）；SECRET_KEY 硬编码、DEBUG=True 为既有债务。
+- 明文 http 传输 token（与 APK 现状一致）；SECRET_KEY 硬编码、DEBUG=True 为既有债务。开放注册后 DEBUG 错误页与个别端点的异常文案会向任意注册用户暴露内部信息，公网部署前需收敛。
+- **配额暴露（review 点名）**：注册无门槛 → LLM 调用、12306/聚源/高德等真源配额按注册用户数放大（聚源航班仅 550 次/月）；公网部署前应考虑注册审批/邀请码或配额上限。
+- **live 预订路径暴露（review 点名）**：live 模式下 E1 语义是「hotel 动作批准即执行真实预订」——任何注册用户批准动作都会触达 RollingGo 真实库存；公网部署前应加确认层级或关停该路径。
+- register/login 无限速，可被暴力试密码（公网部署前加）。
 - 不做多 worker 横向扩展（会话串号）、不做 Trip 历史（每用户仅保留当前行程，新 plan 覆写）、无注册审批/邮箱验证。
+- manager 淘汰边角：超 100 用户或 2h TTL 淘汰可发生在途请求的运行时上，该请求随后的一轮 persist 跳过（DB 保持上次快照，下次写入补齐）。
