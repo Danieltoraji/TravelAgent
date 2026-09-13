@@ -81,6 +81,9 @@ jobs:
             USE_LLM_TOOLS=${{ secrets.USE_LLM_TOOLS || 'false' }}
             # 演示注入端点鉴权（公网必须设置；请求需带 X-Debug-Token 头）
             DEBUG_INJECT_TOKEN=${{ secrets.DEBUG_INJECT_TOKEN }}
+            # 配置热更新端点鉴权（多用户 review P2 2026-09：进程级副作用影响
+            # 所有用户；公网必须设置，请求需带 X-Config-Token 头）
+            CONFIG_RELOAD_TOKEN=${{ secrets.CONFIG_RELOAD_TOKEN }}
             QWEATHER_API_KEY=${{ secrets.QWEATHER_API_KEY }}
             QWEATHER_API_HOST=${{ secrets.QWEATHER_API_HOST }}
             AMAP_API_KEY=${{ secrets.AMAP_API_KEY }}

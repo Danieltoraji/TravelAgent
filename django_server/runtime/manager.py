@@ -121,15 +121,26 @@ class UserRuntimeManager:
     # -- 持久化 --------------------------------------------------------------
 
     def persist(self, user_id: int) -> None:
-        """运行时快照 → Trip 行（POST 响应后由中间件调用；尽力而为）。"""
+        """运行时快照 → Trip 行（POST 响应后由中间件调用；尽力而为）。
+
+        撕裂快照防护（多用户 review P2，2026-09）：snapshot 须持该用户的
+        runtime.lock——否则同用户另一线程正持锁写入（plan/chat 进行中）时
+        可能抓到半更新状态（timeline 已换、events 未接上），若恰是最后一次
+        写入，重启恢复即丢一致性。带超时 try-acquire：拿不到（长写进行中）
+        跳过本轮（下次 POST 补写），也不阻塞响应。
+        """
         with self._lock:
             entry = self._entries.get(user_id)
         if entry is None:
             return
+        rt = entry[0]
+        if not rt.lock.acquire(timeout=0.2):
+            logger.debug("persist skipped: user %s runtime busy", user_id)
+            return
         try:
             from api.models import Trip
 
-            snapshot = entry[0].snapshot()
+            snapshot = rt.snapshot()
             Trip.objects.update_or_create(
                 user_id=user_id,
                 defaults={
@@ -143,6 +154,8 @@ class UserRuntimeManager:
             )
         except Exception:  # noqa: BLE001
             logger.exception("trip persist failed for user %s", user_id)
+        finally:
+            rt.lock.release()
 
     # -- 淘汰 ----------------------------------------------------------------
 

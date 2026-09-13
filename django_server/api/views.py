@@ -784,7 +784,17 @@ def config_info(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["POST"])
 def config_reload(request: HttpRequest) -> JsonResponse:
-    # 全局副作用（进程级 settings 单例）：多用户下影响所有人，仅运维/演示用
+    """配置热更新（进程级副作用，影响所有用户）。
+
+    多用户 review P2（2026-09）：比照 DEBUG_INJECT_TOKEN 门控——环境变量
+    CONFIG_RELOAD_TOKEN 非空时要求 X-Config-Token 请求头（401）；
+    空 = 开放并记警告（本地/演示便利），公网部署务必设置。
+    """
+    token = settings.config_reload_token
+    if token and request.headers.get("X-Config-Token") != token:
+        return _error("invalid or missing X-Config-Token", status=401)
+    if not token:
+        logger.warning("config_reload 未设 CONFIG_RELOAD_TOKEN，公网可达时建议配置")
     with request.runtime.lock:
         settings.reload()
     return JsonResponse({
