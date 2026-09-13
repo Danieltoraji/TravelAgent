@@ -22,7 +22,7 @@ if os.path.isdir(_site) and _site not in sys.path:
     sys.path.insert(0, _site)
 
 from core.schemas import DayPlan, Place, TripTimeline  # noqa: E402
-from runtime.agent_runtime import runtime  # noqa: E402
+from runtime.agent_runtime import AgentRuntime  # noqa: E402
 from tools.amap_client import AmapClient  # noqa: E402
 
 
@@ -124,12 +124,8 @@ def _timeline_with_transport():
 
 class TestEnrichTransportDetails(unittest.TestCase):
     def setUp(self) -> None:
-        self._timeline = runtime.timeline
-        self._map_api = getattr(runtime, "_use_real_map_api_backup", None)
-        runtime.timeline = None
-
-    def tearDown(self) -> None:
-        runtime.timeline = self._timeline
+        # 多用户改造：enrich 是 AgentRuntime 实例方法——每用例独立实例
+        self.rt = AgentRuntime()
 
     def test_enrich_success(self) -> None:
         tl = _timeline_with_transport()
@@ -141,9 +137,9 @@ class TestEnrichTransportDetails(unittest.TestCase):
             "transit": "公交", "transit_text": "步行858m → 124路 1站 → 步行398m",
             "walking_m": 1256, "source": "live",
         }
-        with mock.patch.object(runtime, "registry") as reg:
+        with mock.patch.object(self.rt, "registry") as reg:
             reg.call.return_value = fake_result
-            runtime.enrich_transport_details(tl)
+            self.rt.enrich_transport_details(tl)
         seg = tl.days[0].items[1]
         self.assertEqual(seg.details["mode"], "transit")
         self.assertEqual(seg.details["duration_min"], 37)
@@ -154,9 +150,9 @@ class TestEnrichTransportDetails(unittest.TestCase):
         tl = _timeline_with_transport()
         fake_result = mock.MagicMock()
         fake_result.status.value = "error"
-        with mock.patch.object(runtime, "registry") as reg:
+        with mock.patch.object(self.rt, "registry") as reg:
             reg.call.return_value = fake_result
-            runtime.enrich_transport_details(tl)
+            self.rt.enrich_transport_details(tl)
         seg = tl.days[0].items[1]
         # 保留透传的矩阵信息，无 mode/transit_text
         self.assertEqual(seg.details["distance_km"], 1.76)
@@ -165,9 +161,9 @@ class TestEnrichTransportDetails(unittest.TestCase):
 
     def test_enrich_exception_silent(self) -> None:
         tl = _timeline_with_transport()
-        with mock.patch.object(runtime, "registry") as reg:
+        with mock.patch.object(self.rt, "registry") as reg:
             reg.call.side_effect = RuntimeError("amap down")
-            runtime.enrich_transport_details(tl)  # 不应抛出
+            self.rt.enrich_transport_details(tl)  # 不应抛出
         seg = tl.days[0].items[1]
         self.assertEqual(seg.details["distance_km"], 1.76)
 
@@ -179,8 +175,8 @@ class TestEnrichTransportDetails(unittest.TestCase):
             type(app_settings), "use_real_map_api",
             new_callable=mock.PropertyMock, return_value=False,
         ):
-            with mock.patch.object(runtime, "registry") as reg:
-                runtime.enrich_transport_details(tl)
+            with mock.patch.object(self.rt, "registry") as reg:
+                self.rt.enrich_transport_details(tl)
                 reg.call.assert_not_called()
         seg = tl.days[0].items[1]
         self.assertNotIn("mode", seg.details)
@@ -204,6 +200,9 @@ class TestEnrichDistanceSanity(_ut.TestCase):
     城际段（kind=outbound）整体跳过 enrich（T5，2026-09-05：城市级地名查
     transit 产生跨市怪路线覆盖展示，真源班次数据已足够）。"""
 
+    def setUp(self) -> None:
+        self.rt = AgentRuntime()  # 多用户改造：实例方法用独立实例
+
     def _tl(self, kind=None):
         details = {"from": "A", "to": "B", "duration_min": 5}
         if kind:
@@ -222,9 +221,9 @@ class TestEnrichDistanceSanity(_ut.TestCase):
         fake_result.data = {"mode": "transit", "distance_km": 86.95,
                             "duration_min": 141, "transit_text": "霸州1路 9站",
                             "source": "live"}
-        with mock.patch.object(runtime, "registry") as reg:
+        with mock.patch.object(self.rt, "registry") as reg:
             reg.call.return_value = fake_result
-            runtime.enrich_transport_details(tl)
+            self.rt.enrich_transport_details(tl)
         seg = tl.days[0].items[0]
         self.assertNotIn("distance_km", seg.details)  # 漂移值未合并
         self.assertNotIn("transit_text", seg.details)
@@ -237,9 +236,9 @@ class TestEnrichDistanceSanity(_ut.TestCase):
         fake_result.data = {"mode": "transit", "distance_km": 2.43,
                             "duration_min": 16, "transit_text": "地铁6号线 2站",
                             "source": "live"}
-        with mock.patch.object(runtime, "registry") as reg:
+        with mock.patch.object(self.rt, "registry") as reg:
             reg.call.return_value = fake_result
-            runtime.enrich_transport_details(tl)
+            self.rt.enrich_transport_details(tl)
         seg = tl.days[0].items[0]
         self.assertEqual(seg.details["distance_km"], 2.43)
 
@@ -256,9 +255,9 @@ class TestEnrichDistanceSanity(_ut.TestCase):
                             "duration_min": 362,
                             "transit_text": "天津地铁5号线 4站 → 机场巴士",
                             "source": "live"}
-        with mock.patch.object(runtime, "registry") as reg:
+        with mock.patch.object(self.rt, "registry") as reg:
             reg.call.return_value = fake_result
-            runtime.enrich_transport_details(tl)
+            self.rt.enrich_transport_details(tl)
             reg.call.assert_not_called()
         seg = tl.days[0].items[0]
         self.assertNotIn("distance_km", seg.details)
@@ -272,9 +271,9 @@ class TestEnrichDistanceSanity(_ut.TestCase):
         fake_result.status.value = "ok"
         fake_result.data = {"mode": "transit", "distance_km": 2.0,
                             "duration_min": 10, "source": "live"}
-        with mock.patch.object(runtime, "registry") as reg:
+        with mock.patch.object(self.rt, "registry") as reg:
             reg.call.return_value = fake_result
-            runtime.enrich_transport_details(tl)
+            self.rt.enrich_transport_details(tl)
         _, kwargs = reg.call.call_args
         self.assertTrue(kwargs.get("same_city"))
 
