@@ -16,7 +16,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, asdict
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.schemas import (
     ActionItem,
@@ -91,11 +91,9 @@ class BookingManager:
             self._load_persisted()
 
     # -- E5：持久化 ---------------------------------------------------------
-    def _persist(self) -> None:
-        """动作/预约状态落盘（单用户 Demo 规模：整体 json 覆写）。"""
-        if not self._persist_path:
-            return
-        snapshot = {
+    def snapshot(self) -> Dict[str, Any]:
+        """可持久化快照（多用户 M2：文件后端与 Django Trip DB 后端共用形态）。"""
+        return {
             "records": [asdict(r) | {"status": r.status.value} for r in self._records.values()],
             "actions": [
                 asdict(a) | {
@@ -105,6 +103,25 @@ class BookingManager:
                 for a in self._actions
             ],
         }
+
+    def restore_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        """从 snapshot() 形态恢复（多用户 M2：重启懒重建用）。"""
+        for d in snapshot.get("records", []):
+            rec = BookingRecord(**{**d, "status": BookingStatus(d["status"])})
+            self._records[rec.booking_id] = rec
+        for d in snapshot.get("actions", []):
+            item = ActionItem(**{
+                **d,
+                "status": ActionStatus(d["status"]),
+                "permission": PermissionLevel(d["permission"]),
+            })
+            self._actions.append(item)
+
+    def _persist(self) -> None:
+        """动作/预约状态落盘（单用户 Demo 规模：整体 json 覆写）。"""
+        if not self._persist_path:
+            return
+        snapshot = self.snapshot()
         try:
             os.makedirs(os.path.dirname(self._persist_path) or ".", exist_ok=True)
             with open(self._persist_path, "w", encoding="utf-8") as f:
@@ -119,16 +136,7 @@ class BookingManager:
         try:
             with open(self._persist_path, encoding="utf-8") as f:
                 snapshot = json.load(f)
-            for d in snapshot.get("records", []):
-                rec = BookingRecord(**{**d, "status": BookingStatus(d["status"])})
-                self._records[rec.booking_id] = rec
-            for d in snapshot.get("actions", []):
-                item = ActionItem(**{
-                    **d,
-                    "status": ActionStatus(d["status"]),
-                    "permission": PermissionLevel(d["permission"]),
-                })
-                self._actions.append(item)
+            self.restore_snapshot(snapshot)
             logger.info("booking state restored: %d records, %d actions",
                         len(self._records), len(self._actions))
         except (OSError, ValueError, TypeError, KeyError):
