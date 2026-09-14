@@ -364,6 +364,7 @@ class AgentRuntime:
                 "tool_rounds": orch.get("tool_rounds"),
                 "tools_degraded": orch.get("tools_degraded"),
                 "fallback_reason": orch.get("fallback_reason"),
+                "summary": str(orch.get("summary") or "")[:200],
             }
             if isinstance(orch, dict) and orch.get("tools_enabled")
             else None
