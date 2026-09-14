@@ -67,6 +67,12 @@ class Settings:
     debug_inject_token: str = field(default_factory=lambda: os.environ.get(
         "DEBUG_INJECT_TOKEN", ""))
 
+    # 配置热更新端点鉴权（多用户 review P2，2026-09）：config/reload 是进程级
+    # 副作用（影响所有用户），开放注册语境下比照 DEBUG_INJECT_TOKEN 门控；
+    # 空 = 开放并记警告日志，公网部署务必设置。
+    config_reload_token: str = field(default_factory=lambda: os.environ.get(
+        "CONFIG_RELOAD_TOKEN", ""))
+
     # ── M5 生产化配置 ──────────────────────────────────────────────
     api_timeout: float = 10.0              # API 请求超时（秒）
     max_retries: int = 3                  # 最大重试次数（首次 + 重试）
@@ -147,6 +153,7 @@ class Settings:
         self.juhe_flight_key = os.environ.get("JUHE_FLIGHT_KEY", "")
         self.aviationstack_key = os.environ.get("AVIATIONSTACK_KEY", "")
         self.debug_inject_token = os.environ.get("DEBUG_INJECT_TOKEN", "")
+        self.config_reload_token = os.environ.get("CONFIG_RELOAD_TOKEN", "")
         try:
             from config.local_settings import apply_local_settings
             apply_local_settings(self)

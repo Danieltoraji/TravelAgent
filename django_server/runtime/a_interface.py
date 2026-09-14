@@ -12,9 +12,10 @@
 B/Django 其余代码零改动。风险对策（方案 §八）：
 - **循环导入**：``agent_runtime`` → ``a_interface`` 已有依赖边，本模块内对
   runtime 单例与 A 侧模块一律**函数级延迟导入**（反向边必须延迟）；
-- **requirement 生命周期**：``build_decision_hook`` 构造时从 runtime 单例读
-  ``requirement``（``POST /api/plan/`` 提交时由 ``AgentRuntime`` 存入），
-  因此在 ``init_timeline`` 之前调用方必须先设置 ``runtime.requirement``。
+- **requirement 生命周期**（2026-09 多用户改造后）：``build_decision_hook`` /
+  ``build_chat_hook`` 的 ``requirement`` 改为**显式传参**（多用户下每个运行时
+  传各自的 requirement），缺省才回落默认单例（兼容旧调用/旧测试）；
+  ``build_planner_hook`` 一直支持显式传参。
 """
 
 from __future__ import annotations
@@ -24,6 +25,11 @@ from typing import Any, Dict, Optional
 from core.schemas import DecisionRequest, ReplanRequest
 
 DEFAULT_PLAN_ID = "plan_001"
+
+# 区分「未传参」（回落 legacy 单例，兼容旧调用）与「显式传 None」（未规划
+# 运行时的真实状态，按空需求处理）。多用户 review P2（2026-09）：此前
+# requirement=None 会命中回落逻辑悄悄读单例——一旦 legacy 单例被设置过就串用户。
+_UNSET = object()
 
 
 def _requirement_from_runtime() -> Dict[str, Any]:
@@ -53,15 +59,21 @@ def _candidate_spots_provider(requirement: Dict[str, Any]):
     return provider
 
 
-def build_decision_hook(tool_provider: Any = None) -> Any:
+def build_decision_hook(
+    tool_provider: Any = None,
+    requirement: Any = _UNSET,
+) -> Any:
     """返回 A 侧 Decision Engine（BDecisionHook）。
 
-    ``tool_provider`` 由 AgentRuntime 注入（执行期实时工具门面）；requirement
-    从 runtime 单例读取（调用方须先设置，见模块 docstring）。
+    ``tool_provider`` 由 AgentRuntime 注入（执行期实时工具门面）；
+    ``requirement`` 多用户改造（2026-09 M1）改为显式传参（调用方传各自
+    运行时的 requirement）：显式传 None（未规划）按空需求处理，仅未传参
+    才回落默认单例（旧行为兼容，见 _UNSET 说明）。
     """
     from call_llm.b_decision_hook import BDecisionHook
 
-    requirement = _requirement_from_runtime()
+    if requirement is _UNSET:
+        requirement = _requirement_from_runtime()
     content = _content(requirement)
     return BDecisionHook(
         requirement=requirement,
@@ -99,18 +111,23 @@ def build_planner_hook(
     )
 
 
-def build_chat_hook(tool_provider: Any = None) -> Any:
+def build_chat_hook(
+    tool_provider: Any = None,
+    requirement: Any = _UNSET,
+) -> Any:
     """A 侧对话编排入口（BChatHook，P5.1）：chat 修改意图 → ``ReplanRequest``。
 
     方案 §六.7：``update_timeline`` 的编排从 B 侧 view 迁回 A 编排层——模型
     输出「修改意图」而非整份新时间轴，A 翻译成事件/约束后走 RePlanner 增量
     修复或 A 规划器全量重排；C 端请求/响应契约零变化。B 侧 ``_exec_chat_timeline``
     只做「解析 arguments → build_chat_hook() → apply() → 应用 ReplanRequest」。
-    requirement 从 runtime 单例读取（与 ``build_decision_hook`` 同款生命周期约定）。
+    ``requirement`` 多用户改造（2026-09 M1）显式传参：显式 None 按空需求，
+    仅未传参回落默认单例（见 _UNSET 说明）。
     """
     from call_llm.b_chat_hook import BChatHook
 
-    requirement = _requirement_from_runtime()
+    if requirement is _UNSET:
+        requirement = _requirement_from_runtime()
     content = _content(requirement)
     return BChatHook(
         requirement=requirement,

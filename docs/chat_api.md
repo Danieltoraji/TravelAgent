@@ -130,7 +130,9 @@ Content-Type: application/json
 - **v2 支持对话改时间轴**（见上文「〇」节）；工具调用仅限 `update_timeline`
   私有工具，无其它工具（真源查询留 v2.2）；
 - 非流式：3–10 秒返回（取决于模型），**C 端必须展示 loading 态**；
-- 无鉴权（与现有单用户 demo 一致）；公网部署时注意成本，后续可加 token。
+- **需鉴权**（2026-09 多用户改造后与全部端点一致）：请求带
+  `Authorization: Bearer <token>`（`POST /api/auth/login/` 获取），无有效 token 一律 401；
+  公网部署注意 LLM 调用成本。
 
 ---
 
@@ -240,9 +242,14 @@ function ChatPanel({ requestId }: { requestId: string }) {
 ## 三、验证
 
 ```bash
+# 登录拿 token（多用户改造后所有 /api/* 需 Bearer）
+TOKEN=$(curl -s -X POST http://39.96.89.133:8000/api/auth/login/ \
+  -H "Content-Type: application/json" \
+  -d '{"username": "demo", "password": "你的密码"}' | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
 # 先建行程（对话才有上下文）
 curl -X POST http://39.96.89.133:8000/api/plan/ \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"content": {"destination": "北京", "start_date": "2026-08-23", "days": 2,
        "visitor_number": 2,
        "constraints": {"budget": 2000, "must_visit": ["故宫"]},
@@ -250,7 +257,7 @@ curl -X POST http://39.96.89.133:8000/api/plan/ \
 
 # 对话（应引用真实行程）
 curl -X POST http://39.96.89.133:8000/api/chat/ \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"message": "我们第一天去哪？"}'
 # → {"reply": "第一天上午…", "elapsed_ms": …}
 ```

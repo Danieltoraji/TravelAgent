@@ -68,7 +68,7 @@ python demo/inject_events.py --base http://39.96.89.133:8000 storm
 python demo/inject_events.py --base http://39.96.89.133:8000 queue --place 故宫
 
 # 剧情三连（storm → queue → traffic_jam），间隔可配
-python demo/inject_events.py --base http://39.96.89.133:8000 --all --interval 5
+python demo/inject_events.py --base http://39.96.89.133:8000 --bearer $TOKEN --all --interval 5
 
 # 原始注入（任意类型 + 任意数据）
 python demo/inject_events.py raw --event-type traffic --place 北京-故宫 \
@@ -79,7 +79,7 @@ python demo/inject_events.py raw --event-type traffic --place 北京-故宫 \
 
 ```bash
 curl -X POST http://39.96.89.133:8000/api/debug/inject/ \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"scenario": "storm"}'
 ```
 
@@ -89,7 +89,8 @@ curl -X POST http://39.96.89.133:8000/api/debug/inject/ \
 import requests
 requests.post("http://39.96.89.133:8000/api/debug/inject/",
               json={"scenario": "queue", "place": "故宫"},
-              headers={"X-Debug-Token": "xxx"})
+              headers={"Authorization": "Bearer <登录token>",
+                       "X-Debug-Token": "xxx"})  # X-Debug-Token 仅服务端配置了 DEBUG_INJECT_TOKEN 时需要
 ```
 
 ---
@@ -147,24 +148,32 @@ requests.post("http://39.96.89.133:8000/api/debug/inject/",
 5. **booking 是硬规则**：`hotel_full` 不需要 LLM 判定也能走通（适合做
    「无 LLM 也能演示」的保底剧情）。
 6. **food 只展示不决策**：适合做「事件流丰富度」而非「重规划」剧情。
-7. **状态复位**：新 `POST /api/plan/` 自动清空 events/replans/actions；
-   或服务器 `docker compose restart web`。演示前务必复位一次。
-8. **公网演示**：云服务器注入端点当前无鉴权（若未配 Secret）；演示完建议
-   提交 `deploy.yml` 的 `DEBUG_INJECT_TOKEN` 透传并重新部署。
+7. **状态复位**：新 `POST /api/plan/` 自动清空**当前用户**的 events/replans/actions；
+   或服务器 `docker compose restart web`（多用户改造后重启不丢行程，内存态会按
+   Trip 重建）。演示前务必复位一次。
+8. **公网演示**：多用户改造后注入端点已在 Bearer 门禁内（需登录 token）；
+   公网暴露时建议再配 `DEBUG_INJECT_TOKEN` Secret（请求带 `X-Debug-Token` 头）
+   做二层防护，演示完立即关闭隧道。
 
 ---
 
 ## 6. 就绪检查清单（每次演示前）
 
 ```bash
-# 1. 服务器在线 + 新代码
-curl -s -o /dev/null -w "%{http_code}\n" http://39.96.89.133:8000/api/debug/inject/   # 期望 405
+# 0. 登录拿 token（多用户改造后所有 /api/* 需 Bearer）
+TOKEN=$(curl -s -X POST http://39.96.89.133:8000/api/auth/login/ \
+  -H "Content-Type: application/json" \
+  -d '{"username": "demo", "password": "你的密码"}' | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
 
-# 2. 注入链路（先建行程后注入；plan 会清空旧状态）
-curl -s http://39.96.89.133:8000/api/status/ | grep timeline_set                     # true
+# 1. 服务器在线 + 新代码（无 token 会 401；带 token 的 GET 期望 405）
+curl -s -o /dev/null -w "%{http_code}\n" http://39.96.89.133:8000/api/debug/inject/ \
+  -H "Authorization: Bearer $TOKEN"                                                   # 期望 405
+
+# 2. 注入链路（先建行程后注入；plan 会清空当前用户旧状态）
+curl -s http://39.96.89.133:8000/api/status/ -H "Authorization: Bearer $TOKEN" | grep timeline_set  # true
 
 # 3. 决策链路（Key 生效）
-python demo/inject_events.py --base http://39.96.89.133:8000 storm                    # 期望 decision=replanned
+python demo/inject_events.py --base http://39.96.89.133:8000 --bearer $TOKEN storm    # 期望 decision=replanned
 
 # 4. 复位（可选，演示前清场）
 # SSH 服务器：docker compose restart web

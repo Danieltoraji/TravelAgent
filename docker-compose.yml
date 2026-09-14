@@ -9,4 +9,12 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # 多用户改造（2026-09）：sqlite 落在 named volume，容器重建数据不丢
+      TRAVELAGENT_DB_PATH: /app/django_server/data/db.sqlite3
+    volumes:
+      - travelagent-data:/app/django_server/data
     restart: unless-stopped
+
+volumes:
+  travelagent-data:

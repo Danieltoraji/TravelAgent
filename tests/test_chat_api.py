@@ -7,6 +7,9 @@ BChatHook 应用、replan_history 记录、非法意图被拒）。
 
 v2.3（P5.1）：update_timeline 参数从整份时间轴改为「修改意图」（intents），
 编排迁回 A 侧（call_llm.b_chat_hook.BChatHook）；C 端请求/响应契约零变化。
+
+多用户改造（2026-09）：视图从 ``request.runtime`` 取运行时（不再有模块级
+单例）——每个用例构造独立 ``AgentRuntime`` 挂到请求上，互不污染。
 """
 
 import json
@@ -14,7 +17,6 @@ import os
 import sys
 import unittest
 from datetime import date
-from types import SimpleNamespace
 from unittest import mock
 
 _B_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,14 +46,15 @@ from django.http import HttpRequest  # noqa: E402
 
 from api import views  # noqa: E402
 from core.schemas import DayPlan, Place, TripTimeline  # noqa: E402
-from runtime.agent_runtime import runtime  # noqa: E402
+from runtime.agent_runtime import AgentRuntime  # noqa: E402
 
 
-def _post(body: dict) -> HttpRequest:
+def _post(body: dict, rt: AgentRuntime) -> HttpRequest:
     req = HttpRequest()
     req.method = "POST"
     req.path = "/api/chat/"
     req._body = json.dumps(body).encode("utf-8")
+    req.runtime = rt
     return req
 
 
@@ -120,8 +123,8 @@ class StubAgent:
         self.applied = replan
 
 
-def _make_context() -> None:
-    runtime.timeline = TripTimeline(
+def _make_context(rt: AgentRuntime) -> None:
+    rt.timeline = TripTimeline(
         id="plan_001",
         city="北京",
         start_date=date(2026, 8, 1),
@@ -133,7 +136,7 @@ def _make_context() -> None:
             ]),
         ],
     )
-    runtime.requirement = {
+    rt.requirement = {
         "content": {
             "destination": "北京", "days": 2,
             "constraints": {"budget": 2000, "must_visit": ["故宫"]},
@@ -144,46 +147,31 @@ def _make_context() -> None:
 
 class TestChatApi(unittest.TestCase):
     def setUp(self) -> None:
-        self._timeline = runtime.timeline
-        self._requirement = runtime.requirement
-        self._replans = list(runtime.replan_history)
-        self._timeline_history = list(runtime.timeline_history)
-        self._agent = runtime.agent
-        runtime.timeline = None
-        runtime.requirement = None
-        runtime.replan_history = []
-        runtime.timeline_history = []
-        runtime.agent = StubAgent()
-
-    def tearDown(self) -> None:
-        runtime.timeline = self._timeline
-        runtime.requirement = self._requirement
-        runtime.replan_history = self._replans
-        runtime.timeline_history = self._timeline_history
-        runtime.agent = self._agent
+        self.rt = AgentRuntime()
+        self.rt.agent = StubAgent()
 
     # -- 校验路径 ----------------------------------------------------------
 
     def test_empty_body_rejected(self) -> None:
-        resp = views.chat(_post({}))
+        resp = views.chat(_post({}, self.rt))
         self.assertEqual(resp.status_code, 400)
 
     def test_empty_message_rejected(self) -> None:
-        resp = views.chat(_post({"message": "  "}))
+        resp = views.chat(_post({"message": "  "}, self.rt))
         self.assertEqual(resp.status_code, 400)
         self.assertIn("message is required", resp.content.decode())
 
     def test_history_must_be_list(self) -> None:
-        resp = views.chat(_post({"message": "hi", "history": "x"}))
+        resp = views.chat(_post({"message": "hi", "history": "x"}, self.rt))
         self.assertEqual(resp.status_code, 400)
         self.assertIn("history must be a list", resp.content.decode())
 
     # -- 纯对话路径 --------------------------------------------------------
 
     def test_chat_builds_messages_with_context(self) -> None:
-        _make_context()
+        _make_context(self.rt)
         fake = FakeClient(reply="第一天去故宫博物院。")
-        runtime.replan_history.append({"decision": {"reason": "暴雨影响行程"}})
+        self.rt.replan_history.append({"decision": {"reason": "暴雨影响行程"}})
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
@@ -193,7 +181,7 @@ class TestChatApi(unittest.TestCase):
                     {"role": "user", "content": "你好"},
                     {"role": "assistant", "content": "你好！"},
                 ],
-            }))
+            }, self.rt))
         self.assertEqual(resp.status_code, 200)
         body = json.loads(resp.content.decode())
         self.assertEqual(body["reply"], "第一天去故宫博物院。")
@@ -220,7 +208,7 @@ class TestChatApi(unittest.TestCase):
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            resp = views.chat(_post({"message": "你好"}))
+            resp = views.chat(_post({"message": "你好"}, self.rt))
         self.assertEqual(resp.status_code, 200)
         prompt = fake.calls[0]["messages"][0]["content"]
         self.assertNotIn("当前行程", prompt)
@@ -232,7 +220,7 @@ class TestChatApi(unittest.TestCase):
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            views.chat(_post({"message": "q", "history": history}))
+            views.chat(_post({"message": "q", "history": history}, self.rt))
         messages = fake.calls[0]["messages"]
         user_msgs = [m for m in messages if m["role"] == "user"]
         # 31 条 history 截断到最近 20 条（system 项被过滤），加上当前消息共 20 条 user
@@ -248,7 +236,7 @@ class TestChatApi(unittest.TestCase):
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            views.chat(_post({"message": "hi"}))
+            views.chat(_post({"message": "hi"}, self.rt))
         names = [t["function"]["name"] for t in fake.calls[0]["tools"]]
         self.assertIn("update_timeline", names)
         # 精选只读子集在列
@@ -271,13 +259,13 @@ class TestChatApi(unittest.TestCase):
             with mock.patch(
                 "call_llm.client_factory.create_llm_client", return_value=fake
             ):
-                resp = views.chat(_post({"message": "北京天气怎么样？"}))
+                resp = views.chat(_post({"message": "北京天气怎么样？"}, self.rt))
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(captured["name"], "weather")
         self.assertEqual(captured["arguments"], {"city": "北京"})
 
     def test_chat_tool_updates_timeline(self) -> None:
-        _make_context()
+        _make_context(self.rt)
         fake = FakeClient(
             reply="已把景山公园调整到下午。",
             tool_rounds=1,
@@ -290,24 +278,24 @@ class TestChatApi(unittest.TestCase):
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            resp = views.chat(_post({"message": "把景山公园挪到下午"}))
+            resp = views.chat(_post({"message": "把景山公园挪到下午"}, self.rt))
         self.assertEqual(resp.status_code, 200)
         self.assertIn("景山公园", json.loads(resp.content.decode())["reply"])
         # 修改意图经 A 侧 BChatHook 应用：景山公园到达时段变为 15:00
-        timeline = runtime.timeline
+        timeline = self.rt.timeline
         jingshan = [it for it in timeline.days[0].items if it.name == "景山公园"][0]
         self.assertEqual(jingshan.arrival, "15:00")
         # replan_history 有 source=chat 记录 + diff
-        self.assertEqual(len(runtime.replan_history), 1)
-        entry = runtime.replan_history[0]
+        self.assertEqual(len(self.rt.replan_history), 1)
+        entry = self.rt.replan_history[0]
         self.assertEqual(entry["source"], "chat")
         diff = "；".join(entry["decision"]["diff_summary"])
         self.assertIn("景山公园", diff)
         # timeline_history 同步记录（reason 含「对话调整」前缀/A 侧说明）
-        self.assertEqual(runtime.timeline_history[-1]["reason"][:4], "对话调整")
+        self.assertEqual(self.rt.timeline_history[-1]["reason"][:4], "对话调整")
 
     def test_chat_tool_rejects_invalid_intent(self) -> None:
-        _make_context()
+        _make_context(self.rt)
         fake = FakeClient(
             reply="抱歉，调整失败。",
             tool_rounds=1,
@@ -319,16 +307,16 @@ class TestChatApi(unittest.TestCase):
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            resp = views.chat(_post({"message": "改时间"}))
+            resp = views.chat(_post({"message": "改时间"}, self.rt))
         self.assertEqual(resp.status_code, 200)
         # 时间轴未被修改，无 replan 记录
-        timeline = runtime.timeline
+        timeline = self.rt.timeline
         self.assertEqual(timeline.days[0].items[0].name, "故宫博物院")
-        self.assertEqual(runtime.replan_history, [])
+        self.assertEqual(self.rt.replan_history, [])
 
     def test_chat_tool_rejects_unknown_spot(self) -> None:
         """v2.3：意图引用计划中不存在的景点 → A 侧拒绝且不改状态。"""
-        _make_context()
+        _make_context(self.rt)
         fake = FakeClient(
             reply="抱歉，找不到这个景点。",
             tool_rounds=1,
@@ -341,21 +329,21 @@ class TestChatApi(unittest.TestCase):
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            resp = views.chat(_post({"message": "把不存在的景点挪到下午"}))
+            resp = views.chat(_post({"message": "把不存在的景点挪到下午"}, self.rt))
         self.assertEqual(resp.status_code, 200)
-        timeline = runtime.timeline
+        timeline = self.rt.timeline
         self.assertEqual(timeline.days[0].items[0].name, "故宫博物院")
-        self.assertEqual(runtime.replan_history, [])
+        self.assertEqual(self.rt.replan_history, [])
 
     def test_chat_tool_requires_timeline(self) -> None:
-        runtime.agent = None   # 未建行程
+        self.rt.agent = None   # 未建行程
         fake = FakeClient(tool_rounds=1)
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            resp = views.chat(_post({"message": "改行程"}))
+            resp = views.chat(_post({"message": "改行程"}, self.rt))
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(runtime.timeline, None)
+        self.assertEqual(self.rt.timeline, None)
 
     # -- 错误路径 ----------------------------------------------------------
 
@@ -364,7 +352,7 @@ class TestChatApi(unittest.TestCase):
         with mock.patch(
             "call_llm.client_factory.create_llm_client", return_value=fake
         ):
-            resp = views.chat(_post({"message": "hi"}))
+            resp = views.chat(_post({"message": "hi"}, self.rt))
         self.assertEqual(resp.status_code, 502)
         err = json.loads(resp.content.decode())["error"]
         self.assertIn("LLM 调用失败", err)
@@ -376,7 +364,7 @@ class TestChatApi(unittest.TestCase):
         with mock.patch(
             "call_llm.client_factory.create_llm_client", side_effect=raise_config
         ):
-            resp = views.chat(_post({"message": "hi"}))
+            resp = views.chat(_post({"message": "hi"}, self.rt))
         self.assertEqual(resp.status_code, 502)
         err = json.loads(resp.content.decode())["error"]
         self.assertIn("LLM 未配置", err)

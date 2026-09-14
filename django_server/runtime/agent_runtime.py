@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -26,6 +28,7 @@ from core.schemas import (
     Place,
     ReplanRequest,
     TripTimeline,
+    _json_default,
     to_dict,
 )
 from execution.execution_agent import ExecutionAgent
@@ -107,16 +110,21 @@ def _replan_to_actions(replan: Any) -> List[ActionItem]:
 class AgentRuntime:
     """Django 进程内的单例 AB Runtime（单用户 Demo 用）。"""
 
-    def __init__(self) -> None:
+    def __init__(self, legacy_file_persist: bool = False) -> None:
         # 共享 MockWorld：假池数据源，同时是 Live 模式下的突发事件 override 层。
         # /api/debug/inject/ 的 persist_world 直接操作它，让注入状态对后续轮询持续可见。
         self.world: MockWorld = MockWorld()
         self.registry: ToolRegistry = build_registry(self.world)
         self.tool_provider = ToolProvider(self.registry)
-        # E5：动作/预约持久化（BOOKING_PERSIST_PATH 开启，默认关闭避免测试/本地污染）
+        self._legacy_file_persist = legacy_file_persist
+        # E5：动作/预约持久化——多用户改造（2026-09）后文件持久化仅限旧单用户
+        # 单例（legacy_file_persist=True，smoke 清单 2 在用）；每用户运行时的
+        # 预约状态走 Trip 行 DB 持久化（runtime.manager.persist），否则所有
+        # 用户会共写同一个 JSON 文件互相覆写。
         self.booking_manager = BookingManager(
             self.registry, on_booking_failed=self._on_booking_failed,
-            persist_path=settings.booking_persist_path or None,
+            persist_path=settings.booking_persist_path or None
+            if legacy_file_persist else None,
         )
         self.requirement: Optional[Dict[str, Any]] = None   # A 侧结构化需求（/api/plan/ 提交时存）
         self.timeline: Optional[TripTimeline] = None
@@ -132,6 +140,9 @@ class AgentRuntime:
         self.started_at: str = datetime.now().isoformat(timespec="seconds")
         self._decision_hook: Any = None
         self._last_planner_error: Optional[str] = None
+        # 多用户改造（2026-09）：每运行时一把可重入锁，视图层写端点持有；
+        # gunicorn 单 worker + gthread 下串行化同一用户的并发写。
+        self.lock = threading.RLock()
         self._wrap_tool_call_logging()
 
     # -- C 侧事件回调 -----------------------------------------------------
@@ -196,7 +207,11 @@ class AgentRuntime:
 
     def _get_decision_hook(self) -> Any:
         if self._decision_hook is None:
-            raw_hook = build_decision_hook(tool_provider=self.tool_provider)
+            # 多用户改造（2026-09）：requirement 显式传本运行时自己的
+            # （此前经 a_interface 回落读模块级单例）。
+            raw_hook = build_decision_hook(
+                tool_provider=self.tool_provider, requirement=self.requirement
+            )
 
             def hook(req: Any) -> Any:
                 replan = raw_hook(req)
@@ -286,7 +301,7 @@ class AgentRuntime:
 
     # -- 初始化 -----------------------------------------------------------
 
-    def init_timeline(self, timeline: TripTimeline) -> None:
+    def init_timeline(self, timeline: TripTimeline, record_history: bool = True) -> None:
         self.timeline = timeline
         self.agent = ExecutionAgent(
             timeline=timeline,
@@ -296,12 +311,13 @@ class AgentRuntime:
             booking_manager=self.booking_manager,
             tool_provider=self.tool_provider,
         )
-        self.timeline_history.append({
-            "id": f"tl-{len(self.timeline_history) + 1}",
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "reason": "initial",
-            "timeline": to_dict(timeline),
-        })
+        if record_history:
+            self.timeline_history.append({
+                "id": f"tl-{len(self.timeline_history) + 1}",
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "reason": "initial",
+                "timeline": to_dict(timeline),
+            })
         logger.info("Timeline set: city=%s, days=%d", timeline.city, len(timeline.days))
 
     def init_from_requirement(self, payload: Dict[str, Any]) -> TripTimeline:
@@ -326,7 +342,8 @@ class AgentRuntime:
         self.hotel_tags = None
         self.booking_manager = BookingManager(
             self.registry, on_booking_failed=self._on_booking_failed,
-            persist_path=settings.booking_persist_path or None,
+            persist_path=settings.booking_persist_path or None
+            if self._legacy_file_persist else None,
             restore=False,   # 新计划 = 新会话：清空旧动作，覆写持久化文件
         )
         planner_hook = build_planner_hook(
@@ -395,6 +412,28 @@ class AgentRuntime:
         if self.agent is None:
             raise RuntimeError("No timeline set. POST /api/timeline/ first.")
         return self.agent
+
+    def snapshot(self) -> Dict[str, Any]:
+        """当前会话可持久化快照（多用户 M2：runtime.manager.persist 落 Trip 行）。
+
+        演示态不持久化：tool_call_log / hotel 缓存 / MockWorld 注入 override /
+        _last_planner_error（重启丢失无碍）。events/replans/history 已是
+        to_dict 形态，恢复时原样灌回（to_dict 对纯 dict 透传）。
+
+        返回前整体 JSON 归一化：to_dict（asdict）会保留 date/datetime/Enum
+        对象，Django 响应端有 DjangoJSONEncoder 兜底，但 Trip 行的 JSONField
+        用标准 json——不归一会在落库时报 "Object of type date is not JSON
+        serializable"（2026-09-12 端到端实测踩中）。
+        """
+        raw = {
+            "requirement": self.requirement,
+            "timeline": to_dict(self.timeline) if self.timeline is not None else None,
+            "events": [to_dict(e) for e in self.events],
+            "replans": self.replan_history,
+            "timeline_history": self.timeline_history,
+            "booking_state": self.booking_manager.snapshot(),
+        }
+        return json.loads(json.dumps(raw, ensure_ascii=False, default=_json_default))
 
     # -- 时间轴解析（与旧 FastAPI app/service.py 保持兼容） ---------------
 
@@ -595,4 +634,7 @@ class AgentRuntime:
         return asyncio.run(self.require_agent().check_lookahead(now or datetime.now()))
 
 
-runtime = AgentRuntime()
+# 旧单用户单例：多用户改造（2026-09）后 views 不再引用（改走
+# api.middleware 挂的 request.runtime）；保留仅供未迁移的旧测试/smoke 清单 2
+# 过渡，勿在新代码使用。legacy_file_persist：唯一保留 E5 文件持久化的实例。
+runtime = AgentRuntime(legacy_file_persist=True)
