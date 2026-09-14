@@ -398,12 +398,17 @@ def _rebuild_return_with_schedule(
     # 精排写回同步（2026-09-05，镜像去程 realize）：选中候选的
     # service_no/发到时刻/站对/费用写回 legs——此前只改段级时刻，C 端看不到
     # 「坐的是哪班机/哪趟车」（与去程不对称，rv7 复验实锤）
-    ret_legs = details.get("legs") or []
-    ret_intercity = [
-        leg for leg in ret_legs
-        if isinstance(leg, dict) and leg.get("kind") == "intercity"
+    # **写回对齐（P0 修复，2026-09-14 验收实锤）**：``_intercity_leg_candidates``
+    # 会跳过无候选的腿（如 estimated 航段当日无班次），choices 与全部
+    # intercity legs 直接 zip 会**跨腿错位**——张掖返程实测：train 候选的
+    # 站对/车次被写到 air 腿上（service_no=G3639 出现在 mode=air 的腿），
+    # train 腿反而未 realize，下游 _fill_return_head 又按错站实测出
+    # 「酒店→北京朝阳 1199min」。写回只对**有候选的腿**（与 choices 一一
+    # 对应的 leg 引用）进行，无候选腿保持 estimated 原样（诚实口径）。
+    ret_legs_with_cands = [
+        leg for (_, _, leg) in _intercity_leg_candidates(return_seg)
     ]
-    for leg, cand in zip(ret_intercity, combo["choices"]):
+    for leg, cand in zip(ret_legs_with_cands, combo["choices"]):
         if cand is None:
             continue
         dep = _hhmm_to_minutes_loose(cand.get("depart_time"))
