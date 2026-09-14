@@ -140,6 +140,10 @@ class AgentRuntime:
         self.started_at: str = datetime.now().isoformat(timespec="seconds")
         self._decision_hook: Any = None
         self._last_planner_error: Optional[str] = None
+        # 观测字段（2026-09-14 复验补回：多用户改造后 /api/status/ 丢了真源
+        # 判定信号 + 编排阶段 b 需要外部可验证门控是否生效）
+        self._last_data_source: Optional[str] = None
+        self._last_orchestration: Optional[Dict[str, Any]] = None
         # 多用户改造（2026-09）：每运行时一把可重入锁，视图层写端点持有；
         # gunicorn 单 worker + gthread 下串行化同一用户的并发写。
         self.lock = threading.RLock()
@@ -351,6 +355,18 @@ class AgentRuntime:
         )
         timeline = planner_hook.generate_timeline()
         self._last_planner_error = getattr(planner_hook, "last_error", None)
+        self._last_data_source = getattr(planner_hook, "last_data_source", None)
+        orch = getattr(planner_hook, "_orchestration_result", None)
+        self._last_orchestration = (
+            {
+                "accepted": orch.get("accepted"),
+                "schedule_calls": orch.get("schedule_calls"),
+                "tool_rounds": orch.get("tool_rounds"),
+                "fallback_reason": orch.get("fallback_reason"),
+            }
+            if isinstance(orch, dict) and orch.get("tools_enabled")
+            else None
+        )
         self.init_timeline(timeline)
         return timeline
 
@@ -366,6 +382,11 @@ class AgentRuntime:
             "replan_history_count": len(self.replan_history),
             "timeline_history_count": len(self.timeline_history),
             "tool_call_count": len(self.tool_call_log),
+            # 观测字段（2026-09-14 复验补回，只增不改）：真源判定金标准信号
+            # + 编排门控现场（USE_LLM_ORCHESTRATOR 开启且工具面启用时非 None）
+            "last_data_source": self._last_data_source,
+            "last_error": self._last_planner_error,
+            "orchestration": self._last_orchestration,
             "demo_mode": settings.demo_mode,
             "use_real_api": settings.use_real_api,
             "use_real_map_api": settings.use_real_map_api,

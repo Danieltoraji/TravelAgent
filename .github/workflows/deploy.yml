@@ -79,6 +79,12 @@ jobs:
             # 关 = B 侧 scenic 走固定词表 + 质心锚点，零回归）。开启后每行程
             # 多 1 次 LLM 调用（词表 + 旅行中心判断）。
             USE_LLM_TOOLS=${{ secrets.USE_LLM_TOOLS || 'false' }}
+            # A 侧 LLM 全流程编排门控（编排阶段 b，2026-09-14）：Secret
+            # USE_LLM_ORCHESTRATOR=true 才开启（默认关——关 = 固定管线+站对精修，
+            # 零回归）。开启后 /api/plan/ 走 LLM 编排循环（多轮 LLM+tool，延迟
+            # 明显上升；未接受/异常自动回落固定管线）。生效可通过
+            # /api/status/ 的 orchestration 字段验证（非 null = 编排路径跑过）。
+            USE_LLM_ORCHESTRATOR=${{ secrets.USE_LLM_ORCHESTRATOR || 'false' }}
             # 演示注入端点鉴权（公网必须设置；请求需带 X-Debug-Token 头）
             DEBUG_INJECT_TOKEN=${{ secrets.DEBUG_INJECT_TOKEN }}
             # 配置热更新端点鉴权（多用户 review P2 2026-09：进程级副作用影响
