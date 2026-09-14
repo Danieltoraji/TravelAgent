@@ -362,6 +362,7 @@ class AgentRuntime:
                 "accepted": orch.get("accepted"),
                 "schedule_calls": orch.get("schedule_calls"),
                 "tool_rounds": orch.get("tool_rounds"),
+                "tools_degraded": orch.get("tools_degraded"),
                 "fallback_reason": orch.get("fallback_reason"),
             }
             if isinstance(orch, dict) and orch.get("tools_enabled")

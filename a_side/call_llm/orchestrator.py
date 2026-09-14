@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, List, Optional
 
@@ -140,6 +141,16 @@ PREFER_STATION_TOOL_SCHEMA: Dict[str, Any] = {
     },
 }
 
+
+# 零工具调用退回重问（阶段 b 在线实测 2026-09-14：响应 schema 可被模型直接
+# 满足，flash 档模型会跳过工具直接收尾 JSON——红线「LLM 只能经工具行事」要求
+# 至少落锤一次排程；退回重问一次，再不调则按回落处理）。
+NO_TOOL_REPROMPT = (
+    "你还没有调用过任何工具就给出了结论，这不符合编排纪律——时刻/费用/可行性"
+    "必须由 schedule_plan 落锤，不允许凭空收尾。请立即调用 schedule_plan（参数"
+    "按候选池与必去给出），拿到草案与质量信号后再决定接受或继续调整，最后按"
+    " schema 输出。"
+)
 
 def use_llm_orchestrator() -> bool:
     """编排门控（默认关，与 ``decision_engine._use_llm_tools`` 同款 env 语义）。"""
@@ -461,15 +472,34 @@ class PlanOrchestrator:
         )
         tools = [dict(SCHEDULE_TOOL_SCHEMA), dict(PREFER_STATION_TOOL_SCHEMA)]
         tools.extend(to_openai_tools(names=sorted(self.b_tools)))
+        messages = [{"role": "user", "content": self._workbench_digest()}]
         try:
-            result = client.generate(
-                messages=[{"role": "user", "content": self._workbench_digest()}],
-                response_schema=ORCHESTRATOR_RESPONSE_SCHEMA,
-                tools=tools,
-                tool_executor=self._tool_executor,
-                max_tool_rounds=self.max_tool_rounds,
-                review_schema=ORCHESTRATOR_REVIEW_SCHEMA if self.review_enabled else None,
-            )
+            # 零工具调用退回重问（红线：LLM 只能经工具行事）——响应 schema 可
+            # 被模型直接满足，flash 档模型会跳过工具直接收尾；重问一次，仍不调
+            # 工具则按该结果走回落（accepted 必为 False → 调用方回固定管线）。
+            for attempt in range(2):
+                result = client.generate(
+                    messages=messages,
+                    response_schema=ORCHESTRATOR_RESPONSE_SCHEMA,
+                    tools=tools,
+                    tool_executor=self._tool_executor,
+                    max_tool_rounds=self.max_tool_rounds,
+                    review_schema=ORCHESTRATOR_REVIEW_SCHEMA if self.review_enabled else None,
+                )
+                if (
+                    self._schedule_counter.get(SCHEDULE_TOOL_NAME, 0) > 0
+                    or result.get("tools_degraded")
+                    or attempt == 1
+                ):
+                    break
+                content = result.get("content") or {}
+                messages = messages + [
+                    {
+                        "role": "assistant",
+                        "content": json.dumps(content, ensure_ascii=False),
+                    },
+                    {"role": "user", "content": NO_TOOL_REPROMPT},
+                ]
         except Exception as exc:  # noqa: BLE001  编排失败 → 回落固定管线（红线 4）
             return _fallback_result(
                 f"编排循环失败，回落固定管线：{type(exc).__name__}: {exc}",
