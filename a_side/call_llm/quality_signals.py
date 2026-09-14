@@ -109,6 +109,15 @@ def compute_quality_signals(
         budget_signals["transit_share"] = round(
             float(cost.get("transit") or 0.0) / total, 3
         )
+    # 编排阶段的结构性口径（方案 §3.5 预算衔接）：排程器落锤时酒店/城际/餐厅
+    # 尚未挂载（hotel/transit/meal = 0 是预期），total 只是目的地内下界——
+    # 不标注会被模型误判「费用不自洽」而拒收（2026-09-14 在线实测）。预算
+    # 实价 true-up 在收尾链（挂酒店/注入城际段）完成。
+    if float(cost.get("hotel") or 0.0) == 0.0 and float(cost.get("transit") or 0.0) == 0.0:
+        budget_signals["note"] = (
+            "五项费用为编排期下界：住宿/城际/餐饮尚未挂载（0 为预期），"
+            "预算实价在收尾阶段 true-up；勿以 total 判「费用不自洽」"
+        )
 
     return {
         "feasible": bool(plan.get("feasible")),
