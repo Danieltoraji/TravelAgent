@@ -145,6 +145,9 @@ def test_plan_view_feeds_parsed_payload_to_runtime(monkeypatch):
         days = [{"day": 1}]
 
     class _FakeRuntime:
+        import threading as _th
+        lock = _th.RLock()   # 多用户改造：plan 视图持有 runtime.lock
+
         def init_from_requirement(self, payload):
             captured.append(payload)
             return _FakeTimeline()
@@ -153,15 +156,14 @@ def test_plan_view_feeds_parsed_payload_to_runtime(monkeypatch):
             return None
 
     fake_runtime = _FakeRuntime()
-    # views.py 顶层 `from runtime.agent_runtime import runtime` 持有引用，
-    # 直接换 views 命名空间里的名字。
-    monkeypatch.setattr(views, "runtime", fake_runtime)
+    # 多用户改造（2026-09）：plan 视图从 request.runtime 取运行时——直接挂请求。
     # to_dict 无法序列化假 timeline → Mock 成普通 dict（本测试只关心 payload 传递）。
     monkeypatch.setattr(views, "to_dict", lambda tl: {"days": tl.days})
     _patch_parse(monkeypatch, lambda raw, **kw: parsed)
 
     req = HttpRequest()
     req.method = "POST"
+    req.runtime = fake_runtime
     import json as _json
 
     req._body = _json.dumps(_body("想看历史文化景点"), ensure_ascii=False).encode("utf-8")
@@ -205,6 +207,9 @@ def test_plan_view_rejects_missing_budget(monkeypatch):
         days = [{"day": 1}]
 
     class _FakeRuntime:
+        import threading as _th
+        lock = _th.RLock()   # 多用户改造：plan 视图持有 runtime.lock
+
         def __init__(self):
             self.calls = 0
 
@@ -216,33 +221,33 @@ def test_plan_view_rejects_missing_budget(monkeypatch):
             return None
 
     fake = _FakeRuntime()
-    monkeypatch.setattr(views, "runtime", fake)
     monkeypatch.setattr(views, "to_dict", lambda tl: {"days": tl.days})
 
-    def _req(body):
+    def _req(body, rt):
         req = HttpRequest()
         req.method = "POST"
+        req.runtime = rt   # 多用户改造：plan 视图从 request.runtime 取运行时
         req._body = _json.dumps(body, ensure_ascii=False).encode("utf-8")
         return req
 
     # 正常预算（备注 'x' 不触发 LLM——空备注跳过解析；budget=3000 在 _body 里）
     base = _body("x")
-    ok = views.plan(_req(base))
+    ok = views.plan(_req(base, fake))
     assert ok.status_code == 200, str(ok.content, "utf-8")
     assert fake.calls == 1
     # 缺预算
     no_budget = _body("x")
     del no_budget["content"]["constraints"]["budget"]
-    resp = views.plan(_req(no_budget))
+    resp = views.plan(_req(no_budget, fake))
     body_text = _json.loads(resp.content.decode("unicode_escape").encode("latin-1").decode("utf-8"))         if False else _json.loads(resp.content)["error"]
     assert resp.status_code == 400 and "预算" in body_text
     # null 预算
     null_budget = _body("x")
     null_budget["content"]["constraints"]["budget"] = None
-    resp = views.plan(_req(null_budget))
+    resp = views.plan(_req(null_budget, fake))
     assert resp.status_code == 400
     # 负数
     neg_budget = _body("x")
     neg_budget["content"]["constraints"]["budget"] = -100
-    resp = views.plan(_req(neg_budget))
+    resp = views.plan(_req(neg_budget, fake))
     assert resp.status_code == 400

@@ -1,9 +1,18 @@
 from django.urls import path
 
+from . import auth as auth_views
 from . import views
 
 urlpatterns = [
     path("health/", views.health, name="health"),
+
+    # 账号（2026-09 多用户）：register/login 免认证（中间件白名单），
+    # me/logout 需 Bearer token（经中间件解析）
+    path("auth/register/", auth_views.register, name="auth_register"),
+    path("auth/login/", auth_views.login, name="auth_login"),
+    path("auth/me/", auth_views.me, name="auth_me"),
+    path("auth/logout/", auth_views.logout, name="auth_logout"),
+
     path("status/", views.status, name="status"),
     path("agent/", views.agent_info, name="agent_info"),
     path("profile/", views.profile, name="profile"),

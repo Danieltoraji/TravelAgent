@@ -1,11 +1,13 @@
-"""服务器侧功能冒烟（验收清单 1/3/4 + 清单 2 LLM 决策）。
+"""服务器侧功能冒烟（验收清单 1/3/4/5 + 清单 2 LLM 决策）。
 
 由 deploy.yml 在部署后于容器内执行：
     docker compose exec -T web python smoke/smoke_acceptance.py
 
+- 清单 0：多用户基座——无 token 401 / 注册登录拿 token（重跑走登录）
 - 清单 1：POST /api/plan/ 生成 TripTimeline（走 HTTP，面向运行中的 gunicorn）
 - 清单 3：酒店满房 → BOOKING 事件 → A 硬规则换酒店（BLOCKED Action + 新时间轴）
 - 清单 4：导出 markdown/ics
+- 清单 5：双用户隔离——第二用户 plan 后，第一用户 events/actions 不受影响
 - 清单 2：本进程内直接注入 SCENIC 事件驱动真实运行时（MockWorld 排队数据
   最高 40 < 阈值 50，poll 无法自然触发），走真实 decision_hook；
   LLM 决策需 DEEPSEEK_API_KEY（.env 由 GitHub Secrets 生成），未配置时跳过并提示。
@@ -36,12 +38,39 @@ for _p in (str(_ROOT), str(_APP), str(_ROOT / "a_side")):
 BASE = os.environ.get("SMOKE_BASE", "http://127.0.0.1:8000")
 HOTEL_JSON = _ROOT / "a_side" / "fake_spots" / "beijing" / "hotel.json"
 
+# 多用户改造（2026-09）：业务端点需 Bearer token——清单 0 注册/登录后写入，
+# 此后所有 HTTP 调用自动带头。
+_TOKEN = ""
+
+
+def _auth_headers() -> dict:
+    return {"Authorization": f"Bearer {_TOKEN}"} if _TOKEN else {}
+
+
+def _raw_post(path: str, payload: dict, token: str = "", timeout: int = 30):
+    """不带重试的 POST（鉴权/第二用户调用用；token 显式传入，不用全局值）。"""
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return e.code, json.loads(body) if body else {"error": e.reason}
+
 
 def post(path: str, payload: dict):
     req = urllib.request.Request(
         BASE + path,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers={"Content-Type": "application/json; charset=utf-8", **_auth_headers()},
         method="POST",
     )
     try:
@@ -53,20 +82,35 @@ def post(path: str, payload: dict):
 
 
 def get(path: str, retries: int = 3):
-    """GET（带重试）：gunicorn 单 worker（内存单例约束），规划类长请求
-    （2 天行程含锚点间隔 ~30s+）占用期间，后续短请求需排队——部署后冒烟
-    与外部探测请求并发时曾 30s 超时误报失败（8.30 线上教训）。
+    """GET（带重试）：gthread 线程池下规划类长请求（2 天行程 ~30s+）占用
+    同一用户的 runtime.lock，该用户后续请求需排队——部署后冒烟与外部探测
+    请求并发时曾 30s 超时误报失败（8.30 线上教训）。
     每次尝试 60s + 失败退避 5s，纯读接口重试安全。"""
     last_exc: Exception | None = None
     for attempt in range(retries):
         try:
-            with urllib.request.urlopen(BASE + path, timeout=60) as r:
+            req = urllib.request.Request(BASE + path, headers=_auth_headers())
+            with urllib.request.urlopen(req, timeout=60) as r:
                 return r.status, json.loads(r.read().decode("utf-8"))
         except (TimeoutError, OSError) as exc:
             last_exc = exc
             print(f"    [smoke] GET {path} 超时/网络错误（尝试 {attempt + 1}/{retries}），5s 后重试：{exc}")
             time.sleep(5)
     raise AssertionError(f"GET {path} 重试 {retries} 次仍失败: {last_exc}")
+
+
+def _ensure_token() -> str:
+    """注册 smoke 用户拿 token；用户已存在（重跑）→ 登录（单设备轮换旧 token）。"""
+    username, password = "smoke_acceptance", "smoke-secret-123"
+    code, resp = _raw_post("/api/auth/register/",
+                           {"username": username, "password": password})
+    if code == 200:
+        return resp["token"]
+    assert code == 409, f"register failed: {code} {resp}"
+    code, resp = _raw_post("/api/auth/login/",
+                           {"username": username, "password": password})
+    assert code == 200, f"login failed: {code} {resp}"
+    return resp["token"]
 
 
 def requirement() -> dict:
@@ -90,10 +134,21 @@ def requirement() -> dict:
 
 
 def main() -> None:
+    global _TOKEN
     from runtime.agent_runtime import runtime  # noqa: E402  延迟：需 sys.path 就绪
 
     llm_key = bool(os_environ_key())
     print(f"LLM key in container: {'SET' if llm_key else 'MISSING'}")
+
+    # ── 清单 0：多用户基座 ────────────────────────────────────────
+    try:
+        urllib.request.urlopen(BASE + "/api/status/", timeout=10)
+        raise AssertionError("无 token 访问 /api/status/ 应 401，却成功了")
+    except urllib.error.HTTPError as e:
+        assert e.code == 401, f"无 token 应 401，实际 {e.code}"
+    print("[0] 无 token -> 401 ok")
+    _TOKEN = _ensure_token()
+    print("[0] 注册/登录（smoke_acceptance）-> token ok")
 
     # ── 清单 1：规划 ──────────────────────────────────────────────
     code, resp = post("/api/plan/", requirement())
@@ -180,6 +235,34 @@ def main() -> None:
     assert "VCALENDAR" in ics.get("content", ""), "ics missing VCALENDAR"
     print("[4] export markdown/ics -> ok")
 
+    # ── 清单 5：双用户隔离（多用户改造 2026-09）──────────────────
+    _, ev_before = get("/api/events/")
+    _, acts_before = get("/api/actions/")
+    code, bob = _raw_post("/api/auth/register/",
+                          {"username": "smoke_bob", "password": "smoke-secret-123"})
+    if code == 409:   # 重跑：用户已存在 → 登录轮换
+        code, bob = _raw_post("/api/auth/login/",
+                              {"username": "smoke_bob", "password": "smoke-secret-123"})
+    assert code == 200, f"bob register/login failed: {code} {bob}"
+    code, bob_plan = _raw_post("/api/plan/", requirement(),
+                               token=bob["token"], timeout=150)
+    assert code == 200 and bob_plan.get("status") == "ok", \
+        f"bob plan failed: {code} {str(bob_plan)[:200]}"
+    req = urllib.request.Request(BASE + "/api/timeline/",
+                                 headers={"Authorization": f"Bearer {bob['token']}"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        bob_view = json.loads(r.read().decode("utf-8"))
+    assert bob_view.get("city") == "北京" and bob_view.get("days"), \
+        f"bob 应看到自己的行程: {str(bob_view)[:120]}"
+    _, ev_after = get("/api/events/")
+    assert ev_after["total"] == ev_before["total"], \
+        f"另一用户 plan 不应产生本用户事件: {ev_before['total']} -> {ev_after['total']}"
+    _, acts_after = get("/api/actions/")
+    assert acts_after["count"] == acts_before["count"], \
+        f"另一用户 plan 不应改本用户动作队列: {acts_before['count']} -> {acts_after['count']}"
+    print(f"[5] 双用户隔离 -> bob 独立行程 ok；主用户 events/actions 不变"
+          f"（{ev_after['total']} events / {acts_after['count']} actions）")
+
     # ── 清单 2：SCENIC 事件 → LLM 决策 → 重规划（本进程驱动真实运行时）──
     if not llm_key:
         print("[2] 清单 2（LLM 决策）跳过：容器内未配置 DEEPSEEK_API_KEY/GLM_API_KEY"
@@ -206,7 +289,7 @@ def main() -> None:
         print(f"[2] SCENIC 注入 -> LLM 决策 -> replan 成功 (+{after - before}) "
               f"reason={str(decision.get('reason'))[:60]}")
 
-    print("\nSERVER SMOKE ALL GREEN（清单 1/3/4" + (" + 2" if llm_key else "，清单 2 跳过") + "）")
+    print("\nSERVER SMOKE ALL GREEN（清单 0/1/3/4/5" + (" + 2" if llm_key else "，清单 2 跳过") + "）")
 
 
 def os_environ_key() -> str:

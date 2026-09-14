@@ -3,6 +3,9 @@
 不触发 LLM：用 FakeAgent 替换 runtime.agent，断言注入事件构造正确、
 handle_event 被真实调用、响应 decision 映射正确、token 鉴权生效、
 persist_world 写假池生效。
+
+多用户改造（2026-09）：视图从 ``request.runtime`` 取运行时——用例构造独立
+``AgentRuntime`` 挂到请求上，world/replan_history 均为实例私有。
 """
 
 import json
@@ -40,14 +43,16 @@ from django.http import HttpRequest  # noqa: E402
 from api import views  # noqa: E402
 from config.settings import settings as app_settings  # noqa: E402
 from core.schemas import EventType, MonitorEvent  # noqa: E402
-from runtime.agent_runtime import runtime  # noqa: E402
+from runtime.agent_runtime import AgentRuntime  # noqa: E402
 
 
-def _post(body: dict, token: str | None = None) -> HttpRequest:
+def _post(body: dict, token: str | None = None, rt: AgentRuntime | None = None) -> HttpRequest:
     req = HttpRequest()
     req.method = "POST"
     req.path = "/api/debug/inject/"
     req._body = json.dumps(body).encode("utf-8")
+    if rt is not None:
+        req.runtime = rt
     if token:
         req.META["HTTP_X_DEBUG_TOKEN"] = token
     return req
@@ -57,10 +62,13 @@ class FakeAgent:
     """替身 ExecutionAgent：记录收到的事件，不触发 LLM。
 
     significant=True 时 handle_event 返回非空（模拟"达阈值"）；
-    record_replan=True 时按 _record_decision 的形状写入 replan_history。
+    record_replan=True 时按 _record_decision 的形状写入所属运行时的
+    replan_history。
     """
 
-    def __init__(self, significant: bool = False, record_replan: bool = False) -> None:
+    def __init__(self, rt: AgentRuntime, significant: bool = False,
+                 record_replan: bool = False) -> None:
+        self.rt = rt
         self.calls: list[MonitorEvent] = []
         self.significant = significant
         self.record_replan = record_replan
@@ -68,7 +76,7 @@ class FakeAgent:
     async def handle_event(self, event: MonitorEvent):  # noqa: ANN201
         self.calls.append(event)
         if self.record_replan:
-            runtime.replan_history.append({
+            self.rt.replan_history.append({
                 "id": "replan-1",
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "events": [event.to_dict()],
@@ -87,25 +95,20 @@ class FakeAgent:
 
 class TestDebugInject(unittest.TestCase):
     def setUp(self) -> None:
-        self._agent = runtime.agent
-        self._timeline = runtime.timeline
-        self._replans = list(runtime.replan_history)
+        self.rt = AgentRuntime()
+        self.rt.timeline = SimpleNamespace(city="北京")
+        self.rt.replan_history = []
         self._token = app_settings.debug_inject_token
-        runtime.timeline = SimpleNamespace(city="北京")
-        runtime.replan_history = []
         app_settings.debug_inject_token = ""
 
     def tearDown(self) -> None:
-        runtime.agent = self._agent
-        runtime.timeline = self._timeline
-        runtime.replan_history = self._replans
         app_settings.debug_inject_token = self._token
-        if getattr(runtime, "world", None) is not None:
-            runtime.world.clear_weather_overrides()
-            runtime.world.clear_traffic_overrides()
+        if getattr(self.rt, "world", None) is not None:
+            self.rt.world.clear_weather_overrides()
+            self.rt.world.clear_traffic_overrides()
 
     def _run(self, body: dict, token: str | None = None):
-        return views.debug_inject(_post(body, token))
+        return views.debug_inject(_post(body, token, rt=self.rt))
 
     # -- 校验路径 ----------------------------------------------------------
 
@@ -114,31 +117,31 @@ class TestDebugInject(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_no_timeline_rejected(self) -> None:
-        runtime.agent = None
+        self.rt.agent = None
         resp = self._run({"scenario": "storm"})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("No timeline set", resp.content.decode())
 
     def test_unknown_scenario_rejected(self) -> None:
-        runtime.agent = FakeAgent()
+        self.rt.agent = FakeAgent(self.rt)
         resp = self._run({"scenario": "tsunami"})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("unknown scenario", resp.content.decode())
 
     def test_invalid_event_type_rejected(self) -> None:
-        runtime.agent = FakeAgent()
+        self.rt.agent = FakeAgent(self.rt)
         resp = self._run({"event_type": "ufo", "data": {}})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("invalid event_type", resp.content.decode())
 
     def test_scenic_requires_place(self) -> None:
-        runtime.agent = FakeAgent()
+        self.rt.agent = FakeAgent(self.rt)
         resp = self._run({"event_type": "scenic", "data": {"queue_min": 120}})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("place is required", resp.content.decode())
 
     def test_data_must_be_object(self) -> None:
-        runtime.agent = FakeAgent()
+        self.rt.agent = FakeAgent(self.rt)
         resp = self._run({"event_type": "scenic", "place": "故宫", "data": [1, 2]})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("data must be an object", resp.content.decode())
@@ -146,8 +149,8 @@ class TestDebugInject(unittest.TestCase):
     # -- 事件构造与真链路 --------------------------------------------------
 
     def test_storm_preset_builds_weather_event(self) -> None:
-        agent = FakeAgent(significant=True)
-        runtime.agent = agent
+        agent = FakeAgent(self.rt, significant=True)
+        self.rt.agent = agent
         resp = self._run({"scenario": "storm"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(agent.calls), 1)
@@ -161,14 +164,14 @@ class TestDebugInject(unittest.TestCase):
         self.assertEqual(body["decision"], "hook_error")  # 达阈值但未记录
 
     def test_queue_preset_requires_place(self) -> None:
-        runtime.agent = FakeAgent()
+        self.rt.agent = FakeAgent(self.rt)
         resp = self._run({"scenario": "queue"})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("place is required", resp.content.decode())
 
     def test_raw_inject_event_fields(self) -> None:
-        agent = FakeAgent(significant=False)
-        runtime.agent = agent
+        agent = FakeAgent(self.rt, significant=False)
+        self.rt.agent = agent
         resp = self._run({
             "event_type": "traffic",
             "place": "北京-故宫",
@@ -186,8 +189,8 @@ class TestDebugInject(unittest.TestCase):
         self.assertEqual(body["decision"], "not_significant")
 
     def test_booking_preset_gets_hotel_id(self) -> None:
-        agent = FakeAgent()
-        runtime.agent = agent
+        agent = FakeAgent(self.rt)
+        self.rt.agent = agent
         resp = self._run({"scenario": "hotel_full", "place": "皇城景观酒店"})
         self.assertEqual(resp.status_code, 200)
         ev = agent.calls[0]
@@ -197,8 +200,8 @@ class TestDebugInject(unittest.TestCase):
 
     def test_booking_hotel_id_fallback_to_name(self) -> None:
         """live 酒店（不在假池）名称解析失败 → 回退原名称（可显式传 data.hotel_id）。"""
-        agent = FakeAgent()
-        runtime.agent = agent
+        agent = FakeAgent(self.rt)
+        self.rt.agent = agent
         resp = self._run({"scenario": "hotel_full", "place": "布丁酒店(北京西站店)"})
         self.assertEqual(resp.status_code, 200)
         ev = agent.calls[0]
@@ -212,8 +215,8 @@ class TestDebugInject(unittest.TestCase):
         self.assertEqual(ev2.data["hotel_id"], "577984")
 
     def test_replanned_response_mapping(self) -> None:
-        agent = FakeAgent(significant=True, record_replan=True)
-        runtime.agent = agent
+        agent = FakeAgent(self.rt, significant=True, record_replan=True)
+        self.rt.agent = agent
         resp = self._run({"scenario": "storm"})
         body = json.loads(resp.content.decode())
         self.assertEqual(body["decision"], "replanned")
@@ -225,7 +228,7 @@ class TestDebugInject(unittest.TestCase):
 
     def test_token_required_when_configured(self) -> None:
         app_settings.debug_inject_token = "sekrit"
-        runtime.agent = FakeAgent()
+        self.rt.agent = FakeAgent(self.rt)
         resp = self._run({"scenario": "storm"})
         self.assertEqual(resp.status_code, 401)
         resp_ok = self._run({"scenario": "storm"}, token="sekrit")
@@ -234,15 +237,15 @@ class TestDebugInject(unittest.TestCase):
     # -- persist_world -----------------------------------------------------
 
     def test_persist_world_writes_mock_world(self) -> None:
-        runtime.agent = FakeAgent()
-        self.assertIsNotNone(getattr(runtime, "world", None))
+        self.rt.agent = FakeAgent(self.rt)
+        self.assertIsNotNone(getattr(self.rt, "world", None))
         resp = self._run({
             "scenario": "storm",
             "persist_world": True,
         })
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(
-            runtime.world.weather_overrides.get("rain_probability"), 85
+            self.rt.world.weather_overrides.get("rain_probability"), 85
         )
         resp2 = self._run({
             "scenario": "queue",
@@ -250,7 +253,18 @@ class TestDebugInject(unittest.TestCase):
             "persist_world": True,
         })
         self.assertEqual(resp2.status_code, 200)
-        self.assertEqual(runtime.world.get_queue("故宫"), 120)
+        self.assertEqual(self.rt.world.get_queue("故宫"), 120)
+
+    # -- 多用户 ------------------------------------------------------------
+
+    def test_persist_world_isolated_per_runtime(self) -> None:
+        """多用户：persist_world 只写当前请求所属运行时的 world（另一运行时不可见）。"""
+        self.rt.agent = FakeAgent(self.rt)
+        other = AgentRuntime()
+        resp = self._run({"scenario": "storm", "persist_world": True})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.rt.world.weather_overrides.get("rain_probability"), 85)
+        self.assertEqual(other.world.weather_overrides, {})
 
 
 if __name__ == "__main__":

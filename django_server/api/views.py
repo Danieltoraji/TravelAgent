@@ -1,6 +1,9 @@
 """Django REST 视图：把 B 侧能力暴露给 C（Android/Web）。
 
-单用户 Demo：无认证，直接操作 runtime 单例。
+多用户（2026-09 改造）：视图不再引用模块级单例——``request.runtime`` 由
+``api.middleware.TokenAuthRuntimeMiddleware`` 按 Bearer token 注入（每用户
+一个 AgentRuntime）；写端点持有 ``request.runtime.lock`` 串行化同一用户的
+并发写（gunicorn 单 worker + gthread，跨用户天然并行）。
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -21,7 +24,6 @@ from config.settings import settings
 from core.schemas import ActionStatus, EventType, MonitorEvent, to_dict
 from itinerary.ics_exporter import build_ics
 from itinerary.markdown_exporter import render_markdown
-from runtime.agent_runtime import runtime
 from tools import ToolProvider
 
 logger = logging.getLogger("api.views")
@@ -49,12 +51,12 @@ def health(request: HttpRequest) -> JsonResponse:
 
 @require_http_methods(["GET"])
 def status(request: HttpRequest) -> JsonResponse:
-    return JsonResponse(runtime.status())
+    return JsonResponse(request.runtime.status())
 
 
 @require_http_methods(["GET"])
 def agent_info(request: HttpRequest) -> JsonResponse:
-    info = runtime.agent_info()
+    info = request.runtime.agent_info()
     if info is None:
         return _error("Timeline not set", status=400)
     return JsonResponse(info)
@@ -62,9 +64,10 @@ def agent_info(request: HttpRequest) -> JsonResponse:
 
 @require_http_methods(["GET"])
 def profile(request: HttpRequest) -> JsonResponse:
-    """用户画像占位：当前单用户 Demo 无 A 侧 Memory，后续由 A 填充。"""
+    """用户画像：多用户后带真实用户名；偏好/历史决策仍待 A 侧 Memory。"""
+    user = getattr(request, "auth_user", None)
     return JsonResponse({
-        "user_id": "demo-user",
+        "user_id": getattr(user, "username", "unknown"),
         "profile": {},
         "note": "A 侧接入后在此返回用户偏好/历史决策",
     })
@@ -74,8 +77,9 @@ def profile(request: HttpRequest) -> JsonResponse:
 
 @require_http_methods(["GET"])
 def list_tools(request: HttpRequest) -> JsonResponse:
-    names = runtime.registry.names()
-    specs = runtime.registry.list_specs()
+    registry = request.runtime.registry
+    names = registry.names()
+    specs = registry.list_specs()
     return JsonResponse({
         "tools": names,
         "specs": [to_dict(s) for s in specs],
@@ -86,7 +90,7 @@ def list_tools(request: HttpRequest) -> JsonResponse:
 @require_http_methods(["GET"])
 def get_tool_spec(request: HttpRequest, name: str) -> JsonResponse:
     try:
-        return JsonResponse(to_dict(runtime.registry.get_spec(name)))
+        return JsonResponse(to_dict(request.runtime.registry.get_spec(name)))
     except KeyError as exc:
         return _error(str(exc), status=404)
 
@@ -99,11 +103,13 @@ def invoke_tool_llm(request: HttpRequest) -> JsonResponse:
     if not name:
         return _error("name is required")
     arguments = payload.get("arguments") or {}
-    provider = ToolProvider(runtime.registry)
-    try:
-        return JsonResponse(provider.call_json(name, arguments))
-    except KeyError as exc:
-        return _error(str(exc), status=404)
+    rt = request.runtime
+    with rt.lock:
+        provider = ToolProvider(rt.registry)
+        try:
+            return JsonResponse(provider.call_json(name, arguments))
+        except KeyError as exc:
+            return _error(str(exc), status=404)
 
 
 @csrf_exempt
@@ -113,10 +119,12 @@ def invoke_tool(request: HttpRequest, name: str) -> JsonResponse:
     # 只读白名单入口是 POST /api/tools/invoke/；收紧前需与 C 确认依赖
     # （docs/code_defects_and_fixes_20260828.md R1，2026-08-28 决策暂不动）。
     payload = _json_body(request)
-    try:
-        return JsonResponse(runtime.registry.call(name, **payload).to_dict())
-    except KeyError as exc:
-        return _error(str(exc), status=404)
+    rt = request.runtime
+    with rt.lock:
+        try:
+            return JsonResponse(rt.registry.call(name, **payload).to_dict())
+        except KeyError as exc:
+            return _error(str(exc), status=404)
 
 
 # ── 酒店数据展示端点（C 只读，不触发工具调用）────────────────────────────
@@ -125,17 +133,18 @@ def invoke_tool(request: HttpRequest, name: str) -> JsonResponse:
 @require_http_methods(["GET"])
 def hotels(request: HttpRequest) -> JsonResponse:
     """返回历史 hotel_tool 搜索快照（只读展示）。"""
+    rt = request.runtime
     return JsonResponse({
-        "hotel_search_results": runtime.hotel_search_results,
-        "count": len(runtime.hotel_search_results),
-        "latest": runtime.hotel_search_results[-1] if runtime.hotel_search_results else None,
+        "hotel_search_results": rt.hotel_search_results,
+        "count": len(rt.hotel_search_results),
+        "latest": rt.hotel_search_results[-1] if rt.hotel_search_results else None,
     })
 
 
 @require_http_methods(["GET"])
 def hotel_detail(request: HttpRequest, hotel_id: str) -> JsonResponse:
     """返回某个酒店已被查询过的房型/价格明细（只读展示）。"""
-    data = runtime.hotel_details.get(hotel_id)
+    data = request.runtime.hotel_details.get(hotel_id)
     if data is None:
         return _error(f"Hotel detail not found: {hotel_id}", status=404)
     return JsonResponse(data)
@@ -144,9 +153,9 @@ def hotel_detail(request: HttpRequest, hotel_id: str) -> JsonResponse:
 @require_http_methods(["GET"])
 def hotel_tags(request: HttpRequest) -> JsonResponse:
     """返回最近一次 hotel_tool tags 调用结果（只读展示）。"""
-    if runtime.hotel_tags is None:
+    if request.runtime.hotel_tags is None:
         return _error("Hotel tags not available", status=404)
-    return JsonResponse(runtime.hotel_tags)
+    return JsonResponse(request.runtime.hotel_tags)
 
 
 # ── 时间轴 ──────────────────────────────────────────────────────────────
@@ -154,16 +163,18 @@ def hotel_tags(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def timeline(request: HttpRequest) -> JsonResponse:
+    rt = request.runtime
     if request.method == "GET":
-        if runtime.timeline is None:
+        if rt.timeline is None:
             return _error("No timeline set. POST /api/timeline/ first.")
-        return JsonResponse(to_dict(runtime.timeline))
+        return JsonResponse(to_dict(rt.timeline))
 
     payload = _json_body(request)
-    try:
-        timeline_obj = runtime.set_timeline_from_payload(payload)
-    except Exception as exc:
-        return _error(f"Invalid timeline: {exc}")
+    with rt.lock:
+        try:
+            timeline_obj = rt.set_timeline_from_payload(payload)
+        except Exception as exc:
+            return _error(f"Invalid timeline: {exc}")
     return JsonResponse({
         "status": "ok",
         "message": "Timeline set",
@@ -174,8 +185,8 @@ def timeline(request: HttpRequest) -> JsonResponse:
 @require_http_methods(["GET"])
 def timeline_history(request: HttpRequest) -> JsonResponse:
     return JsonResponse({
-        "history": runtime.timeline_history,
-        "count": len(runtime.timeline_history),
+        "history": request.runtime.timeline_history,
+        "count": len(request.runtime.timeline_history),
     })
 
 
@@ -234,6 +245,9 @@ def plan(request: HttpRequest) -> JsonResponse:
     结构化需求再规划（失败自动按无备注规划，见 ``_parse_free_text_requirement``）。
     规划失败（BPlannerHook 降级为空时间轴）返回 400 + ``planner_error``。
     旧 ``POST /api/timeline/`` 保留：C 直接喂时间轴的兼容路径。
+
+    多用户：持本用户 runtime.lock——规划 20-70s 期间只阻塞该用户自己的
+    并发请求，其他用户不受影响（gthread 线程池并行）。
     """
     payload = _json_body(request)
     if not payload:
@@ -255,15 +269,17 @@ def plan(request: HttpRequest) -> JsonResponse:
                 "人均总预算（元，含城际交通/住宿/餐饮/门票），例如 3000。",
                 status=400,
             )
-    try:
-        timeline_obj = runtime.init_from_requirement(payload)
-    except Exception as exc:
-        return _error(f"plan failed: {exc}", status=500)
-    if not timeline_obj.days:
-        err = getattr(runtime, "_last_planner_error", None) or "planner produced empty timeline"
-        return _error(f"规划失败：{err}")
-    # 2026-09-01：规划后补充真源公交导航（并发3、失败静默，约 +2~8s）
-    runtime.enrich_transport_details(timeline_obj)
+    rt = request.runtime
+    with rt.lock:
+        try:
+            timeline_obj = rt.init_from_requirement(payload)
+        except Exception as exc:
+            return _error(f"plan failed: {exc}", status=500)
+        if not timeline_obj.days:
+            err = getattr(rt, "_last_planner_error", None) or "planner produced empty timeline"
+            return _error(f"规划失败：{err}")
+        # 2026-09-01：规划后补充真源公交导航（并发3、失败静默，约 +2~8s）
+        rt.enrich_transport_details(timeline_obj)
     return JsonResponse({
         "status": "ok",
         "message": "Timeline generated from requirement",
@@ -282,68 +298,76 @@ def booking_prepare(request: HttpRequest) -> JsonResponse:
     target_date = payload.get("target_date", "")
     party_size = int(payload.get("party_size", 1))
     booking_type = payload.get("booking_type", "scenic")
-    try:
-        rec = runtime.booking_manager.prepare(
-            place=place, target_date=target_date,
-            party_size=party_size, booking_type=booking_type,
-        )
-        return JsonResponse(to_dict(rec))
-    except RuntimeError as exc:
-        return _error(str(exc), status=500)
+    rt = request.runtime
+    with rt.lock:
+        try:
+            rec = rt.booking_manager.prepare(
+                place=place, target_date=target_date,
+                party_size=party_size, booking_type=booking_type,
+            )
+            return JsonResponse(to_dict(rec))
+        except RuntimeError as exc:
+            return _error(str(exc), status=500)
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def booking_confirm(request: HttpRequest, booking_id: str) -> JsonResponse:
-    try:
-        rec = runtime.booking_manager.confirm(booking_id)
-        return JsonResponse(to_dict(rec))
-    except KeyError as exc:
-        return _error(str(exc), status=404)
-    except ValueError as exc:
-        return _error(str(exc), status=400)
-    except RuntimeError as exc:
-        # 预订提交失败（业务失败，如满房）：400 + 结构化信息（对 C 端友好），
-        # 而非 500 空 body——原实现会让前端抛 "API error 500" 且无任何细节。
-        # 修复 0827：附带失败后的 booking 状态（FAILED）与该预约的 Action（BLOCKED）。
+    rt = request.runtime
+    with rt.lock:
         try:
-            rec = runtime.booking_manager.get(booking_id)
-            actions = [
-                to_dict(a) for a in runtime.booking_manager.actions()
-                if a.target == f"booking:{booking_id}"
-            ]
-            return JsonResponse({
-                "error": str(exc),
-                "booking": to_dict(rec),
-                "actions": actions,
-            }, status=400)
-        except KeyError:
+            rec = rt.booking_manager.confirm(booking_id)
+            return JsonResponse(to_dict(rec))
+        except KeyError as exc:
+            return _error(str(exc), status=404)
+        except ValueError as exc:
             return _error(str(exc), status=400)
+        except RuntimeError as exc:
+            # 预订提交失败（业务失败，如满房）：400 + 结构化信息（对 C 端友好），
+            # 而非 500 空 body——原实现会让前端抛 "API error 500" 且无任何细节。
+            # 修复 0827：附带失败后的 booking 状态（FAILED）与该预约的 Action（BLOCKED）。
+            try:
+                rec = rt.booking_manager.get(booking_id)
+                actions = [
+                    to_dict(a) for a in rt.booking_manager.actions()
+                    if a.target == f"booking:{booking_id}"
+                ]
+                return JsonResponse({
+                    "error": str(exc),
+                    "booking": to_dict(rec),
+                    "actions": actions,
+                }, status=400)
+            except KeyError:
+                return _error(str(exc), status=400)
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def booking_cancel(request: HttpRequest, booking_id: str) -> JsonResponse:
-    try:
-        rec = runtime.booking_manager.cancel(booking_id)
-        return JsonResponse(to_dict(rec))
-    except KeyError as exc:
-        return _error(str(exc), status=404)
+    rt = request.runtime
+    with rt.lock:
+        try:
+            rec = rt.booking_manager.cancel(booking_id)
+            return JsonResponse(to_dict(rec))
+        except KeyError as exc:
+            return _error(str(exc), status=404)
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def booking_payment(request: HttpRequest, booking_id: str) -> JsonResponse:
-    try:
-        item = runtime.booking_manager.payment_action(booking_id)
-        return JsonResponse(to_dict(item))
-    except KeyError as exc:
-        return _error(str(exc), status=404)
+    rt = request.runtime
+    with rt.lock:
+        try:
+            item = rt.booking_manager.payment_action(booking_id)
+            return JsonResponse(to_dict(item))
+        except KeyError as exc:
+            return _error(str(exc), status=404)
 
 
 @require_http_methods(["GET"])
 def list_bookings(request: HttpRequest) -> JsonResponse:
-    records = runtime.booking_manager.records()
+    records = request.runtime.booking_manager.records()
     return JsonResponse({
         "bookings": [to_dict(r) for r in records],
         "count": len(records),
@@ -353,7 +377,7 @@ def list_bookings(request: HttpRequest) -> JsonResponse:
 @require_http_methods(["GET"])
 def get_booking(request: HttpRequest, booking_id: str) -> JsonResponse:
     try:
-        rec = runtime.booking_manager.get(booking_id)
+        rec = request.runtime.booking_manager.get(booking_id)
         return JsonResponse(to_dict(rec))
     except KeyError as exc:
         return _error(str(exc), status=404)
@@ -363,7 +387,7 @@ def get_booking(request: HttpRequest, booking_id: str) -> JsonResponse:
 
 @require_http_methods(["GET"])
 def list_actions(request: HttpRequest) -> JsonResponse:
-    actions = runtime.booking_manager.actions()
+    actions = request.runtime.booking_manager.actions()
     return JsonResponse({
         "actions": [to_dict(a) for a in actions],
         "count": len(actions),
@@ -373,35 +397,41 @@ def list_actions(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["POST"])
 def approve_action(request: HttpRequest, action_id: str) -> JsonResponse:
-    for a in runtime.booking_manager.actions():
-        if a.action_id == action_id:
-            a.status = ActionStatus.APPROVED
-            a.decided_at = datetime.now().isoformat(timespec="seconds")
-            a.decided_by = "c_end_user"   # 单用户 Demo：无认证体系
-            # E1：hotel: 动作批准即执行真实预订（此前为死信）。
-            # booking:/payment: 等 target 保持仅标记（E2 语义变更待 C 确认）。
-            if a.target.startswith("hotel:"):
-                try:
-                    runtime.booking_manager.execute_action(a)
-                except Exception as exc:  # noqa: BLE001  预订失败 → 动作置 BLOCKED
-                    a.status = ActionStatus.BLOCKED
-                    a.description = (a.description + "；" if a.description else "") + str(exc)
-                    return JsonResponse({
-                        "error": str(exc), "action": to_dict(a),
-                    }, status=400)
-            return JsonResponse(to_dict(a))
+    rt = request.runtime
+    decided_by = getattr(getattr(request, "auth_user", None), "username", "c_end_user")
+    with rt.lock:
+        for a in rt.booking_manager.actions():
+            if a.action_id == action_id:
+                a.status = ActionStatus.APPROVED
+                a.decided_at = datetime.now().isoformat(timespec="seconds")
+                a.decided_by = decided_by
+                # E1：hotel: 动作批准即执行真实预订（此前为死信）。
+                # booking:/payment: 等 target 保持仅标记（E2 语义变更待 C 确认）。
+                if a.target.startswith("hotel:"):
+                    try:
+                        rt.booking_manager.execute_action(a)
+                    except Exception as exc:  # noqa: BLE001  预订失败 → 动作置 BLOCKED
+                        a.status = ActionStatus.BLOCKED
+                        a.description = (a.description + "；" if a.description else "") + str(exc)
+                        return JsonResponse({
+                            "error": str(exc), "action": to_dict(a),
+                        }, status=400)
+                return JsonResponse(to_dict(a))
     return _error(f"Action not found: {action_id}", status=404)
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def reject_action(request: HttpRequest, action_id: str) -> JsonResponse:
-    for a in runtime.booking_manager.actions():
-        if a.action_id == action_id:
-            a.status = ActionStatus.REJECTED
-            a.decided_at = datetime.now().isoformat(timespec="seconds")
-            a.decided_by = "c_end_user"
-            return JsonResponse(to_dict(a))
+    rt = request.runtime
+    decided_by = getattr(getattr(request, "auth_user", None), "username", "c_end_user")
+    with rt.lock:
+        for a in rt.booking_manager.actions():
+            if a.action_id == action_id:
+                a.status = ActionStatus.REJECTED
+                a.decided_at = datetime.now().isoformat(timespec="seconds")
+                a.decided_by = decided_by
+                return JsonResponse(to_dict(a))
     return _error(f"Action not found: {action_id}", status=404)
 
 
@@ -409,13 +439,15 @@ def reject_action(request: HttpRequest, action_id: str) -> JsonResponse:
 @require_http_methods(["POST"])
 def booking_mark_confirmed(request: HttpRequest, booking_id: str) -> JsonResponse:
     """E4：服务方确认回调（SUBMITTED → CONFIRMED；Demo 期人工/脚本触发）。"""
-    try:
-        rec = runtime.booking_manager.mark_confirmed(booking_id)
-        return JsonResponse(to_dict(rec))
-    except KeyError as exc:
-        return _error(str(exc), status=404)
-    except ValueError as exc:
-        return _error(str(exc), status=400)
+    rt = request.runtime
+    with rt.lock:
+        try:
+            rec = rt.booking_manager.mark_confirmed(booking_id)
+            return JsonResponse(to_dict(rec))
+        except KeyError as exc:
+            return _error(str(exc), status=404)
+        except ValueError as exc:
+            return _error(str(exc), status=400)
 
 
 # ── 监控事件 ────────────────────────────────────────────────────────────
@@ -426,44 +458,56 @@ def list_events(request: HttpRequest) -> JsonResponse:
         since = int(request.GET.get("since", 0))
     except ValueError:
         return _error("since must be an integer")
-    events = runtime.events[since:]
+    events = request.runtime.events[since:]
     return JsonResponse({
         "events": [to_dict(e) for e in events],
         "count": len(events),
-        "total": len(runtime.events),
+        "total": len(request.runtime.events),
     })
 
 
 @require_http_methods(["GET"])
 def list_replans(request: HttpRequest) -> JsonResponse:
     return JsonResponse({
-        "replans": runtime.replan_history,
-        "count": len(runtime.replan_history),
+        "replans": request.runtime.replan_history,
+        "count": len(request.runtime.replan_history),
     })
 
 
 @require_http_methods(["GET"])
 def get_replan(request: HttpRequest, index: int) -> JsonResponse:
-    if index < 1 or index > len(runtime.replan_history):
+    replans = request.runtime.replan_history
+    if index < 1 or index > len(replans):
         return _error("Replan not found", status=404)
-    return JsonResponse(runtime.replan_history[index - 1])
+    return JsonResponse(replans[index - 1])
 
 
 @require_http_methods(["GET"])
 def tool_calls(request: HttpRequest) -> JsonResponse:
     return JsonResponse({
-        "tool_calls": runtime.tool_call_log,
-        "count": len(runtime.tool_call_log),
+        "tool_calls": request.runtime.tool_call_log,
+        "count": len(request.runtime.tool_call_log),
     })
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def execution_poll(request: HttpRequest) -> JsonResponse:
+    """手动轮询。多用户 review 观察项（2026-09）：持锁尝试改非阻塞——
+
+    同用户 plan/chat 长写持锁 20-70s 期间，5s 一轮的 poll 不再占住 gthread
+    线程干等（多用户并发规划时会把线程池吃满），立即返回 busy 语义
+    （200 + status="busy"，C 端按空事件处理，契约超集零改动）。
+    """
+    rt = request.runtime
+    if not rt.lock.acquire(timeout=0):
+        return JsonResponse({"status": "busy", "events": [], "count": 0})
     try:
-        events = runtime.poll()
+        events = rt.poll()
     except RuntimeError as exc:
         return _error(str(exc), status=400)
+    finally:
+        rt.lock.release()
     return JsonResponse({
         "status": "ok",
         "events": [to_dict(e) for e in events],
@@ -475,16 +519,22 @@ def execution_poll(request: HttpRequest) -> JsonResponse:
 @require_http_methods(["POST"])
 def execution_lookahead(request: HttpRequest) -> JsonResponse:
     payload = _json_body(request)
+    rt = request.runtime
+    if not rt.lock.acquire(timeout=0):
+        return JsonResponse({"status": "busy", "events": [], "count": 0})
     try:
-        if payload and "now" in payload:
-            now = datetime.fromisoformat(payload["now"])
-        else:
-            now = datetime.now()
-        events = runtime.lookahead(now)
-    except RuntimeError as exc:
-        return _error(str(exc), status=400)
-    except ValueError as exc:
-        return _error(str(exc), status=400)
+        try:
+            if payload and "now" in payload:
+                now = datetime.fromisoformat(payload["now"])
+            else:
+                now = datetime.now()
+            events = rt.lookahead(now)
+        except RuntimeError as exc:
+            return _error(str(exc), status=400)
+        except ValueError as exc:
+            return _error(str(exc), status=400)
+    finally:
+        rt.lock.release()
     return JsonResponse({
         "status": "ok",
         "events": [to_dict(e) for e in events],
@@ -497,6 +547,7 @@ def execution_lookahead(request: HttpRequest) -> JsonResponse:
 # 决策（A 侧 BDecisionHook）→ 重规划 → 回填 /api/replans 与 /api/timeline。
 # App 零改动：/api/events、/api/replans、/api/timeline 照常轮询即可看到。
 # 公网（穿透）演示时建议设环境变量 DEBUG_INJECT_TOKEN，请求带 X-Debug-Token 头。
+# 多用户：注入只影响当前 token 用户的 MockWorld（world 随运行时实例走）。
 
 PRESET_EVENTS: Dict[str, Dict[str, Any]] = {
     "storm": {
@@ -616,6 +667,7 @@ def _apply_persist_world(world: Any, event: MonitorEvent) -> None:
 
     Live 模式下 MockWorld 是 override 层（WeatherToolLive 等在 API 数据上
     叠加），因此该写入对 mock / live 两种数据模式都生效。
+    多用户后 world 是每用户运行时私有的，注入只影响当前用户。
     """
     data = event.data or {}
     if event.event_type == EventType.WEATHER:
@@ -649,7 +701,8 @@ def debug_inject(request: HttpRequest) -> JsonResponse:
       "persist_world": true → 同步写进假池（MockWorld），后续轮询持续可见
         （默认 false：一次性事件，避免轮询再次触发重复决策）；
       "rule_name" / "spot_id" / "observed_at" 透传给 MonitorEvent。
-    鉴权：环境变量 DEBUG_INJECT_TOKEN 非空时，要求 X-Debug-Token 请求头。
+    鉴权：环境变量 DEBUG_INJECT_TOKEN 非空时，要求 X-Debug-Token 请求头
+    （多用户后仍叠加 Bearer token 认证，注入只影响当前用户）。
     前置：必须先 POST /api/plan/（或 /api/timeline/）建好时间轴。
     """
     token = settings.debug_inject_token
@@ -658,28 +711,30 @@ def debug_inject(request: HttpRequest) -> JsonResponse:
     payload = _json_body(request)
     if not isinstance(payload, dict) or not payload:
         return _error("JSON body required")
-    try:
-        agent = runtime.require_agent()
-        event = _build_inject_event(payload, runtime.timeline)
-    except (RuntimeError, ValueError) as exc:
-        return _error(str(exc), status=400)
-    if not token:
-        logger.warning("debug_inject 未设 DEBUG_INJECT_TOKEN，公网可达时建议配置")
-    # 可选：同步写进假池（Live 模式同样叠加 override）
-    if payload.get("persist_world") and getattr(runtime, "world", None) is not None:
+    rt = request.runtime
+    with rt.lock:
         try:
-            _apply_persist_world(runtime.world, event)
+            agent = rt.require_agent()
+            event = _build_inject_event(payload, rt.timeline)
+        except (RuntimeError, ValueError) as exc:
+            return _error(str(exc), status=400)
+        if not token:
+            logger.warning("debug_inject 未设 DEBUG_INJECT_TOKEN，公网可达时建议配置")
+        # 可选：同步写进假池（Live 模式同样叠加 override；仅当前用户的 world）
+        if payload.get("persist_world") and getattr(rt, "world", None) is not None:
+            try:
+                _apply_persist_world(rt.world, event)
+            except Exception:  # noqa: BLE001
+                logger.exception("persist_world failed")
+        # 真链路：缓冲进 /api/events → 影响判定 → DecisionRequest → 重规划
+        n_before = len(rt.replan_history)
+        try:
+            req = asyncio.run(agent.handle_event(event))
         except Exception:  # noqa: BLE001
-            logger.exception("persist_world failed")
-    # 真链路：缓冲进 /api/events → 影响判定 → DecisionRequest → 重规划
-    n_before = len(runtime.replan_history)
-    try:
-        req = asyncio.run(agent.handle_event(event))
-    except Exception:  # noqa: BLE001
-        logger.exception("handle_event failed")
-        return _error("handle_event failed（见服务端日志）", status=500)
-    recorded = len(runtime.replan_history) > n_before
-    entry = runtime.replan_history[-1] if recorded else None
+            logger.exception("handle_event failed")
+            return _error("handle_event failed（见服务端日志）", status=500)
+        recorded = len(rt.replan_history) > n_before
+        entry = rt.replan_history[-1] if recorded else None
     decision = entry.get("decision") if entry else None
     return JsonResponse({
         "status": "ok",
@@ -700,9 +755,10 @@ def debug_inject(request: HttpRequest) -> JsonResponse:
 
 @require_http_methods(["GET"])
 def export_ics(request: HttpRequest) -> HttpResponse:
-    if runtime.timeline is None:
+    timeline_obj = request.runtime.timeline
+    if timeline_obj is None:
         return _error("No timeline set", status=400)
-    content = build_ics(runtime.timeline)
+    content = build_ics(timeline_obj)
     if request.GET.get("raw") == "1":
         return HttpResponse(content, content_type="text/calendar; charset=utf-8")
     return JsonResponse({"content": content})
@@ -710,9 +766,10 @@ def export_ics(request: HttpRequest) -> HttpResponse:
 
 @require_http_methods(["GET"])
 def export_markdown(request: HttpRequest) -> HttpResponse:
-    if runtime.timeline is None:
+    timeline_obj = request.runtime.timeline
+    if timeline_obj is None:
         return _error("No timeline set", status=400)
-    content = render_markdown(runtime.timeline)
+    content = render_markdown(timeline_obj)
     if request.GET.get("raw") == "1":
         return HttpResponse(content, content_type="text/markdown; charset=utf-8")
     return JsonResponse({"content": content})
@@ -740,7 +797,19 @@ def config_info(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["POST"])
 def config_reload(request: HttpRequest) -> JsonResponse:
-    settings.reload()
+    """配置热更新（进程级副作用，影响所有用户）。
+
+    多用户 review P2（2026-09）：比照 DEBUG_INJECT_TOKEN 门控——环境变量
+    CONFIG_RELOAD_TOKEN 非空时要求 X-Config-Token 请求头（401）；
+    空 = 开放并记警告（本地/演示便利），公网部署务必设置。
+    """
+    token = settings.config_reload_token
+    if token and request.headers.get("X-Config-Token") != token:
+        return _error("invalid or missing X-Config-Token", status=401)
+    if not token:
+        logger.warning("config_reload 未设 CONFIG_RELOAD_TOKEN，公网可达时建议配置")
+    with request.runtime.lock:
+        settings.reload()
     return JsonResponse({
         "status": "ok",
         "demo_mode": settings.demo_mode,
@@ -758,6 +827,8 @@ def config_reload(request: HttpRequest) -> JsonResponse:
 # ``BChatHook`` 翻译成事件/约束后走 RePlanner 增量修复/A 规划器全量重排，
 # 产出 ``ReplanRequest``，B 侧只负责应用 + 记录（方案 §六.7，C 端契约零变化）。
 # 工具不进 registry，仅本会话内生效。
+# 多用户：行程上下文/工具/时间轴改写全部走 request.runtime（每用户隔离），
+# 整个 LLM 回路持该用户的 runtime.lock。
 
 CHAT_HISTORY_LIMIT = 20
 
@@ -800,11 +871,11 @@ CHAT_READONLY_TOOLS = (
 )
 
 
-def _chat_tools() -> List[Dict[str, Any]]:
+def _chat_tools(rt: Any) -> List[Dict[str, Any]]:
     """对话工具列表：update_timeline（私有写）+ 精选只读真源工具。"""
     tools: List[Dict[str, Any]] = [_chat_intent_tool()]
     try:
-        provider = ToolProvider(runtime.registry)
+        provider = ToolProvider(rt.registry)
         for tool in provider.to_openai_tools():
             name = tool.get("function", {}).get("name")
             if name in CHAT_READONLY_TOOLS:
@@ -814,7 +885,7 @@ def _chat_tools() -> List[Dict[str, Any]]:
     return tools
 
 
-def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+def _exec_chat_timeline(rt: Any, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """chat v2.3 私有工具执行器：意图 → A 侧 BChatHook → 应用 ReplanRequest。
 
     v2.3（P5.1）：不再「解析整份时间轴 + 本地校验 + 整体替换」，而是把
@@ -830,15 +901,15 @@ def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(intents, list):
         return {"status": "error", "message": "参数缺少 intents 列表"}
     try:
-        runtime.require_agent()  # 未建行程时拒绝
+        rt.require_agent()  # 未建行程时拒绝
     except RuntimeError as exc:
         return {"status": "error", "message": f"时间轴不合法：{exc}"}
 
     try:
         from runtime.a_interface import build_chat_hook
 
-        hook = build_chat_hook(tool_provider=runtime.tool_provider)
-        replan = hook.apply(intents, current_timeline=runtime.timeline)
+        hook = build_chat_hook(tool_provider=rt.tool_provider, requirement=rt.requirement)
+        replan = hook.apply(intents, current_timeline=rt.timeline)
     except Exception as exc:  # noqa: BLE001  A 侧编排异常回填给 LLM 调整
         logger.exception("chat update_timeline orchestration failed")
         return {"status": "error", "message": f"调整失败：{exc}"}
@@ -849,7 +920,7 @@ def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     from api.timeline_validator import validate_timeline
 
     validation_errors = validate_timeline(
-        replan.new_timeline, runtime.requirement or {}
+        replan.new_timeline, rt.requirement or {}
     )
     if validation_errors:
         logger.warning(
@@ -863,7 +934,7 @@ def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             "请调整方案后重试）",
         }
     try:
-        result = runtime.apply_timeline_from_chat(
+        result = rt.apply_timeline_from_chat(
             replan.new_timeline, reason=replan.reason or "对话调整"
         )
     except Exception as exc:  # noqa: BLE001
@@ -877,12 +948,12 @@ def _exec_chat_timeline(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _exec_chat_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+def _exec_chat_tool(rt: Any, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """对话工具统一分发：update_timeline 走私有逻辑，其余走只读白名单。"""
     if name == "update_timeline":
-        return _exec_chat_timeline(name, arguments)
+        return _exec_chat_timeline(rt, name, arguments)
     try:
-        provider = ToolProvider(runtime.registry)
+        provider = ToolProvider(rt.registry)
         result = provider.call_json(name, arguments or {})
         return {"status": "ok", "result": result}
     except KeyError as exc:
@@ -892,14 +963,14 @@ def _exec_chat_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"工具调用失败：{exc}"}
 
 
-def _chat_system_prompt() -> str:
+def _chat_system_prompt(rt: Any) -> str:
     """构建带行程上下文的系统提示词（C 端对话用）。"""
     parts = [
         "你是 TravelAgent 的旅行助手，负责回答用户关于行程与旅行的问题。",
         "只回答与旅行、行程、景点、天气、交通、酒店、餐饮相关的问题；"
         "无关问题请礼貌拒绝。回答使用简体中文，简洁准确，不要使用 Markdown 标题。",
     ]
-    tl = runtime.timeline
+    tl = rt.timeline
     if tl is not None:
         lines = [f"当前行程：{tl.city}，{tl.start_date} 至 {tl.end_date}"]
         for day in tl.days:
@@ -908,7 +979,7 @@ def _chat_system_prompt() -> str:
             )
             lines.append(f"第{day.day}天（{day.date}）：{items}")
         parts.append("\n".join(lines))
-    req = runtime.requirement or {}
+    req = rt.requirement or {}
     content = req.get("content") or {}
     if isinstance(content, dict):
         pref = content.get("preferences") or {}
@@ -926,8 +997,8 @@ def _chat_system_prompt() -> str:
             bits.append(f"必去 {'、'.join(cons['must_visit'])}")
         if bits:
             parts.append("用户需求：" + "，".join(bits))
-    if runtime.replan_history:
-        last = runtime.replan_history[-1]
+    if rt.replan_history:
+        last = rt.replan_history[-1]
         d = last.get("decision") or {}
         if d.get("reason"):
             parts.append(f"最近一次行程调整：{str(d['reason'])[:200]}")
@@ -965,43 +1036,45 @@ def chat(request: HttpRequest) -> JsonResponse:
         content = str(item.get("content") or "").strip()
         if role in ("user", "assistant") and content:
             cleaned.append({"role": role, "content": content})
-    messages = [
-        {"role": "system", "content": _chat_system_prompt()},
-        *cleaned,
-        {"role": "user", "content": message},
-    ]
-    try:
-        from call_llm.client_factory import create_llm_client
+    rt = request.runtime
+    with rt.lock:
+        messages = [
+            {"role": "system", "content": _chat_system_prompt(rt)},
+            *cleaned,
+            {"role": "user", "content": message},
+        ]
+        try:
+            from call_llm.client_factory import create_llm_client
 
-        client = create_llm_client(ask_user_if_missing=False)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("chat: create_llm_client failed: %s", exc)
-        return _error(
-            "LLM 未配置（检查 DEEPSEEK_API_KEY / GLM_API_KEY 环境变量）",
-            status=502,
-        )
-    started = time.monotonic()
-    try:
-        result = client.generate(
-            messages,
-            tools=_chat_tools(),
-            tool_executor=_exec_chat_tool,
-            max_tool_rounds=5,   # v2.2：查询真源 + 改行程 + 校验重试需要更多轮
-            expect_json=False,   # 对话模式：工具回路后返回自然语言
-        )
-        reply = str(result.get("content") or "").strip()
-        if not reply:
-            reply = "已处理你的请求。"
-    except ValueError as exc:
-        # 工具轮次超限等「流程性」失败：给用户友好提示而非 502
-        logger.warning("chat flow rejected: %s", exc)
-        return JsonResponse({
-            "reply": "抱歉，这次调整没有完成（操作步骤过多）。"
-                     "请简化需求或分步提出，例如只调整一个景点。",
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
-        })
-    except Exception as exc:  # noqa: BLE001
-        logger.error("chat failed: %s", exc)
-        return _error(f"LLM 调用失败: {exc}", status=502)
+            client = create_llm_client(ask_user_if_missing=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("chat: create_llm_client failed: %s", exc)
+            return _error(
+                "LLM 未配置（检查 DEEPSEEK_API_KEY / GLM_API_KEY 环境变量）",
+                status=502,
+            )
+        started = time.monotonic()
+        try:
+            result = client.generate(
+                messages,
+                tools=_chat_tools(rt),
+                tool_executor=lambda name, arguments: _exec_chat_tool(rt, name, arguments),
+                max_tool_rounds=5,   # v2.2：查询真源 + 改行程 + 校验重试需要更多轮
+                expect_json=False,   # 对话模式：工具回路后返回自然语言
+            )
+            reply = str(result.get("content") or "").strip()
+            if not reply:
+                reply = "已处理你的请求。"
+        except ValueError as exc:
+            # 工具轮次超限等「流程性」失败：给用户友好提示而非 502
+            logger.warning("chat flow rejected: %s", exc)
+            return JsonResponse({
+                "reply": "抱歉，这次调整没有完成（操作步骤过多）。"
+                         "请简化需求或分步提出，例如只调整一个景点。",
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.error("chat failed: %s", exc)
+            return _error(f"LLM 调用失败: {exc}", status=502)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     return JsonResponse({"reply": reply, "elapsed_ms": elapsed_ms})

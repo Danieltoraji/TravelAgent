@@ -27,6 +27,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
+    "api.middleware.TokenAuthRuntimeMiddleware",
 ]
 
 ROOT_URLCONF = "travelagent.urls"
@@ -48,11 +49,17 @@ ASGI_APPLICATION = "travelagent.asgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": os.path.join(BASE_DIR, "db.sqlite3"),
+        # 多用户改造（2026-09）：路径可注入（docker-compose 挂 named volume
+        # 到 /app/django_server/data/，容器重建数据不丢）；测试用临时文件。
+        "NAME": os.environ.get("TRAVELAGENT_DB_PATH")
+        or os.path.join(BASE_DIR, "db.sqlite3"),
+        # gthread 多线程下 sqlite 偶发锁竞争，放宽默认 5s 等待
+        "OPTIONS": {"timeout": 20},
     }
 }
 
-# 单用户 Demo：不使用复杂认证；如需多用户再接入 JWT/Token。
+# 多用户改造（2026-09）：Bearer token 认证 + 每用户运行时隔离，
+# 见 api/middleware.py 与 docs/sync_notes_multiuser_for_ac_*.md。
 LANGUAGE_CODE = "zh-hans"
 TIME_ZONE = "Asia/Shanghai"
 USE_I18N = True

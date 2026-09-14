@@ -2,8 +2,12 @@
 
 - ``POST /api/booking/{id}/confirm/`` 酒店满房失败：返回 HTTP 400，body 含
   ``error``（错误原因）、``booking.status=="failed"``、对应 Action ``blocked``。
+
+多用户改造（2026-09）：视图从 ``request.runtime`` 取运行时——用例构造独立
+``AgentRuntime`` 挂到请求上（干净态：无 timeline / 无 agent）。
 """
 
+import json
 import os
 import sys
 import unittest
@@ -36,30 +40,30 @@ django.setup()
 from django.http import HttpRequest  # noqa: E402
 
 from api import views  # noqa: E402
-from runtime.agent_runtime import runtime  # noqa: E402
+from runtime.agent_runtime import AgentRuntime  # noqa: E402
 
 
-def _post_request() -> HttpRequest:
+def _post_request(rt: AgentRuntime) -> HttpRequest:
     req = HttpRequest()
     req.method = "POST"
     req.path = "/api/booking/x/confirm/"
+    req.runtime = rt
     return req   # body 默认空（HttpRequest.body 只读；confirm 视图不读请求体）
 
 
 class TestBookingConfirmFullRoom(unittest.TestCase):
     def setUp(self) -> None:
-        # 干净的单用户运行时：无 timeline / 无 agent（失败回调直接返回，不发事件）
-        runtime.timeline = None
-        runtime.agent = None
+        # 干净的独立运行时：无 timeline / 无 agent（失败回调直接返回，不发事件）
+        self.rt = AgentRuntime()
+        self.rt.timeline = None
+        self.rt.agent = None
 
     def test_full_room_confirm_returns_400_with_details(self) -> None:
-        rec = runtime.booking_manager.prepare(
+        rec = self.rt.booking_manager.prepare(
             place="皇城景观酒店（满房）", target_date="2026-08-04",
             party_size=2, booking_type="hotel",
         )
-        resp = views.booking_confirm(_post_request(), rec.booking_id)
-        import json
-
+        resp = views.booking_confirm(_post_request(self.rt), rec.booking_id)
         body = json.loads(resp.content.decode("utf-8"))
         assert resp.status_code == 400, f"满房失败应 400，实际 {resp.status_code}"
         assert "满房" in body["error"]
@@ -67,7 +71,7 @@ class TestBookingConfirmFullRoom(unittest.TestCase):
         assert any(a["status"] == "blocked" for a in body["actions"])
 
     def test_unknown_booking_still_404(self) -> None:
-        resp = views.booking_confirm(_post_request(), "NOSUCHID")
+        resp = views.booking_confirm(_post_request(self.rt), "NOSUCHID")
         assert resp.status_code == 404
 
 

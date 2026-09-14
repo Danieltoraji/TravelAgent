@@ -22,3 +22,45 @@ try:
 except ImportError:
     if "test_a_interface.py" not in collect_ignore:
         collect_ignore += ["test_a_interface.py", "test_replan_actions.py"]
+
+
+def pytest_configure(config):
+    """Django 引导（多用户改造 2026-09）：auth/multiuser/persist 测试需要
+    完整 INSTALLED_APPS + sqlite（Bearer 中间件、ORM、django.test.Client）。
+
+    在收集期（任何测试模块 import 前）完成 setup + migrate，使各测试文件里
+    ``if not settings.configured: settings.configure(空配置)`` 的旧分支自然
+    跳过（Django 全进程只允许 configure 一次）。DB 用独立临时目录（进程号
+    命名，互不干扰）；目录用 ``os.makedirs``（0o777）而非
+    ``tempfile.mkdtemp``（0o700，见根 conftest 的沙箱说明）。
+    """
+    import os
+    import sys
+    import tempfile
+
+    os.environ.setdefault(
+        "TRAVELAGENT_DB_PATH",
+        os.path.join(
+            os.path.join(tempfile.gettempdir(), f"ta_django_{os.getpid()}"),
+            "db.sqlite3",
+        ),
+    )
+    os.makedirs(os.path.dirname(os.environ["TRAVELAGENT_DB_PATH"]), exist_ok=True)
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _p in (os.path.join(repo_root, "django_server"), repo_root):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "travelagent.settings")
+
+    from django.conf import settings
+
+    if settings.configured:
+        return
+    import django
+
+    django.setup()
+    from django.core.management import call_command
+
+    call_command("migrate", run_syncdb=True, verbosity=0)

@@ -13,9 +13,12 @@ Android App **零改动**：它照常轮询 `/api/events`、`/api/replans`、
 ## 一、前置条件
 
 1. 后端已启动：`python manage.py runserver 0.0.0.0:8000`（在 `django_server/` 下）。
-2. 已建好行程：`POST /api/plan/`（或 `POST /api/timeline/`）成功，`GET /api/status/`
+2. 已登录拿 token（**多用户改造后所有 `/api/*` 端点需 Bearer 鉴权**）：
+   `POST /api/auth/login/`（或 `/api/auth/register/`）→ 响应里的 `token`；
+   下文记作 `$TOKEN`。
+3. 已建好行程：`POST /api/plan/`（或 `POST /api/timeline/`）成功，`GET /api/status/`
    中 `timeline_set` 为 true。**没有时间轴时注入端点返回 400。**
-3. 决策 hook 是 A 侧 LLM（`BDecisionHook`），注入后重规划需要数秒；若未配置
+4. 决策 hook 是 A 侧 LLM（`BDecisionHook`），注入后重规划需要数秒；若未配置
    LLM Key，`decision` 会返回 `hook_error`（事件仍会进 `/api/events`，但不重规划）。
 
 ## 二、注入方式（三种）
@@ -25,22 +28,22 @@ Android App **零改动**：它照常轮询 `/api/events`、`/api/replans`、
 ```bash
 # 暴雨：降雨概率 10% → 85%
 curl -X POST http://127.0.0.1:8000/api/debug/inject/ \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"scenario": "storm"}'
 
 # 排队暴涨：故宫 20 → 120 分钟
 curl -X POST http://127.0.0.1:8000/api/debug/inject/ \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"scenario": "queue", "place": "故宫"}'
 
 # 交通拥堵延误 45 分钟
 curl -X POST http://127.0.0.1:8000/api/debug/inject/ \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"scenario": "traffic_jam", "place": "北京-故宫"}'
 
 # 酒店满房（触发换宿决策）
 curl -X POST http://127.0.0.1:8000/api/debug/inject/ \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"scenario": "hotel_full", "place": "皇城景观酒店"}'
 ```
 
@@ -48,14 +51,14 @@ curl -X POST http://127.0.0.1:8000/api/debug/inject/ \
 
 ```bash
 # 剧情三连：storm → queue(故宫) → traffic_jam，间隔 3 秒
-python demo/inject_events.py --all --interval 3
+python demo/inject_events.py --bearer $TOKEN --all --interval 3
 
 # 单发
-python demo/inject_events.py storm
-python demo/inject_events.py queue --place 故宫
+python demo/inject_events.py --bearer $TOKEN storm
+python demo/inject_events.py --bearer $TOKEN queue --place 故宫
 
 # 原始注入（任意事件类型 + 自定义数据）
-python demo/inject_events.py raw --event-type scenic --place 故宫 \
+python demo/inject_events.py --bearer $TOKEN raw --event-type scenic --place 故宫 \
     --data '{"queue_min": 120}'
 ```
 
@@ -64,7 +67,7 @@ python demo/inject_events.py raw --event-type scenic --place 故宫 \
 ### 方式 3：穿透后从任意设备触发
 
 ```bash
-python demo/inject_events.py --base http://节点地址:端口 storm
+python demo/inject_events.py --base http://节点地址:端口 --bearer $TOKEN storm
 ```
 
 把 `--base` 换成 Sakura TCP 隧道的地址即可。演示时可用手机/另一台电脑触发，
@@ -110,11 +113,12 @@ python demo/inject_events.py --base http://节点地址:端口 storm
 
 ## 五、鉴权与安全
 
-- 服务端设 `DEBUG_INJECT_TOKEN=xxx`（环境变量）后，请求必须带
-  `X-Debug-Token: xxx` 头，否则 401。未设置时端点开放（与项目无认证风格一致），
-  但每次注入会在服务端日志打警告。
-- 注入端点暴露在公网（穿透）时**务必设置 token**，且演示结束立即关闭隧道。
-- 本项目其余写接口（`/api/tools/*/invoke/` 等）同样无认证，穿透本身就是临时手段。
+- **Bearer 门禁（多用户改造，2026-09）**：注入端点不在白名单内，请求必须带
+  `Authorization: Bearer <登录token>`，否则 401——与全部其余 `/api/*` 端点一致
+  （白名单仅 `/api/health/`、register、login）。
+- **二层防护**：服务端设 `DEBUG_INJECT_TOKEN=xxx`（环境变量）后，还需带
+  `X-Debug-Token: xxx` 头；未设置时每次注入会在服务端日志打警告。
+- 注入端点暴露在公网（穿透）时**两层都建议配置**，且演示结束立即关闭隧道。
 
 ## 六、演示剧本建议
 

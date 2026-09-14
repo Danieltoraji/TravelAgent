@@ -162,7 +162,7 @@ class TestReplanActionsQueue(unittest.IsolatedAsyncioTestCase):
         rt = AgentRuntime()
         rt.timeline = make_timeline()
 
-        def fake_raw_hook(tool_provider=None):
+        def fake_raw_hook(tool_provider=None, requirement=None):  # 多用户：调用方增传 requirement
             def hook(_req):  # 模拟 A 侧 Decision Engine：满房硬规则 → 换酒店
                 return ReplanRequest(
                     new_timeline=make_timeline(),
