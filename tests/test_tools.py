@@ -2092,7 +2092,7 @@ class TestMapIntercity(unittest.TestCase):
             action="route", origin="北京", destination="上海", mode="train"
         )
         self.assertEqual(result["mode"], "train")
-        self.assertEqual(result["source"], "estimate")
+        self.assertEqual(result["source"], "estimated")
         self.assertEqual(result["duration_min"], 280)
         self.assertEqual(result["transport_minutes"], 280)   # 兼容规范字段
         self.assertEqual(result["cost_per_person"], 553.0)
@@ -2107,7 +2107,7 @@ class TestMapIntercity(unittest.TestCase):
             action="route", origin="上海", destination="成都", mode="air"
         )
         self.assertEqual(result["mode"], "air")
-        self.assertEqual(result["source"], "estimate")
+        self.assertEqual(result["source"], "estimated")
         self.assertEqual(result["duration_min"], 200)
         self.assertEqual(result["cost_per_person"], 1300.0)
         # 车站粒度：air 具体到机场对
@@ -2136,7 +2136,7 @@ class TestMapIntercity(unittest.TestCase):
             action="route", origin="北京", destination="广州", mode="train"
         )
         self.assertEqual(result["mode"], "driving")
-        self.assertNotEqual(result.get("source"), "estimate")
+        self.assertNotEqual(result.get("source"), "estimated")
         self.assertIn("distance_km", result)
 
     def test_mock_route_transit_unchanged(self) -> None:
@@ -2153,7 +2153,7 @@ class TestMapIntercity(unittest.TestCase):
         result = tool._run(
             action="route", origin="北京", destination="上海", mode="train"
         )
-        self.assertEqual(result["source"], "estimate")
+        self.assertEqual(result["source"], "estimated")
         self.assertEqual(result["duration_min"], 280)
         client.get_route.assert_not_called()
         client.geocode.assert_not_called()

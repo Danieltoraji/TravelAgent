@@ -21,6 +21,13 @@ from typing import Any, Dict, List
 MAX_NOTICES = 8
 
 _MODE_TEXT = {"train": "火车", "air": "航班", "driving": "自驾"}
+# 估算口径（防御双拼写）：枚举归并后应为 "estimated"，但 B 侧历史数据/旧缓存
+# 可能残留 "estimate"（map_tool 城际估算兜底曾用旧拼写，2026-09-14 实锤）
+_ESTIMATE_SOURCES = {"estimate", "estimated"}
+
+
+def _is_estimated(value: Any) -> bool:
+    return str(value or "") in _ESTIMATE_SOURCES
 
 
 def segment_fallback_notices(segments: List[Dict[str, Any]]) -> List[str]:
@@ -51,7 +58,7 @@ def segment_fallback_notices(segments: List[Dict[str, Any]]) -> List[str]:
         for leg in details.get("legs") or []:
             if not isinstance(leg, dict) or leg.get("kind") != "intercity":
                 continue
-            if str(leg.get("source") or "") == "estimated":
+            if _is_estimated(leg.get("source")):
                 mode = _MODE_TEXT.get(str(leg.get("mode") or ""), "交通")
                 notices.append(
                     f"『{leg.get('from')}→{leg.get('to')}』{mode}段"

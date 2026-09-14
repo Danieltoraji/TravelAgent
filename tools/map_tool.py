@@ -9,10 +9,10 @@ Live 版（MapToolLive）：调高德地图 API，返回真实 POI 和路线数�
 
 城际模式（train / air，批次 1a）：
 - mode=train/air → ``_intercity``：查估算表（B 仓库 ``fake_spots/city_travel.json`` 的
-  ``options``），返回 ``{mode, duration_min, cost_per_person, source:"estimate"}``；
+  ``options``），返回 ``{mode, duration_min, cost_per_person, source:"estimated"}``；
   表缺失 / 城市对未收录 → 自动回退 driving（Mock 固定值 / Live 高德驾车真源），不报错。
 - 高德开放平台无城际火车/航班时刻票价接口（真源走 12306MCP / 航班聚合，阶段二接入），
-  估算表只保级不冒充真数据（``source=estimate`` 标注）。
+  估算表只保级不冒充真数据（``source=estimated`` 标注）。
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ class MapTool(BaseTool):
                 "enum": ["transit", "driving", "riding", "walk", "train", "air"],
                 "description": "路线模式：公交/驾车/骑行/步行/高铁/飞机，默认 transit；"
                 "batch_route 仅支持 driving / walk；train/air 为城际模式"
-                "（估算表兜底，source=estimate，批次 1a）",
+                "（估算表兜底，source=estimated，批次 1a）",
             },
             "same_city": {
                 "type": "boolean",
@@ -283,7 +283,7 @@ class MapTool(BaseTool):
                 or f"{_MODE_TEXT.get(mode, mode)}（估算）",
                 "transit": _MODE_TEXT.get(mode, mode),
                 "fare": 0.0,
-                "source": "estimate",          # 估算保级，不冒充真数据
+                "source": "estimated",         # 估算保级，不冒充真数据（P1 口径归并补 B 侧）
                 "legs": [],
             }
         logger.warning(
