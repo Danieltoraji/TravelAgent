@@ -108,28 +108,28 @@ class DataSourceResolver:
         self._search_plan = plan
         return plan
 
-    def _generate_live_or_fallback(self) -> TripTimeline:
-        """真源优先：候选池 / 规划任一步失败 → 回退假数据管线（保留失败原因）。
+    def _fallback_fake_pipeline(self, reason: str) -> TripTimeline:
+        """真源/供给失败 → 假数据管线兜底（记录原因 + live_fallback 状态）。"""
+        timeline = self._run_pipeline(
+            self._spots_provider, None, source=PipelineSource.FAKE.value
+        )
+        self.last_data_source = PipelineSource.LIVE_FALLBACK.value
+        self.last_error = reason
+        return timeline
 
-        8.30 矩阵瘦身（两阶段，替代先前 36 节点一次性整矩阵）：
-        - 阶段 1：一次 ``batch_route`` 只含「候选景点 + 假池酒店」（不再预置 20 家
-          餐厅）→ 排一版**无餐厅**计划，确定每天用餐窗口临近的景点（锚点）；
-        - 阶段 2：只对「计划内景点 × 真源餐厅」补一张正交小矩阵（远小于全集合
-          n²），合并后带餐厅重新规划；餐厅 / 增量矩阵失败 → 沿用阶段 1 计划
-          （无餐厅段），不拖累 scenic / 酒店真源链路。
+    def _provision_live_planning(self) -> Dict[str, Any]:
+        """live 规划供给（编排路径与固定管线共用，2026-09-14 阶段 b 抽取）：
+
+        候选池 → 城际段（含去程精排）→ 首末日窗口 → 酒店候选 + 转场矩阵
+        （8.30 两阶段瘦身的阶段 1 供给部分）。任一步失败抛异常，由调用方
+        决定回退（固定管线/编排路径都回同一假数据管线）。
+
+        返回 dict：spots / segments / first_day_start_time /
+        last_day_end_minutes / live_hotels / base_matrix / name_to_coord。
         """
         from data_transmission.live_data import _coord_str, make_live_matrix_fn
 
-        try:
-            spots = self._live_spots_provider(self.city)
-        except Exception as exc:  # noqa: BLE001
-            reason = f"真实数据接入失败，已回退假数据：{exc}"
-            timeline = self._run_pipeline(
-                self._spots_provider, None, source=PipelineSource.FAKE.value
-            )
-            self.last_data_source = PipelineSource.LIVE_FALLBACK.value
-            self.last_error = reason
-            return timeline
+        spots = self._live_spots_provider(self.city)
         # 到达日重叠修复（方案 A）：规划前构建城际段**一次**（不重复查询
         # 12306/juhe），取去程到达时刻 + 90min 接驳缓冲 → 首日起点；规划后
         # 仅 ``_inject_trip_segments`` 写入。spots 失败早已回退，此处构建
@@ -139,44 +139,86 @@ class DataSourceResolver:
         # 末日截止优先真源离散班次（最晚可行班出发 − 缓冲），无候选走反推兜底
         last_day_end_minutes = _windowed_last_day_end(segments, self.requirement)
         base_matrix: Dict[Tuple[str, str], Tuple[float, int]] = {}
+        name_to_coord: Dict[str, str] = {}
         live_hotels = self._live_hotel_pool()  # 8.29：假池酒店候选（坐标并入矩阵 → 通勤真源）
+        if self._travel_time_provider is not None:
+            self._travel_time_provider.set_name_map(
+                self._live_spots_source.names
+            )
+            # 阶段 1：scenic 已返回真实坐标 → 一次 batch_route 取候选+酒店矩阵。
+            # 坐标直连（B 侧跳过地理编码）：消灭 QPS 突刺（10021）与怪名 POI
+            # 编码失败（30001）；矩阵构建失败与规划失败同走回退假源。
+            source_spots = self._live_spots_source.spots or self._live_spots_source(
+                self.city,
+                limit=max(10, self._pool_days_limit()),
+                ensure_spots=self._must_visit_names(),
+            )
+            name_to_coord = {
+                spot["name"]: coord
+                for spot in source_spots
+                if spot.get("name") and (coord := _coord_str(spot.get("location")))
+            }
+            # 8.29 酒店通勤真源化：假池酒店候选坐标并入矩阵（B4 HotelTool
+            # 就绪前酒店本体仍是候选源；通勤先真源化）→ HotelSelector 走矩阵分钟。
+            for hotel in live_hotels:
+                coord = _coord_str(
+                    {"lat": hotel.location[0], "lng": hotel.location[1]}
+                )
+                if coord and hotel.name not in name_to_coord:
+                    name_to_coord[hotel.name] = coord
+            if name_to_coord:
+                base_matrix = make_live_matrix_fn(
+                    self._tool_provider, city=self.city
+                )(name_to_coord)
+                self._travel_time_provider.set_matrix(
+                    base_matrix, name_to_coord=name_to_coord
+                )
+                # 酒店 id → 点名（与 scenic 增量合并，set_name_map 为 update 语义）
+                self._travel_time_provider.set_name_map(
+                    {hotel.id: hotel.name for hotel in live_hotels}
+                )
+        return {
+            "spots": spots,
+            "segments": segments,
+            "first_day_start_time": first_day_start_time,
+            "last_day_end_minutes": last_day_end_minutes,
+            "live_hotels": live_hotels,
+            "base_matrix": base_matrix,
+            "name_to_coord": name_to_coord,
+        }
+
+    def _generate_live_or_fallback(
+        self, *, provisioned: Optional[Dict[str, Any]] = None
+    ) -> TripTimeline:
+        """真源优先：候选池 / 规划任一步失败 → 回退假数据管线（保留失败原因）。
+
+        8.30 矩阵瘦身（两阶段，替代先前 36 节点一次性整矩阵）：
+        - 阶段 1：一次 ``batch_route`` 只含「候选景点 + 假池酒店」（不再预置 20 家
+          餐厅）→ 排一版**无餐厅**计划，确定每天用餐窗口临近的景点（锚点）；
+        - 阶段 2：只对「计划内景点 × 真源餐厅」补一张正交小矩阵（远小于全集合
+          n²），合并后带餐厅重新规划；餐厅 / 增量矩阵失败 → 沿用阶段 1 计划
+          （无餐厅段），不拖累 scenic / 酒店真源链路。
+
+        ``provisioned``（2026-09-14 阶段 b）：编排路径回落时传入已供给 ctx
+        （``_provision_live_planning`` 的产物），避免回落重跑供给对 12306/juhe
+        二次计费；缺省 None = 自行供给（原行为，调用方零改动）。
+        """
+        if provisioned is None:
+            try:
+                provisioned = self._provision_live_planning()
+            except Exception as exc:  # noqa: BLE001
+                return self._fallback_fake_pipeline(
+                    f"真实数据接入失败，已回退假数据：{exc}"
+                )
+        spots = provisioned["spots"]
+        segments = provisioned["segments"]
+        first_day_start_time = provisioned["first_day_start_time"]
+        last_day_end_minutes = provisioned["last_day_end_minutes"]
+        live_hotels = provisioned["live_hotels"]
+        base_matrix = provisioned["base_matrix"]
+        name_to_coord = provisioned["name_to_coord"]
         try:
             if self._travel_time_provider is not None:
-                self._travel_time_provider.set_name_map(
-                    self._live_spots_source.names
-                )
-                # 阶段 1：scenic 已返回真实坐标 → 一次 batch_route 取候选+酒店矩阵。
-                # 坐标直连（B 侧跳过地理编码）：消灭 QPS 突刺（10021）与怪名 POI
-                # 编码失败（30001）；矩阵构建失败与规划失败同走回退假源。
-                source_spots = self._live_spots_source.spots or self._live_spots_source(
-                    self.city,
-                    limit=max(10, self._pool_days_limit()),
-                    ensure_spots=self._must_visit_names(),
-                )
-                name_to_coord = {
-                    spot["name"]: coord
-                    for spot in source_spots
-                    if spot.get("name") and (coord := _coord_str(spot.get("location")))
-                }
-                # 8.29 酒店通勤真源化：假池酒店候选坐标并入矩阵（B4 HotelTool
-                # 就绪前酒店本体仍是候选源；通勤先真源化）→ HotelSelector 走矩阵分钟。
-                for hotel in live_hotels:
-                    coord = _coord_str(
-                        {"lat": hotel.location[0], "lng": hotel.location[1]}
-                    )
-                    if coord and hotel.name not in name_to_coord:
-                        name_to_coord[hotel.name] = coord
-                if name_to_coord:
-                    base_matrix = make_live_matrix_fn(
-                        self._tool_provider, city=self.city
-                    )(name_to_coord)
-                    self._travel_time_provider.set_matrix(
-                        base_matrix, name_to_coord=name_to_coord
-                    )
-                    # 酒店 id → 点名（与 scenic 增量合并，set_name_map 为 update 语义）
-                    self._travel_time_provider.set_name_map(
-                        {hotel.id: hotel.name for hotel in live_hotels}
-                    )
                 # 阶段 1 规划：restaurants=None → meal 段抽象无餐厅（plan_multi_day
                 # 不自行拉假池餐厅），只用于确定用餐锚点 + 计划内景点集合。
                 plan1 = self._planner(
@@ -203,21 +245,13 @@ class DataSourceResolver:
                     min_spots=_PRODUCTION_MIN_SPOTS,
                 )
         except Exception as exc:  # noqa: BLE001
-            reason = f"真实数据接入失败，已回退假数据：{exc}"
-            timeline = self._run_pipeline(
-                self._spots_provider, None, source=PipelineSource.FAKE.value
+            return self._fallback_fake_pipeline(
+                f"真实数据接入失败，已回退假数据：{exc}"
             )
-            self.last_data_source = PipelineSource.LIVE_FALLBACK.value
-            self.last_error = reason
-            return timeline
         if not isinstance(plan, dict) or not plan.get("days"):
-            reason = "真实数据接入失败（规划未产出可用计划），已回退假数据"
-            timeline = self._run_pipeline(
-                self._spots_provider, None, source=PipelineSource.FAKE.value
+            return self._fallback_fake_pipeline(
+                "真实数据接入失败（规划未产出可用计划），已回退假数据"
             )
-            self.last_data_source = PipelineSource.LIVE_FALLBACK.value
-            self.last_error = reason
-            return timeline
 
         self._current_plan = plan
         self.last_error = None
@@ -230,6 +264,102 @@ class DataSourceResolver:
         # 城际两阶段·阶段2（十三节）：酒店已知后站对精修（到达站重选 +
         # 尾/首腿实测填充）；无酒店坐标/无工具时原段返回
         self._refine_intercity_stations(plan)
+        timeline = plan_to_trip_timeline(
+            plan,
+            city=self.city,
+            start_date=self.start_date,
+            plan_id=self.plan_id,
+        )
+        self._current_timeline = timeline
+        return timeline
+
+    def _generate_orchestrated(self) -> TripTimeline:
+        """编排路径（阶段 b 接线，2026-09-14）：LLM 主导草案 + 固定管线收尾。
+
+        门控 ``USE_LLM_ORCHESTRATOR`` 开且 live 时由 ``generate_timeline`` 进入：
+
+        1. ``_provision_live_planning`` 供给（候选池/城际段/时刻窗/酒店/矩阵）；
+        2. ``PlanOrchestrator`` 编排循环（中心先行：中心计划来自候选池供给期的
+           ScenicSearchPlanner；LLM 调 schedule_plan 迭代草案、prefer_station
+           提名站对）；
+        3. 接受的草案复用固定管线的全部收尾——两阶段餐厅补全（LLM 草案 =
+           阶段 1 计划入参）→ 挂酒店 → 站对精修（LLM 偏好站对在可行集内带
+           90min 容忍度被尊重，硬约束不变）→ ``plan_to_trip_timeline``；
+        4. 草案未接受 / 编排异常 → ``_generate_live_or_fallback(provisioned=…)``
+           真回落（复用已供给 ctx，防 12306/juhe 二次计费；回落有单测断言）。
+        """
+        from call_llm.orchestrator import PlanOrchestrator
+
+        try:
+            ctx = self._provision_live_planning()
+        except Exception as exc:  # noqa: BLE001
+            return self._fallback_fake_pipeline(
+                f"真实数据接入失败，已回退假数据：{exc}"
+            )
+        try:
+            orch = PlanOrchestrator(
+                self.requirement,
+                spots=ctx["spots"],
+                planner_ctx={
+                    "travel_time_provider": self._travel_time_provider,
+                    "first_day_start_time": ctx["first_day_start_time"],
+                    "last_day_end_minutes": ctx["last_day_end_minutes"],
+                    "center_schedule": getattr(self, "_live_center_schedule", None),
+                },
+                tool_provider=self._tool_provider,
+            )
+            result = orch.run()
+        except Exception as exc:  # noqa: BLE001  编排器构造异常也回落（不炸链路）
+            result = {
+                "accepted": False,
+                "plan": None,
+                "fallback_reason": f"编排器异常：{type(exc).__name__}: {exc}",
+            }
+        self._orchestration_result = result  # 可观察：探针/复验读编排现场
+        plan1 = result.get("plan")
+        if (
+            not result.get("accepted")
+            or not isinstance(plan1, dict)
+            or not plan1.get("days")
+        ):
+            logger.warning(
+                "编排循环未产出接受草案（%s），回落固定管线",
+                result.get("fallback_reason") or "模型未接受",
+            )
+            return self._generate_live_or_fallback(provisioned=ctx)
+        preferred = result.get("preferred_stations") or {}
+        try:
+            # LLM 草案作为阶段 1 计划喂餐厅补全（锚点/增量矩阵口径与固定管线一致）
+            plan = self._live_plan_with_restaurants(
+                plan1, ctx["spots"], ctx["name_to_coord"], ctx["base_matrix"],
+                ctx["live_hotels"],
+                first_day_start_time=ctx["first_day_start_time"],
+                last_day_end_minutes=ctx["last_day_end_minutes"],
+                min_spots=_PRODUCTION_MIN_SPOTS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("编排草案餐厅补全失败（%s），回落固定管线", exc)
+            return self._generate_live_or_fallback(provisioned=ctx)
+        if not isinstance(plan, dict) or not plan.get("days"):
+            return self._generate_live_or_fallback(provisioned=ctx)
+
+        self._current_plan = plan
+        self.last_error = None
+        self.last_data_source = PipelineSource.LIVE.value
+        # 末日行程排定后重选返程班次——LLM 偏好出发站在可行集内被尊重
+        self._inject_trip_segments(
+            plan,
+            _rebuild_return_with_schedule(
+                plan, ctx["segments"], self.requirement,
+                prefer_departure_station=preferred.get("return_departure"),
+            ),
+        )
+        self._attach_hotels(plan)
+        # 站对精修：到达侧偏好站对在可行集内被尊重（吸收十三节后置精修的
+        # 「选择时吃不到中心信息」补丁；硬约束/酒店度量口径不变）
+        self._refine_intercity_stations(
+            plan, preferred_arrival_station=preferred.get("outbound_arrival")
+        )
         timeline = plan_to_trip_timeline(
             plan,
             city=self.city,

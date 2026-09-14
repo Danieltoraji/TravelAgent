@@ -47,10 +47,11 @@ from call_llm.schedule_tool import (
 from data_transmission.live_errors import LiveDataError
 from data_transmission.tool_specs import intercity_mode_budget, to_openai_tools
 
-# 编排默认暴露的 B 真源工具白名单（方案 §2；scenic/map 不入内——候选池由
-# 上游 ScenicSearchPlanner+LiveSpotsSource 构建、map 是矩阵机制工具，阶段 a
-# 编排面先收口在「城际骨架核验 + 酒店/餐饮验证」）
-ORCHESTRATOR_B_TOOLS = ("train_trip", "train_ticket", "flight_search", "hotel", "food")
+# 编排默认暴露的 B 真源工具白名单（方案 §2；scenic 不入内——候选池由上游
+# ScenicSearchPlanner+LiveSpotsSource 构建）。map 入白名单（阶段 b）：LLM 用它
+# 实测「站↔中心/酒店」驾车分钟后再 prefer_station 提名站对（LLM 提名 →
+# 真源验证红线）。
+ORCHESTRATOR_B_TOOLS = ("train_trip", "train_ticket", "flight_search", "hotel", "food", "map")
 
 ORCHESTRATOR_SYSTEM = (
     "你是旅行规划的总指挥（编排器）。候选池、时刻窗（城际骨架落锤）已经就绪，"
@@ -99,6 +100,46 @@ ORCHESTRATOR_REVIEW_SCHEMA: Dict[str, Any] = {
     "required": ["review", "reason"],
 }
 
+# 本地工具：偏好站对提名（阶段 b，中心先行拍板落地——「站对按距中心/酒店近
+# 优选」的选择口径）。LLM 用 map 实测后提名；确定性选择（返程组合选择/到达
+# 站精修）在可行集合内带 90min 容忍度尊重该偏好，硬约束不变（红线：时刻/
+# 接续仍由确定性工具落锤，偏好只重排可行解）。
+PREFER_STATION_TOOL_NAME = "prefer_station"
+_PREFER_STATION_DIRECTIONS = ("outbound_arrival", "return_departure")
+
+PREFER_STATION_TOOL_SCHEMA: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": PREFER_STATION_TOOL_NAME,
+        "description": (
+            "提名偏好站对（先调 map 实测「站↔中心/酒店」驾车分钟再提名）。"
+            "确定性选择会在可行班次集合内尊重该偏好（90 分钟容忍度）："
+            "非偏好站的班次要早 90 分钟以上才会被选中。不提名 = 按时刻/费用默认口径。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": list(_PREFER_STATION_DIRECTIONS),
+                    "description": "outbound_arrival=去程到达站（靠近首日中心/酒店）"
+                    "；return_departure=返程出发站（靠近末日中心/酒店）",
+                },
+                "station": {
+                    "type": "string",
+                    "description": "站名/机场名（来自真源候选里真实存在的站）",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "一句依据（须引用 map 实测分钟或班次真实返回）",
+                },
+            },
+            "required": ["direction", "station", "reason"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 
 def use_llm_orchestrator() -> bool:
     """编排门控（默认关，与 ``decision_engine._use_llm_tools`` 同款 env 语义）。"""
@@ -121,6 +162,7 @@ def _fallback_result(reason: str, **extra: Any) -> Dict[str, Any]:
         "tools_degraded": False,
         "reviews": [],
         "uncertain": False,
+        "preferred_stations": {},
         "fallback_reason": reason,
     }
     base.update(extra)
@@ -186,6 +228,9 @@ class PlanOrchestrator:
         self._draft_plan: Optional[Dict[str, Any]] = None
         self._quality_history: List[Dict[str, Any]] = []
         self._schedule_counter: Dict[str, int] = {}
+        # 偏好站对（阶段 b 中心先行）：LLM prefer_station 提名 → 收尾链确定性
+        # 选择在可行集合内尊重（90min 容忍度）
+        self._preferred_stations: Dict[str, str] = {}
 
         # B 真源走 QuotaManager（per-mode 预算 + 同参缓存 + 节律）；无 provider
         # 时 B 工具调用返回结构化 error（schedule_plan 是本地的，不受影响）。
@@ -263,9 +308,11 @@ class PlanOrchestrator:
     # -- 工具分派 -----------------------------------------------------------
 
     def _tool_executor(self, name: str, arguments: Dict[str, Any]) -> Any:
-        """统一工具门面：本地排程器 / B 真源白名单 / 拒绝名单外工具。"""
+        """统一工具门面：本地排程器 / 偏好站对 / B 真源白名单 / 拒绝名单外工具。"""
         if name == SCHEDULE_TOOL_NAME:
             return self._run_schedule(arguments)
+        if name == PREFER_STATION_TOOL_NAME:
+            return self._run_prefer_station(arguments)
         if name in self.b_tools:
             if self._quota is None:
                 return {
@@ -351,6 +398,46 @@ class PlanOrchestrator:
             result["note"] = note
         return result
 
+    def _run_prefer_station(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """prefer_station 分派：站对提名入工作台（编排器/收尾链消费）。
+
+        校验 direction 枚举 + 站名非空 + reason 必填（「LLM 提名 → 真源验证」
+        红线：reason 须引用 map 实测/班次真实返回；站名本身的可行性仍由确定性
+        选择在候选集合内裁决——提一个候选里不存在的站不会生效，只会按默认
+        口径选班）。
+        """
+        arguments = arguments if isinstance(arguments, dict) else {}
+        direction = str(arguments.get("direction") or "")
+        station = str(arguments.get("station") or "").strip()
+        reason = str(arguments.get("reason") or "").strip()
+        if direction not in _PREFER_STATION_DIRECTIONS:
+            return {
+                "status": "error",
+                "error": "invalid_params",
+                "detail": f"direction 必须是 {' / '.join(_PREFER_STATION_DIRECTIONS)}，收到 {direction!r}",
+            }
+        if not station:
+            return {
+                "status": "error",
+                "error": "invalid_params",
+                "detail": "station 不能为空（须为真源候选中真实存在的站名）",
+            }
+        if not reason:
+            return {
+                "status": "error",
+                "error": "invalid_params",
+                "detail": "reason 必填（引用 map 实测分钟或班次真实返回）",
+            }
+        self._preferred_stations[direction] = station
+        return {
+            "status": "ok",
+            "preferred_stations": dict(self._preferred_stations),
+            "note": (
+                f"{direction} 偏好站 {station} 已记录：确定性选择将在可行班次集合内"
+                "尊重该偏好（90 分钟容忍度），时刻/接续硬约束不变"
+            ),
+        }
+
     # -- 编排主循环 ---------------------------------------------------------
 
     def run(self) -> Dict[str, Any]:
@@ -372,7 +459,7 @@ class PlanOrchestrator:
             system_instruction=ORCHESTRATOR_SYSTEM,
             max_tokens=2000,
         )
-        tools = [dict(SCHEDULE_TOOL_SCHEMA)]
+        tools = [dict(SCHEDULE_TOOL_SCHEMA), dict(PREFER_STATION_TOOL_SCHEMA)]
         tools.extend(to_openai_tools(names=sorted(self.b_tools)))
         try:
             result = client.generate(
@@ -404,5 +491,6 @@ class PlanOrchestrator:
             "tools_degraded": bool(result.get("tools_degraded")),
             "reviews": list(result.get("reviews") or []),
             "uncertain": bool(result.get("uncertain")),
+            "preferred_stations": dict(self._preferred_stations),
             "fallback_reason": None,
         }

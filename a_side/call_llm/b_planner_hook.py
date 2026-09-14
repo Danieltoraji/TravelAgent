@@ -161,6 +161,10 @@ class BPlannerHook(
         # 数据源记录（PipelineSource）：fake（假数据）/ live（真实数据）/
         # live_fallback（真源失败回退假）
         self.last_data_source: str = PipelineSource.FAKE.value
+        # 阶段 b（2026-09-14）：编排门控开时最近一次编排循环的完整结果
+        # （PlanOrchestrator.run() 返回 dict：plan/accepted/quality_history/
+        # preferred_stations/...）——探针/复验读编排现场，门控关恒为 None
+        self._orchestration_result: Optional[Dict[str, Any]] = None
         # A 侧内部计划缓存：首次规划后保留，可被决策钩子（replan）复用
         self._current_plan: Optional[Dict[str, Any]] = None
         self._current_timeline: Optional[TripTimeline] = None
@@ -347,6 +351,12 @@ class BPlannerHook(
         if not regenerate and self._current_timeline is not None:
             return self._current_timeline
         if self._use_live:
+            # 阶段 b（2026-09-14）：编排门控开 → LLM 主导编排路径（未接受/
+            # 异常真回落固定管线）；默认关 → 原固定管线零回归。
+            from call_llm.orchestrator import use_llm_orchestrator
+
+            if use_llm_orchestrator():
+                return self._generate_orchestrated()
             return self._generate_live_or_fallback()
         return self._run_pipeline(
             self._spots_provider, None, source=PipelineSource.FAKE.value

@@ -47,6 +47,12 @@ _ARRIVAL_BUFFER_MINUTES = 90
 # （语义：出发前 1h 到站/机场）。
 _DEPARTURE_BUFFER_MINUTES = 60
 
+# 偏好站对容忍度（编排阶段 b，2026-09-14，中心先行拍板）：LLM 经 map 实测后
+# prefer_station 提名的站对，在可行集合内被尊重——非偏好站的班次要**早 90min
+# 以上**才可胜出（近中心站稍晚走可接受；时刻/接续/到家硬约束不变，偏好只重排
+# 可行解，红线：事实落锤在 tool）。
+_PREFER_STATION_PENALTY_MINUTES = 90
+
 
 # ---------------------------------------------------------------------------
 # 纯函数：首末日窗口 + 返程组合选择（测试直接 import，勿改名）
@@ -158,6 +164,8 @@ def _select_return_combination(
     earliest_departure: int,
     transfer_buffer_minutes: int = 60,
     local_arrive_minutes: int = 0,
+    prefer_departure_station: Optional[str] = None,
+    station_penalty_minutes: int = _PREFER_STATION_PENALTY_MINUTES,
 ) -> Optional[Dict[str, Any]]:
     """按「到家 ≤ return_time」从真源候选选「出发 ≥ earliest 的最晚班次组合」。
 
@@ -175,6 +183,12 @@ def _select_return_combination(
     - **到家语义升级（2026-09-04）**：``local_arrive_minutes`` = 返程末条 local
       腿（末站→家）的高德实测分钟——「到家」= 末腿到达 + 市内真实时间，约束
       从「站到 ≤ return_time」收紧为「真到家 ≤ return_time」；
+    - **偏好站对（编排阶段 b，2026-09-14，中心先行拍板落地）**：
+      ``prefer_departure_station``（LLM 经 map 实测后 ``prefer_station`` 提名，
+      编排路径透传）= 首腿出发站在可行集合内被尊重——非偏好站的整链起点要
+      **早 ``station_penalty_minutes``（默认 90min）** 才能胜出（容忍度内
+      「近中心站稍早走」赢「远站晚走」）；时刻/接续/到家硬约束不变，偏好
+      只重排可行解（红线：事实落锤在 tool）。None = 原口径零回归；
     - 返回 ``{"dep_first": 整链起点分钟, "arr_last": 到家站到分钟,
       "cost": 组合票价和, "choices": [逐候选腿选中的候选 dict 或 None]}``；
       无可行 → None（choices 与 ``_intercity_leg_candidates`` 的候选腿一一对应，
@@ -187,6 +201,7 @@ def _select_return_combination(
     if not isinstance(return_time, (int, float)) or return_time <= 0:
         return None
     best: Optional[Dict[str, Any]] = None
+    best_eff: Optional[int] = None
 
     def walk(
         leg_index: int,
@@ -197,19 +212,32 @@ def _select_return_combination(
         prefix: int,
         choices: List[Optional[Dict[str, Any]]],
     ) -> None:
-        nonlocal best
+        nonlocal best, best_eff
         if leg_index == len(per_leg):
             if (
                 dep_first_chain is not None
                 and dep_first_chain >= earliest_departure
-                and (best is None or dep_first_chain > best["dep_first"])
             ):
-                best = {
-                    "dep_first": int(dep_first_chain),
-                    "arr_last": int(arr_last or 0),
-                    "cost": cost,
-                    "choices": list(choices),
-                }
+                # 偏好站对：首腿出发站不匹配 → 整链起点扣惩罚再比较（可行集
+                # 内重排；dep_first_chain 本身保持真实值，时刻口径不掺偏好）
+                eff = int(dep_first_chain)
+                if prefer_departure_station:
+                    first_cand = choices[0] if choices else None
+                    st = (
+                        _candidate_station(first_cand, "from_station", "from_airport")
+                        if first_cand
+                        else ""
+                    )
+                    if st != prefer_departure_station:
+                        eff -= int(station_penalty_minutes)
+                if best is None or eff > best_eff:
+                    best_eff = eff
+                    best = {
+                        "dep_first": int(dep_first_chain),
+                        "arr_last": int(arr_last or 0),
+                        "cost": cost,
+                        "choices": list(choices),
+                    }
             return
         is_last = leg_index == len(per_leg) - 1
         for cand in per_leg[leg_index][1]:
@@ -309,6 +337,7 @@ def _rebuild_return_with_schedule(
     plan: Dict[str, Any],
     segments: List[Dict[str, Any]],
     requirement: Optional[Dict[str, Any]] = None,
+    prefer_departure_station: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """末日行程排定后按「实际离开目的地时间」从真源候选重选返程班次。
 
@@ -317,7 +346,10 @@ def _rebuild_return_with_schedule(
       专门的赶路日，唯一硬约束是「真到家 ≤ return_time」（末日本应完整
       游玩，其结束时刻对次日的返程班次无意义）；
     - 选中班次 → 重建 return 段真实发到时刻（替换反推占位）；
-    - 无候选 / 候选都不满足 → 保留原段（反推占位兜底），不谎报班次。
+    - 无候选 / 候选都不满足 → 保留原段（反推占位兜底），不谎报班次；
+    - ``prefer_departure_station``（编排阶段 b）：LLM 偏好出发站，在可行集合
+      内带 90min 容忍度被尊重（见 ``_select_return_combination``）；None =
+      原口径零回归。
     """
     return_seg = _find_return_segment(segments)
     if return_seg is None:
@@ -347,7 +379,9 @@ def _rebuild_return_with_schedule(
     else:
         earliest_departure = int(max(ends)) + _DEPARTURE_BUFFER_MINUTES
     combo = _select_return_combination(
-        return_seg, earliest_departure, local_arrive_minutes=local_arrive
+        return_seg, earliest_departure,
+        local_arrive_minutes=local_arrive,
+        prefer_departure_station=prefer_departure_station,
     )
     if combo is None:
         return segments
@@ -429,9 +463,17 @@ def _refine_outbound_arrival(
     station_to_hotel: Callable[[str], Optional[int]],
     hotel_name: str,
     departure_time_minutes: Optional[int] = None,
+    preferred_station: Optional[str] = None,
+    station_penalty_minutes: int = _PREFER_STATION_PENALTY_MINUTES,
 ) -> bool:
     """出发下界：优先骨架 ``departure_bound_minutes``（departure_time + 实测
-    市内分钟，realize 落盘），回退 departure_time。"""
+    市内分钟，realize 落盘），回退 departure_time。
+
+    ``preferred_station``（编排阶段 b，2026-09-14，中心先行拍板落地）：LLM
+    提名的到达站在可行集合内被尊重——非偏好站的「到酒店」综合 key 要加
+    ``station_penalty_minutes``（默认 90min）惩罚，即偏好站晚到酒店 ≤90min
+    内仍胜出（近中心站可接受稍晚）；硬约束（发车下界/到达不晚于骨架/接续
+    gap）不变。None = 原口径零回归。"""
     dep_limit = departure_time_minutes
     bound = (seg.get("details") or {}).get("departure_bound_minutes")
     if isinstance(bound, (int, float)):
@@ -506,6 +548,8 @@ def _refine_outbound_arrival(
         if not (isinstance(m, (int, float)) and m > 0):
             continue  # 实测不到的站不参与比较（防假赢）
         key = arr + int(m)
+        if preferred_station and st != preferred_station:
+            key += int(station_penalty_minutes)  # 偏好站对：非偏好站加惩罚
         if best is None or key < best[0]:
             best = (key, cand, int(m), st, arr)
     current_key = current_arr + int(current_hotel_min)
@@ -1065,7 +1109,11 @@ class TripSegmentAttacher:
 
         return fn
 
-    def _refine_intercity_stations(self, plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _refine_intercity_stations(
+        self,
+        plan: Dict[str, Any],
+        preferred_arrival_station: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """城际两阶段·阶段2（十三节，2026-09-05）：酒店已知后的站对精修。
 
         时机：``_attach_hotels`` 之后、``plan_to_trip_timeline`` 之前——行程
@@ -1073,7 +1121,9 @@ class TripSegmentAttacher:
         已知后做，「站→酒店」成本才可见（rv6/rv7：武清/亦庄/锦州南类中间站
         被时刻/费用口径选中，对酒店位置而言并非最优）。
 
-        - 到达侧：``_refine_outbound_arrival``（最后一程重选 + 尾腿实测填充）；
+        - 到达侧：``_refine_outbound_arrival``（最后一程重选 + 尾腿实测填充；
+          ``preferred_arrival_station`` = 编排阶段 b LLM 偏好到达站，可行集内
+          带 90min 容忍度被尊重，中心先行拍板的选择口径吸收）；
         - 出发侧：``_fill_return_head``（返程首条 local 腿酒店→站实测填充）；
         - 路线实测走 map driving（酒店端坐标直连、车站端站名 geocode 绑目的地
           城市，(o,d) 缓存；distinct 站 ≤ ~8/方向，符合额度纪律）；
@@ -1145,6 +1195,7 @@ class TripSegmentAttacher:
                 changed |= _refine_outbound_arrival(
                     seg, station_to_hotel, hotel_name,
                     departure_time_minutes=departure_time_minutes,
+                    preferred_station=preferred_arrival_station,
                 )
             elif kind == "return":
                 changed |= _fill_return_head(seg, hotel_to_station, hotel_name)
