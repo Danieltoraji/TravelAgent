@@ -83,8 +83,11 @@ class HotelAttacher:
                 if hotels:
                     return hotels
                 logger.warning("hotel 工具返回空池（city=%s），回退假池", self.city)
+                # 降级告知（真源查不到 → 告知用户）
+                self._add_notice("酒店真源查询返回空池，已用内置候选酒店替代")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("hotel 真源失败，回退假池：%s", exc)
+                self._add_notice(f"酒店真源查询失败，已用内置候选酒店替代（{exc}）")
         try:
             from data_transmission.hotel import load_hotels
 

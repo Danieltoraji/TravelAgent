@@ -165,6 +165,9 @@ class BPlannerHook(
         # （PlanOrchestrator.run() 返回 dict：plan/accepted/quality_history/
         # preferred_stations/...）——探针/复验读编排现场，门控关恒为 None
         self._orchestration_result: Optional[Dict[str, Any]] = None
+        # 降级告知（真源查不到 → 告知用户 + 假源/估算替代，2026-09-14）：
+        # 人话清单，随计划透出（B 侧 plan 响应/status 的 notices 字段）
+        self.fallback_notices: List[str] = []
         # A 侧内部计划缓存：首次规划后保留，可被决策钩子（replan）复用
         self._current_plan: Optional[Dict[str, Any]] = None
         self._current_timeline: Optional[TripTimeline] = None
@@ -350,6 +353,7 @@ class BPlannerHook(
         """
         if not regenerate and self._current_timeline is not None:
             return self._current_timeline
+        self.fallback_notices = []  # 每次规划 fresh（告知只描述本次降级）
         if self._use_live:
             # 阶段 b（2026-09-14）：编排门控开 → LLM 主导编排路径（未接受/
             # 异常真回落固定管线）；默认关 → 原固定管线零回归。

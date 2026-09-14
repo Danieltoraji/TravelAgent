@@ -108,8 +108,17 @@ class DataSourceResolver:
         self._search_plan = plan
         return plan
 
+    def _add_notice(self, text: str) -> None:
+        """降级告知追加（去重 + 上限，见 fallback_notices.merge_notices 口径）。"""
+        from call_llm.fallback_notices import merge_notices
+
+        self.fallback_notices = merge_notices(
+            list(getattr(self, "fallback_notices", []) or []), [text]
+        )
+
     def _fallback_fake_pipeline(self, reason: str) -> TripTimeline:
         """真源/供给失败 → 假数据管线兜底（记录原因 + live_fallback 状态）。"""
+        self._add_notice(reason)
         timeline = self._run_pipeline(
             self._spots_provider, None, source=PipelineSource.FAKE.value
         )
@@ -264,6 +273,12 @@ class DataSourceResolver:
         # 城际两阶段·阶段2（十三节）：酒店已知后站对精修（到达站重选 +
         # 尾/首腿实测填充）；无酒店坐标/无工具时原段返回
         self._refine_intercity_stations(plan)
+        # 降级告知（真源查不到 → 告知用户）：段级估算扫描 + 管线级 extra
+        from call_llm.fallback_notices import plan_fallback_notices
+
+        self.fallback_notices = plan_fallback_notices(
+            plan, list(getattr(self, "fallback_notices", []) or [])
+        )
         timeline = plan_to_trip_timeline(
             plan,
             city=self.city,
@@ -359,6 +374,12 @@ class DataSourceResolver:
         # 「选择时吃不到中心信息」补丁；硬约束/酒店度量口径不变）
         self._refine_intercity_stations(
             plan, preferred_arrival_station=preferred.get("outbound_arrival")
+        )
+        # 降级告知（真源查不到 → 告知用户）：与固定管线同口径
+        from call_llm.fallback_notices import plan_fallback_notices
+
+        self.fallback_notices = plan_fallback_notices(
+            plan, list(getattr(self, "fallback_notices", []) or [])
         )
         timeline = plan_to_trip_timeline(
             plan,
