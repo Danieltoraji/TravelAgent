@@ -178,6 +178,19 @@ class TestErrorLogs(_Base):
         self.assertEqual(resp.status_code, 400)
         self.assertTrue(any("invalid JSON body" in m for m in cm.output), cm.output)
 
+    def test_non_utf8_body_logged_400(self) -> None:
+        """非 UTF-8 体（如 GBK 字节）此前 decode 穿透成 500，现走 400 + 日志
+        （PR review 2026-09-15）。"""
+        _, token = self._register()
+        with self.assertLogs("api.views", level="WARNING") as cm:
+            resp = self.client.post(
+                "/api/plan/", data=b"\xc4\xe3\xba\xc3",
+                content_type="application/json",
+                HTTP_AUTHORIZATION=f"Bearer {token}",
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(any("invalid JSON body" in m for m in cm.output), cm.output)
+
     def test_plan_exception_logged(self) -> None:
         """plan 内部异常转 500 时必须有 ERROR 日志（此前零记录）。"""
         _, token = self._register()
@@ -209,6 +222,21 @@ class TestToolCallLogging(unittest.TestCase):
         self.assertTrue(
             any("tool weather" in m and "boom" in m for m in cm.output), cm.output
         )
+
+    def test_sensitive_args_redacted_in_log(self) -> None:
+        """tel 等敏感键脱敏为 ***，不落日志（PR review 2026-09-15）。"""
+        from runtime.agent_runtime import AgentRuntime
+
+        rt = AgentRuntime()
+        with self.assertLogs("runtime.agent", level="INFO") as cm:
+            rt.registry.call(
+                "booking", action="prepare", place="故宫", tel="13800138000"
+            )
+        line = next(m for m in cm.output if "tool booking" in m)
+        self.assertNotIn("13800138000", line)
+        self.assertIn("***", line)
+        # 非敏感键值保留（排障关键）
+        self.assertIn("故宫", line)
 
 
 if __name__ == "__main__":

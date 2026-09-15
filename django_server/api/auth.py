@@ -35,7 +35,9 @@ def _json_body(request: HttpRequest) -> Dict[str, Any]:
         return {}
     try:
         return json.loads(request.body.decode("utf-8"))
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        # 非 UTF-8 体（如 GBK）此前会穿透成 500；与 views._json_body 同修
+        logger.warning("invalid JSON body: %s %s", request.method, request.path)
         return {}
 
 
