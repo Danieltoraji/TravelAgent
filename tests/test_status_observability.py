@@ -17,10 +17,11 @@ class _StubHook:
     """planner hook 桩：可编程 last_data_source / _orchestration_result。"""
 
     def __init__(self, requirement, tool_provider=None,
-                 data_source="fake", orch=None):
+                 data_source="fake", orch=None, notices=None):
         self.last_data_source = data_source
         self.last_error = None
         self._orchestration_result = orch
+        self.fallback_notices = list(notices or [])
 
     def generate_timeline(self, *args, **kwargs):
         from core.schemas import TripTimeline
@@ -33,12 +34,13 @@ class _StubHook:
         )
 
 
-def _make_runtime(monkeypatch, *, data_source, orch):
+def _make_runtime(monkeypatch, *, data_source, orch, notices=None):
     rt = AgentRuntime()
 
     def _factory(requirement, tool_provider=None):
         return _StubHook(requirement, tool_provider,
-                         data_source=data_source, orch=orch)
+                         data_source=data_source, orch=orch,
+                         notices=notices)
 
     monkeypatch.setattr(
         "runtime.agent_runtime.build_planner_hook", _factory
@@ -76,3 +78,21 @@ def test_status_orchestration_none_when_gate_off_hook(monkeypatch):
     })
     rt.init_from_requirement({"content": {"destination": "北京", "days": 1}})
     assert rt.status()["orchestration"] is None
+
+
+def test_status_reports_fallback_notices(monkeypatch):
+    """降级告知（真源查不到 → 告知用户）：notices 透出到 status（只增字段）。"""
+    rt = _make_runtime(
+        monkeypatch, data_source="live", orch=None,
+        notices=["『北京大兴国际机场→张掖甘州机场』航班段未查到当日真源班次"
+                 "（可能超出 12306 预售期或当日无航班），已按估算衔接"],
+    )
+    rt.init_from_requirement({"content": {"destination": "张掖", "days": 1}})
+    status = rt.status()
+    assert status["notices"] and "估算衔接" in status["notices"][0]
+
+
+def test_status_notices_empty_by_default(monkeypatch):
+    rt = _make_runtime(monkeypatch, data_source="live", orch=None)
+    rt.init_from_requirement({"content": {"destination": "北京", "days": 1}})
+    assert rt.status()["notices"] == []

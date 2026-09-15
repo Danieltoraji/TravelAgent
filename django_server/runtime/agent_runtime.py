@@ -144,6 +144,9 @@ class AgentRuntime:
         # 判定信号 + 编排阶段 b 需要外部可验证门控是否生效）
         self._last_data_source: Optional[str] = None
         self._last_orchestration: Optional[Dict[str, Any]] = None
+        # 降级告知（真源查不到 → 告知用户，2026-09-14）：planner_hook 收集的
+        # 人话清单（estimated 段/假池回退/自驾兜底），透出 plan 响应与 status
+        self._last_notices: List[str] = []
         # 多用户改造（2026-09）：每运行时一把可重入锁，视图层写端点持有；
         # gunicorn 单 worker + gthread 下串行化同一用户的并发写。
         self.lock = threading.RLock()
@@ -356,6 +359,9 @@ class AgentRuntime:
         timeline = planner_hook.generate_timeline()
         self._last_planner_error = getattr(planner_hook, "last_error", None)
         self._last_data_source = getattr(planner_hook, "last_data_source", None)
+        self._last_notices = [
+            str(n) for n in (getattr(planner_hook, "fallback_notices", None) or [])
+        ]
         orch = getattr(planner_hook, "_orchestration_result", None)
         self._last_orchestration = (
             {
@@ -389,6 +395,7 @@ class AgentRuntime:
             "last_data_source": self._last_data_source,
             "last_error": self._last_planner_error,
             "orchestration": self._last_orchestration,
+            "notices": self._last_notices,
             "demo_mode": settings.demo_mode,
             "use_real_api": settings.use_real_api,
             "use_real_map_api": settings.use_real_map_api,

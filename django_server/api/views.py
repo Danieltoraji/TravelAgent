@@ -285,6 +285,9 @@ def plan(request: HttpRequest) -> JsonResponse:
         "message": "Timeline generated from requirement",
         "timeline": to_dict(timeline_obj),
         "planner_error": None,
+        # 降级告知（真源查不到 → 告知用户，2026-09-14）：estimated 段/假池
+        # 回退/自驾兜底的人话清单；C 端可直接展示（只增字段，旧解析不受影响）
+        "notices": list(getattr(rt, "_last_notices", None) or []),
     })
 
 
