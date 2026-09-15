@@ -32,6 +32,10 @@ urlpatterns = [
 
     path("plan/", views.plan, name="plan"),
 
+    # 历史规划归档（server_log 2026-09-15）：plan 覆写前的旧会话快照可回查
+    path("plans/history/", views.plan_history, name="plan_history"),
+    path("plans/history/<int:archive_id>/", views.plan_history_detail, name="plan_history_detail"),
+
     path("booking/prepare/", views.booking_prepare, name="booking_prepare"),
     path("booking/<str:booking_id>/confirm/", views.booking_confirm, name="booking_confirm"),
     path("booking/<str:booking_id>/mark-confirmed/", views.booking_mark_confirmed, name="booking_mark_confirmed"),

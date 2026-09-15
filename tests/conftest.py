@@ -46,6 +46,8 @@ def pytest_configure(config):
         ),
     )
     os.makedirs(os.path.dirname(os.environ["TRAVELAGENT_DB_PATH"]), exist_ok=True)
+    # 测试不写文件日志（server_log 2026-09-15）：LOGGING 只留 console 通道
+    os.environ.setdefault("TRAVELAGENT_LOG_DISABLE", "1")
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for _p in (os.path.join(repo_root, "django_server"), repo_root):

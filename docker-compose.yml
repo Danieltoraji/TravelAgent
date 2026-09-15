@@ -14,6 +14,13 @@ services:
       TRAVELAGENT_DB_PATH: /app/django_server/data/db.sqlite3
     volumes:
       - travelagent-data:/app/django_server/data
+    # stdout 通道轮转兜底（server_log 2026-09-15）：应用级轮转文件在
+    # data/logs/（named volume），这里防 docker json-file 无上限膨胀
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
 volumes:
