@@ -190,6 +190,19 @@ def timeline_history(request: HttpRequest) -> JsonResponse:
     })
 
 
+@require_http_methods(["GET"])
+def agent_trace(request: HttpRequest) -> JsonResponse:
+    """LLM 编排轨迹（2026-09-15：思考/调 tool 过程向 C 端展示）。
+
+    只读：PlanOrchestrator 整形好的步骤流（查真源/审查/落锤/收尾，含每步
+    耗时与摘要）。门控关 / 未编排 → ``{"enabled": false, "trace": null}``。
+    轨迹只增不改、按用户 runtime 隔离；体积可控（步数上限 50 + 摘要白名单），
+    不塞进 /api/status/（高频轮询接口）。
+    """
+    trace = getattr(request.runtime, "agent_trace", None)
+    return JsonResponse({"enabled": bool(trace), "trace": trace})
+
+
 # ── A 侧需求 → 规划（AB 合码方案 §三.5）────────────────────────────────────
 
 

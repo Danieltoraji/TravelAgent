@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
+from call_llm.agent_trace import build_minimal_trace, build_orchestrator_trace
 from call_llm.client_factory import create_llm_client
 from call_llm.quality_signals import compute_quality_signals
 from call_llm.schedule_tool import (
@@ -244,6 +246,9 @@ class PlanOrchestrator:
         # 偏好站对（阶段 b 中心先行）：LLM prefer_station 提名 → 收尾链确定性
         # 选择在可行集合内尊重（90min 容忍度）
         self._preferred_stations: Dict[str, str] = {}
+        # agent_trace 计时戳（2026-09-15：C 端可见的思考/调 tool 过程）——
+        # 按调用顺序记录 {"name", "ms", "ok"}，与 BaseClient tool_trace 对齐
+        self._tool_stats: List[Dict[str, Any]] = []
 
         # B 真源走 QuotaManager（per-mode 预算 + 同参缓存 + 节律）；无 provider
         # 时 B 工具调用返回结构化 error（schedule_plan 是本地的，不受影响）。
@@ -321,6 +326,18 @@ class PlanOrchestrator:
     # -- 工具分派 -----------------------------------------------------------
 
     def _tool_executor(self, name: str, arguments: Dict[str, Any]) -> Any:
+        """统一工具门面入口（带计时戳，供 agent_trace 展示每步耗时）。"""
+        start = time.monotonic()
+        out = self._dispatch_tool(name, arguments)
+        ms = round((time.monotonic() - start) * 1000)
+        self._tool_stats.append({
+            "name": name,
+            "ms": ms,
+            "ok": out.get("status") == "ok" if isinstance(out, dict) else True,
+        })
+        return out
+
+    def _dispatch_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """统一工具门面：本地排程器 / 偏好站对 / B 真源白名单 / 拒绝名单外工具。"""
         if name == SCHEDULE_TOOL_NAME:
             return self._run_schedule(arguments)
@@ -461,7 +478,9 @@ class PlanOrchestrator:
                 if not use_llm_orchestrator()
                 else "候选池（spots）未就绪"
             )
-            return _fallback_result(reason)
+            result = _fallback_result(reason)
+            result["agent_trace"] = build_minimal_trace(fallback_reason=reason)
+            return result
 
         client = create_llm_client(
             model_name=self.model_name,
@@ -503,14 +522,27 @@ class PlanOrchestrator:
                     {"role": "user", "content": NO_TOOL_REPROMPT},
                 ]
         except Exception as exc:  # noqa: BLE001  编排失败 → 回落固定管线（红线 4）
-            return _fallback_result(
+            result = _fallback_result(
                 f"编排循环失败，回落固定管线：{type(exc).__name__}: {exc}",
                 quality_history=self._quality_history,
                 schedule_calls=self._schedule_counter.get(SCHEDULE_TOOL_NAME, 0),
                 tools_enabled=True,  # 循环确实启用过（失败≠未启用）
             )
+            result["agent_trace"] = build_orchestrator_trace(
+                result, tool_stats=self._tool_stats
+            )
+            return result
 
         content = result.get("content") or {}
+        trace = build_orchestrator_trace(
+            {**result, **{
+                "accepted": bool(content.get("accepted")),
+                "summary": str(content.get("summary") or ""),
+                "reasons": list(content.get("reasons") or []),
+                "preferred_stations": dict(self._preferred_stations),
+            }},
+            tool_stats=self._tool_stats,
+        )
         return {
             "plan": self._draft_plan,
             "accepted": bool(content.get("accepted")),
@@ -525,4 +557,5 @@ class PlanOrchestrator:
             "uncertain": bool(result.get("uncertain")),
             "preferred_stations": dict(self._preferred_stations),
             "fallback_reason": None,
+            "agent_trace": trace,
         }

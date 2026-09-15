@@ -147,6 +147,9 @@ class AgentRuntime:
         # 降级告知（真源查不到 → 告知用户，2026-09-14）：planner_hook 收集的
         # 人话清单（estimated 段/假池回退/自驾兜底），透出 plan 响应与 status
         self._last_notices: List[str] = []
+        # agent_trace（2026-09-15）：LLM 编排的思考/调 tool 轨迹（C 端展示）——
+        # PlanOrchestrator 整形好的步骤流，经 /api/agent-trace/ 透出；门控关 None
+        self.agent_trace: Optional[Dict[str, Any]] = None
         # 多用户改造（2026-09）：每运行时一把可重入锁，视图层写端点持有；
         # gunicorn 单 worker + gthread 下串行化同一用户的并发写。
         self.lock = threading.RLock()
@@ -375,6 +378,11 @@ class AgentRuntime:
             if isinstance(orch, dict) and orch.get("tools_enabled")
             else None
         )
+        self.agent_trace = (
+            orch.get("agent_trace")
+            if isinstance(orch, dict) and isinstance(orch.get("agent_trace"), dict)
+            else None
+        )
         self.init_timeline(timeline)
         return timeline
 
@@ -396,6 +404,7 @@ class AgentRuntime:
             "last_error": self._last_planner_error,
             "orchestration": self._last_orchestration,
             "notices": self._last_notices,
+            "agent_trace_enabled": self.agent_trace is not None,
             "demo_mode": settings.demo_mode,
             "use_real_api": settings.use_real_api,
             "use_real_map_api": settings.use_real_map_api,
