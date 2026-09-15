@@ -45,16 +45,53 @@ def _content(requirement: Dict[str, Any]) -> Dict[str, Any]:
     return content if isinstance(content, dict) else {}
 
 
-def _candidate_spots_provider(requirement: Dict[str, Any]):
-    """BDecisionHook 的候选池提供器：A 的 select_spots（冲突询问关）。
+def _candidate_spots_provider(requirement: Dict[str, Any], tool_provider: Any = None):
+    """BDecisionHook 的候选池提供器：live 城市走真源池（与规划同源）。
 
-    规划层候选池与执行期一致，保证 replan 在 B 进程内可完整运行。
+    - 假池城市（北京/上海等）：本地 ``select_spots``（原行为，零回归）；
+    - **live 真源城市（P1 第二层修复，2026-09-15）**：此前只读本地假池——
+      张掖类无假池城市 spots 加载失败 → BDecisionHook 走「只决策不重规划」
+      提前返回（new_timeline=None），满房换宿从未真正执行（验收实锤：
+      replan_history_count=2 而 decision.new_timeline 全 null）。现当
+      ``USE_LIVE_DATA`` 开且注入工具时，经 ``LiveSpotsSource`` 拉**与规划
+      同源的真源候选池**再 ``select_spots``；失败回落本地路径（不阻断）。
     """
 
-    def provider(_city: str) -> Any:
+    def _local(city: str) -> Any:
         from algorithoms.select_spots import select_spots
 
         return select_spots(requirement, ask_user_on_conflict=False)
+
+    def provider(city: str) -> Any:
+        if tool_provider is not None:
+            try:
+                from data_transmission.live_data import (
+                    make_live_spots_provider,
+                    use_live_data,
+                )
+                from algorithoms.select_spots import select_spots
+
+                if use_live_data():
+                    content = _content(requirement) or {}
+                    constraints = content.get("constraints") or {}
+                    must = [str(m) for m in (constraints.get("must_visit") or [])]
+                    try:
+                        days = int(content.get("days") or 2)
+                    except (TypeError, ValueError):
+                        days = 2
+                    limit = max(10, days * 5)
+                    live_source = make_live_spots_provider(tool_provider)
+
+                    def _source(c: str) -> Any:
+                        return live_source(c, limit=limit, ensure_spots=must)
+
+                    return select_spots(
+                        requirement, ask_user_on_conflict=False,
+                        spots_provider=_source,
+                    )
+            except Exception:  # noqa: BLE001  live 池失败回落本地假池路径
+                pass
+        return _local(city)
 
     return provider
 
@@ -80,7 +117,7 @@ def build_decision_hook(
         start_date=content.get("start_date"),
         city=str(content.get("destination") or ""),
         plan_id=DEFAULT_PLAN_ID,
-        candidate_spots_provider=_candidate_spots_provider(requirement),
+        candidate_spots_provider=_candidate_spots_provider(requirement, tool_provider),
         tool_provider=tool_provider,   # 8.30 酒店真源：重规划换宿用 RollingGo 真源候选
     )
 
