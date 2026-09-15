@@ -108,12 +108,24 @@ def _replan_to_actions(replan: Any) -> List[ActionItem]:
     return actions
 
 
+# 日志脱敏（PR review 2026-09-15）：这些键的值是用户数据（如 booking 工具的
+# tel 联系电话），不落日志；其余键值（city/place 等排障关键值）保留
+_SENSITIVE_ARG_KEYS = {
+    "tel", "phone", "mobile", "password", "passwd", "token",
+    "secret", "id_card", "email",
+}
+
+
 def _brief_args(kwargs: Dict[str, Any]) -> str:
-    """工具调用参数概要（日志单行用）：JSON 序列化 + 截断 200 字符。"""
+    """工具调用参数概要（日志单行用）：敏感键脱敏 + JSON 序列化 + 截断 200。"""
+    safe = {
+        k: ("***" if str(k).lower() in _SENSITIVE_ARG_KEYS else v)
+        for k, v in kwargs.items()
+    }
     try:
-        s = json.dumps(kwargs, ensure_ascii=False, default=str)
+        s = json.dumps(safe, ensure_ascii=False, default=str)
     except Exception:  # noqa: BLE001
-        s = str(kwargs)
+        s = str(safe)
     return s if len(s) <= 200 else s[:200] + "…"
 
 

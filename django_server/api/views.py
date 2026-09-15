@@ -34,9 +34,10 @@ def _json_body(request: HttpRequest) -> Dict[str, Any]:
         return {}
     try:
         return json.loads(request.body.decode("utf-8"))
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         # 畸形请求体不再静默变 {}（2026-09-14 生产 KeyError: 'content' 的
-        # 同源观测盲区）：记录方法/路径，便于定位 C 端契约问题
+        # 同源观测盲区）：记录方法/路径，便于定位 C 端契约问题。
+        # UnicodeDecodeError 一并接住——非 UTF-8 体（如 GBK）此前会穿透成 500
         logger.warning("invalid JSON body: %s %s", request.method, request.path)
         return {}
 
@@ -395,6 +396,7 @@ def plan_history_detail(request: HttpRequest, archive_id: int) -> JsonResponse:
         .first()
     )
     if a is None:
+        logger.info("plan archive not found: %s", archive_id)
         return _error(f"Plan archive not found: {archive_id}", status=404)
     return JsonResponse({
         "id": a.id,
