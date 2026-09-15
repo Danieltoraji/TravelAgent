@@ -536,10 +536,14 @@ class PlanOrchestrator:
         content = result.get("content") or {}
         trace = build_orchestrator_trace(
             {**result, **{
+                # generate() 的返回没有编排语义字段，整形器需要它们判 enabled/计数
+                "tools_enabled": True,
+                "schedule_calls": self._schedule_counter.get(SCHEDULE_TOOL_NAME, 0),
                 "accepted": bool(content.get("accepted")),
                 "summary": str(content.get("summary") or ""),
                 "reasons": list(content.get("reasons") or []),
                 "preferred_stations": dict(self._preferred_stations),
+                "fallback_reason": None,
             }},
             tool_stats=self._tool_stats,
         )
