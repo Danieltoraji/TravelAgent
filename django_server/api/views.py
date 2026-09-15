@@ -590,14 +590,17 @@ def _resolve_hotel_id(place: str, timeline: Any) -> str:
     """按名称从酒店池解析 hotel_id（与 runtime._on_booking_failed 同款映射）。
 
     假池（DEMO_MODE）路径：place 名称 → 假池 Hotel.id（BJ_HXXX）；
-    live 路径：live 酒店不在假池，映射失败原样返回名称——调用方可显式传
-    ``data.hotel_id``（如从 /api/timeline/ 的 Place.id 取值，live 换宿才生效）。
+    live 路径（2026-09-15 P1 修复）：live 酒店不在假池，此前回退名称导致
+    换宿排除不命中（张掖满房实锤：重规划跑了但酒店未换）——现补**时间轴
+    兜底**：扫当前时间轴的 hotel 段按名称匹配取真实 Place.id（ RollingGo
+    数字 id），live 满房注入不再需要手动传 ``data.hotel_id``；
+    全部 miss 才回退原名称（调用方仍可显式传 ``data.hotel_id`` 覆盖）。
     """
+    city = getattr(timeline, "city", None) or ""
+    place_key = str(place).replace("（满房）", "").replace("满房", "").strip()
     try:
         from data_transmission.hotel import load_hotels
 
-        city = getattr(timeline, "city", None) or ""
-        place_key = str(place).replace("（满房）", "").replace("满房", "").strip()
         for h in load_hotels(city):
             if h.name == place_key or str(h.id) == place_key:
                 return str(h.id)
@@ -608,8 +611,35 @@ def _resolve_hotel_id(place: str, timeline: Any) -> str:
         )
         if match is not None:
             return str(match.id)
-    except Exception:  # noqa: BLE001  池映射失败回退原名称
+    except Exception:  # noqa: BLE001  池映射失败 → 走时间轴兜底
         pass
+
+    # 时间轴兜底：hotel 段的 Place.id 就是换宿 exclude 命中的真实 id
+    days = (
+        timeline.get("days")
+        if isinstance(timeline, dict)
+        else getattr(timeline, "days", None)
+    ) or []
+    for day in days:
+        if isinstance(day, dict):
+            items = day.get("items")
+        else:
+            items = getattr(day, "items", None)
+        for item in items or []:
+            if isinstance(item, dict):
+                category = item.get("category")
+                name = item.get("name")
+                item_id = item.get("id")
+            else:
+                category = getattr(item, "category", None)
+                name = getattr(item, "name", None)
+                item_id = getattr(item, "id", None)
+            if category != "hotel" or not name:
+                continue
+            name = str(name)
+            if name == place_key or name.startswith(place_key) or \
+                    place_key.startswith(name):
+                return str(item_id or place_key)
     return place
 
 
