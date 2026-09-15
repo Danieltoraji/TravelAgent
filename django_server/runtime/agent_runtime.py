@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -105,6 +106,15 @@ def _replan_to_actions(replan: Any) -> List[ActionItem]:
                 type="HOTEL_BOOK",
             ))
     return actions
+
+
+def _brief_args(kwargs: Dict[str, Any]) -> str:
+    """工具调用参数概要（日志单行用）：JSON 序列化 + 截断 200 字符。"""
+    try:
+        s = json.dumps(kwargs, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        s = str(kwargs)
+    return s if len(s) <= 200 else s[:200] + "…"
 
 
 class AgentRuntime:
@@ -257,9 +267,24 @@ class AgentRuntime:
         original_call = self.registry.call
 
         def logged_call(name: str, **kwargs: Any) -> Any:
-            result = original_call(name, **kwargs)
+            # server_log（2026-09-15）：每次工具调用打一行 INFO（含失败）——
+            # 此前抛异常的调用完全不进 tool_call_log，排查 LLM 回路时是盲区
+            started = time.monotonic()
+            try:
+                result = original_call(name, **kwargs)
+            except Exception:
+                logger.exception(
+                    "tool %s(%s) raised after %dms",
+                    name, _brief_args(kwargs),
+                    int((time.monotonic() - started) * 1000),
+                )
+                raise
             tool = self.registry.get(name)
             logged_data = result.data if tool.readonly else None
+            logger.info(
+                "tool %s(%s) -> %s %dms",
+                name, _brief_args(kwargs), result.status.value, result.elapsed_ms,
+            )
             self.tool_call_log.append({
                 "tool": name,
                 "arguments": kwargs,

@@ -35,6 +35,9 @@ def _json_body(request: HttpRequest) -> Dict[str, Any]:
     try:
         return json.loads(request.body.decode("utf-8"))
     except json.JSONDecodeError:
+        # 畸形请求体不再静默变 {}（2026-09-14 生产 KeyError: 'content' 的
+        # 同源观测盲区）：记录方法/路径，便于定位 C 端契约问题
+        logger.warning("invalid JSON body: %s %s", request.method, request.path)
         return {}
 
 
@@ -92,6 +95,7 @@ def get_tool_spec(request: HttpRequest, name: str) -> JsonResponse:
     try:
         return JsonResponse(to_dict(request.runtime.registry.get_spec(name)))
     except KeyError as exc:
+        logger.info("tool spec not found: %s", name)
         return _error(str(exc), status=404)
 
 
@@ -109,6 +113,7 @@ def invoke_tool_llm(request: HttpRequest) -> JsonResponse:
         try:
             return JsonResponse(provider.call_json(name, arguments))
         except KeyError as exc:
+            logger.warning("tool invoke (llm) not found: %s", name)
             return _error(str(exc), status=404)
 
 
@@ -124,6 +129,7 @@ def invoke_tool(request: HttpRequest, name: str) -> JsonResponse:
         try:
             return JsonResponse(rt.registry.call(name, **payload).to_dict())
         except KeyError as exc:
+            logger.warning("tool invoke not found: %s", name)
             return _error(str(exc), status=404)
 
 
@@ -146,6 +152,7 @@ def hotel_detail(request: HttpRequest, hotel_id: str) -> JsonResponse:
     """返回某个酒店已被查询过的房型/价格明细（只读展示）。"""
     data = request.runtime.hotel_details.get(hotel_id)
     if data is None:
+        logger.info("hotel detail not found: %s", hotel_id)
         return _error(f"Hotel detail not found: {hotel_id}", status=404)
     return JsonResponse(data)
 
@@ -154,6 +161,7 @@ def hotel_detail(request: HttpRequest, hotel_id: str) -> JsonResponse:
 def hotel_tags(request: HttpRequest) -> JsonResponse:
     """返回最近一次 hotel_tool tags 调用结果（只读展示）。"""
     if request.runtime.hotel_tags is None:
+        logger.info("hotel tags not available")
         return _error("Hotel tags not available", status=404)
     return JsonResponse(request.runtime.hotel_tags)
 
@@ -174,6 +182,7 @@ def timeline(request: HttpRequest) -> JsonResponse:
         try:
             timeline_obj = rt.set_timeline_from_payload(payload)
         except Exception as exc:
+            logger.warning("timeline set rejected: %s", exc)
             return _error(f"Invalid timeline: {exc}")
     return JsonResponse({
         "status": "ok",
@@ -251,6 +260,7 @@ def plan(request: HttpRequest) -> JsonResponse:
     """
     payload = _json_body(request)
     if not payload:
+        logger.info("plan rejected: empty/invalid JSON body")
         return _error("requirement JSON body required")
     payload = _parse_free_text_requirement(payload)
     # B1（8.28 反馈）：C 端一直发 `departure_location` 但从未映射到
@@ -264,19 +274,27 @@ def plan(request: HttpRequest) -> JsonResponse:
     if isinstance(content, dict):
         budget = (content.get("constraints") or {}).get("budget")
         if budget is None or (isinstance(budget, (int, float)) and not isinstance(budget, bool) and budget < 0):
+            logger.info("plan rejected: missing constraints.budget")
             return _error(
                 "缺少总预算（constraints.budget）：预算必填。请提供整趟行程的"
                 "人均总预算（元，含城际交通/住宿/餐饮/门票），例如 3000。",
                 status=400,
             )
+    username = getattr(getattr(request, "auth_user", None), "username", "-")
     rt = request.runtime
     with rt.lock:
+        # 历史规划归档（server_log 2026-09-15）：新需求会在
+        # init_from_requirement 内清空旧内存态、Trip 行随后整行覆写——
+        # 旧规划必须在此之前写入 TripPlanArchive，plan 失败场景也不丢
+        _archive_previous_plan(request, rt)
         try:
             timeline_obj = rt.init_from_requirement(payload)
         except Exception as exc:
+            logger.exception("plan failed for user %s", username)
             return _error(f"plan failed: {exc}", status=500)
         if not timeline_obj.days:
             err = getattr(rt, "_last_planner_error", None) or "planner produced empty timeline"
+            logger.error("plan produced empty timeline for user %s: %s", username, err)
             return _error(f"规划失败：{err}")
         # 2026-09-01：规划后补充真源公交导航（并发3、失败静默，约 +2~8s）
         rt.enrich_transport_details(timeline_obj)
@@ -285,6 +303,110 @@ def plan(request: HttpRequest) -> JsonResponse:
         "message": "Timeline generated from requirement",
         "timeline": to_dict(timeline_obj),
         "planner_error": None,
+    })
+
+
+# ── 历史规划归档（server_log 2026-09-15）───────────────────────────────
+# 此前旧规划被 Trip 行整行覆写后无处可查；现在每次新 plan 覆写前把当前
+# 会话快照写入 api_models.TripPlanArchive，可经 /api/plans/history/ 回查。
+
+PLAN_ARCHIVE_KEEP = 20   # 每用户保留的归档份数上限（超出删最旧）
+
+
+def _archive_previous_plan(request: HttpRequest, rt: Any) -> None:
+    """新 plan 覆写前归档旧会话快照（调用方须持 rt.lock，snapshot 需要锁）。
+
+    无既有行程（requirement/timeline 均空）直接跳过；归档失败只记日志，
+    绝不阻断规划主链路。plan 失败场景安全：旧内存态在 init_from_requirement
+    内才被清空，本函数先执行——旧行程已入库。
+    """
+    user = getattr(request, "auth_user", None)
+    if user is None or (rt.requirement is None and rt.timeline is None):
+        return
+    try:
+        from api.models import TripPlanArchive
+
+        snap = rt.snapshot()
+        TripPlanArchive.objects.create(
+            user=user,
+            reason="new_plan",
+            requirement=snap["requirement"],
+            timeline=snap["timeline"],
+            events=snap["events"],
+            replans=snap["replans"],
+            timeline_history=snap["timeline_history"],
+            booking_state=snap["booking_state"],
+        )
+        stale = list(
+            TripPlanArchive.objects.filter(user=user)
+            .order_by("-archived_at")
+            .values_list("id", flat=True)[PLAN_ARCHIVE_KEEP:]
+        )
+        if stale:
+            TripPlanArchive.objects.filter(id__in=stale).delete()
+        logger.info("archived previous plan for user %s", user.username)
+    except Exception:  # noqa: BLE001  归档失败不阻断规划
+        logger.exception("plan archive failed")
+
+
+@require_http_methods(["GET"])
+def plan_history(request: HttpRequest) -> JsonResponse:
+    """历史规划列表：``GET /api/plans/history/?limit=20``（本人数据）。
+
+    列表项含 requirement 全量与 timeline 概要（天数），整份快照走
+    ``/api/plans/history/<id>/``。
+    """
+    from api.models import TripPlanArchive
+
+    try:
+        limit = int(request.GET.get("limit", 20))
+    except ValueError:
+        return _error("limit must be an integer")
+    limit = max(1, min(limit, 100))
+    rows = list(
+        TripPlanArchive.objects.filter(user=request.auth_user)
+        .order_by("-archived_at")[:limit]
+    )
+    return JsonResponse({
+        "archives": [
+            {
+                "id": a.id,
+                "archived_at": a.archived_at.isoformat(timespec="seconds"),
+                "reason": a.reason,
+                "requirement": a.requirement,
+                "timeline_days": (
+                    len(a.timeline.get("days", []))
+                    if isinstance(a.timeline, dict) else None
+                ),
+            }
+            for a in rows
+        ],
+        "count": len(rows),
+    })
+
+
+@require_http_methods(["GET"])
+def plan_history_detail(request: HttpRequest, archive_id: int) -> JsonResponse:
+    """单份历史规划全量快照：``GET /api/plans/history/<id>/``（非本人 404）。"""
+    from api.models import TripPlanArchive
+
+    a = (
+        TripPlanArchive.objects.filter(user=request.auth_user, id=archive_id)
+        .first()
+    )
+    if a is None:
+        return _error(f"Plan archive not found: {archive_id}", status=404)
+    return JsonResponse({
+        "id": a.id,
+        "user_id": a.user_id,
+        "archived_at": a.archived_at.isoformat(timespec="seconds"),
+        "reason": a.reason,
+        "requirement": a.requirement,
+        "timeline": a.timeline,
+        "events": a.events,
+        "replans": a.replans,
+        "timeline_history": a.timeline_history,
+        "booking_state": a.booking_state,
     })
 
 
@@ -307,6 +429,7 @@ def booking_prepare(request: HttpRequest) -> JsonResponse:
             )
             return JsonResponse(to_dict(rec))
         except RuntimeError as exc:
+            logger.warning("booking prepare failed: %s", exc)
             return _error(str(exc), status=500)
 
 
@@ -319,13 +442,16 @@ def booking_confirm(request: HttpRequest, booking_id: str) -> JsonResponse:
             rec = rt.booking_manager.confirm(booking_id)
             return JsonResponse(to_dict(rec))
         except KeyError as exc:
+            logger.warning("booking %s confirm: not found", booking_id)
             return _error(str(exc), status=404)
         except ValueError as exc:
+            logger.warning("booking %s confirm rejected: %s", booking_id, exc)
             return _error(str(exc), status=400)
         except RuntimeError as exc:
             # 预订提交失败（业务失败，如满房）：400 + 结构化信息（对 C 端友好），
             # 而非 500 空 body——原实现会让前端抛 "API error 500" 且无任何细节。
             # 修复 0827：附带失败后的 booking 状态（FAILED）与该预约的 Action（BLOCKED）。
+            logger.warning("booking %s confirm failed: %s", booking_id, exc)
             try:
                 rec = rt.booking_manager.get(booking_id)
                 actions = [
@@ -350,6 +476,7 @@ def booking_cancel(request: HttpRequest, booking_id: str) -> JsonResponse:
             rec = rt.booking_manager.cancel(booking_id)
             return JsonResponse(to_dict(rec))
         except KeyError as exc:
+            logger.warning("booking %s cancel: not found", booking_id)
             return _error(str(exc), status=404)
 
 
@@ -362,6 +489,7 @@ def booking_payment(request: HttpRequest, booking_id: str) -> JsonResponse:
             item = rt.booking_manager.payment_action(booking_id)
             return JsonResponse(to_dict(item))
         except KeyError as exc:
+            logger.warning("booking %s payment: not found", booking_id)
             return _error(str(exc), status=404)
 
 
@@ -380,6 +508,7 @@ def get_booking(request: HttpRequest, booking_id: str) -> JsonResponse:
         rec = request.runtime.booking_manager.get(booking_id)
         return JsonResponse(to_dict(rec))
     except KeyError as exc:
+        logger.info("booking not found: %s", booking_id)
         return _error(str(exc), status=404)
 
 
@@ -411,12 +540,14 @@ def approve_action(request: HttpRequest, action_id: str) -> JsonResponse:
                     try:
                         rt.booking_manager.execute_action(a)
                     except Exception as exc:  # noqa: BLE001  预订失败 → 动作置 BLOCKED
+                        logger.exception("action %s execute failed", action_id)
                         a.status = ActionStatus.BLOCKED
                         a.description = (a.description + "；" if a.description else "") + str(exc)
                         return JsonResponse({
                             "error": str(exc), "action": to_dict(a),
                         }, status=400)
                 return JsonResponse(to_dict(a))
+    logger.warning("action not found: %s", action_id)
     return _error(f"Action not found: {action_id}", status=404)
 
 
@@ -432,6 +563,7 @@ def reject_action(request: HttpRequest, action_id: str) -> JsonResponse:
                 a.decided_at = datetime.now().isoformat(timespec="seconds")
                 a.decided_by = decided_by
                 return JsonResponse(to_dict(a))
+    logger.warning("action not found: %s", action_id)
     return _error(f"Action not found: {action_id}", status=404)
 
 
@@ -445,8 +577,10 @@ def booking_mark_confirmed(request: HttpRequest, booking_id: str) -> JsonRespons
             rec = rt.booking_manager.mark_confirmed(booking_id)
             return JsonResponse(to_dict(rec))
         except KeyError as exc:
+            logger.warning("booking %s mark-confirmed: not found", booking_id)
             return _error(str(exc), status=404)
         except ValueError as exc:
+            logger.warning("booking %s mark-confirmed rejected: %s", booking_id, exc)
             return _error(str(exc), status=400)
 
 
@@ -457,6 +591,7 @@ def list_events(request: HttpRequest) -> JsonResponse:
     try:
         since = int(request.GET.get("since", 0))
     except ValueError:
+        logger.warning("events: invalid since=%r", request.GET.get("since"))
         return _error("since must be an integer")
     events = request.runtime.events[since:]
     return JsonResponse({
@@ -478,6 +613,7 @@ def list_replans(request: HttpRequest) -> JsonResponse:
 def get_replan(request: HttpRequest, index: int) -> JsonResponse:
     replans = request.runtime.replan_history
     if index < 1 or index > len(replans):
+        logger.info("replan not found: index=%d", index)
         return _error("Replan not found", status=404)
     return JsonResponse(replans[index - 1])
 
@@ -505,6 +641,7 @@ def execution_poll(request: HttpRequest) -> JsonResponse:
     try:
         events = rt.poll()
     except RuntimeError as exc:
+        logger.warning("execution poll failed: %s", exc)
         return _error(str(exc), status=400)
     finally:
         rt.lock.release()
@@ -530,8 +667,10 @@ def execution_lookahead(request: HttpRequest) -> JsonResponse:
                 now = datetime.now()
             events = rt.lookahead(now)
         except RuntimeError as exc:
+            logger.warning("execution lookahead failed: %s", exc)
             return _error(str(exc), status=400)
         except ValueError as exc:
+            logger.warning("execution lookahead rejected: %s", exc)
             return _error(str(exc), status=400)
     finally:
         rt.lock.release()
@@ -707,6 +846,7 @@ def debug_inject(request: HttpRequest) -> JsonResponse:
     """
     token = settings.debug_inject_token
     if token and request.headers.get("X-Debug-Token") != token:
+        logger.warning("debug_inject rejected: invalid X-Debug-Token")
         return _error("invalid or missing X-Debug-Token", status=401)
     payload = _json_body(request)
     if not isinstance(payload, dict) or not payload:
@@ -805,6 +945,7 @@ def config_reload(request: HttpRequest) -> JsonResponse:
     """
     token = settings.config_reload_token
     if token and request.headers.get("X-Config-Token") != token:
+        logger.warning("config_reload rejected: invalid X-Config-Token")
         return _error("invalid or missing X-Config-Token", status=401)
     if not token:
         logger.warning("config_reload 未设 CONFIG_RELOAD_TOKEN，公网可达时建议配置")

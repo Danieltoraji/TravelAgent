@@ -5,8 +5,10 @@
 > 本仓库是**人物 B（系统）的交付物**，对外交付面是 `django_server`（Django REST 服务）。
 > 本 README 面向 **A（智能决策）/ C（产品与展示）队友**。
 >
-> **当前状态（2026-09-13，`multi-user` 分支）**：多用户改造已落地——账号注册/登录（Bearer token）、
-> 每用户隔离运行时、SQLite 持久化（重启恢复）、gthread 并发。测试基线 **605 passed**
+> **当前状态（2026-09-15，`server_log_dxd_260915` 分支）**：多用户改造已落地（账号 Bearer token、
+> 每用户隔离运行时、SQLite 持久化、gthread 并发）；本轮补齐服务端日志观测
+> （LOGGING 双通道 + request_id + 报错补记录）与**历史规划归档**（`TripPlanArchive` +
+> `/api/plans/history/`）。测试基线 **622 passed**
 > （另有 3 例 ab_sync 用例依赖本机外层 A 仓库布局，无该布局的环境挂属预期）。
 
 ---
@@ -47,7 +49,7 @@ flowchart TB
         DH[BDecisionHook / BChatHook（a_side 镜像）<br/>LLM 决策/重规划/chat 编排]
     end
 
-    DB[(SQLite<br/>AuthToken / Trip)]
+    DB[(SQLite<br/>AuthToken / Trip / TripPlanArchive)]
 
     APP -->|"Authorization: Bearer"| MW --> V
     V --> MGR --> RT
@@ -88,7 +90,7 @@ LLM 决策（`a_side`），且每个登录用户独享一条这样的闭环。
 | `itinerary/` | `.ics` 日历 + Markdown 行程单导出 |
 | `demo/` + `fake_spots/` | 比赛演示剧情（MockWorld 突发事件注入）；`POST /api/debug/inject/` 走真实链路 → `docs/demo_event_injection.md` |
 | `decision/`、`app/` | **遗留代码**（决策 stub、FastAPI 服务层），不再维护，勿接入 |
-| `tests/` | 608 个用例；Django 引导在 `tests/conftest.py` 的 `pytest_configure`（临时 sqlite + migrate） |
+| `tests/` | 625 个用例；Django 引导在 `tests/conftest.py` 的 `pytest_configure`（临时 sqlite + migrate；`TRAVELAGENT_LOG_DISABLE=1` 下不写文件日志） |
 
 ---
 
@@ -101,6 +103,7 @@ LLM 决策（`a_side`），且每个登录用户独享一条这样的闭环。
 | C：时间轴交通段契约（transport.details 渲染） | `docs/transport_contract.md` |
 | C：酒店只读数据（/api/hotels 等） | `docs/C_hotel_data.md` |
 | C/A：全部 REST 端点清单（真实路由） | `django_server/api/urls.py`（以代码为准） |
+| C：查历史规划（/api/plans/history/）+ 报障时提供 X-Request-ID | `docs/sync_notes_server_log_for_ac_20260915.md` |
 | A：工具层接口（每个工具的签名/真源端点/字段对照） | `docs/tool_introduction.md` |
 | A：hotel_tool 接入适配 | `docs/A_hotel_tool_adapter.md`、`docs/hotel_tool.md` |
 | B/运维：部署冒烟清单（0 认证基座 / 1 规划 / 3 满房换酒 / 4 导出 / 5 双用户隔离） | `django_server/smoke/smoke_acceptance.py` |
@@ -144,7 +147,30 @@ python -m demo.demo_scenario
 
 ---
 
-## 六、设计决策要点（当前仍成立的）
+## 六、可观测性与历史规划归档（server_log 2026-09-15）
+
+**日志双通道**（`django_server/travelagent/settings.py` 的 `LOGGING`）：
+
+- stdout（`docker logs` 可查）+ 轮转文件 `data/logs/server.log`（与 db.sqlite3 同一
+  named volume，宿主机可直查；10MB×5 自动轮转）；
+- 每请求生成 8 位 `request_id`（中间件），响应头回写 **`X-Request-ID`**，该请求链路上的
+  全部日志（api/runtime/a_side、含异常栈）都带同一 id——报障时让 C 端提供这个 id 即可定位；
+- POST 请求行（用户/状态码/耗时）记 INFO，GET 记 DEBUG；401 拒绝、登录失败、注册冲突、
+  畸形 JSON 体、plan 异常/空时间轴、工具调用失败（含抛异常的）均有记录；
+- gunicorn access log 已开启（含 `%(L)s` 请求耗时）；compose 侧 json-file 限 10MB×3 兜底；
+- 环境变量：`TRAVELAGENT_LOG_DIR` 覆盖日志目录，`TRAVELAGENT_LOG_DISABLE=1` 关文件通道（测试用）。
+
+**历史规划归档**（此前旧规划被 Trip 行整行覆写后无处可查）：
+
+- 新 `POST /api/plan/` 覆写前，当前会话快照自动存入 `TripPlanArchive`（含 plan 失败场景）；
+  每用户保留最近 20 份（`api/views.py` 的 `PLAN_ARCHIVE_KEEP`）；
+- `GET /api/plans/history/?limit=20`：列表（requirement 全量 + timeline 天数概要）；
+- `GET /api/plans/history/<id>/`：单份全量快照（requirement/timeline/events/replans/
+  timeline_history/booking_state）；非本人一律 404。
+
+---
+
+## 七、设计决策要点（当前仍成立的）
 
 1. **代码是唯一事实**：任何文档都是二手口径，论断以代码 + 实跑测试为准（本文档亦然，路由/行为以 `django_server/api/` 为准）。
 2. **每用户一运行时，单进程多线程**：`--workers 1` 是硬约束（注册表与 sqlite 均单进程设计）；隔离靠 per-user AgentRuntime + RLock，吞吐靠 gthread 8 线程。
@@ -153,16 +179,17 @@ python -m demo.demo_scenario
 5. **安全边界**：付款永远 `PermissionLevel.MANUAL`，预约需用户确认——Agent 不代付；12306/RollingGo 无下单边界不变。
 6. **A 侧镜像守卫**：`a_side/` 由 `tests/test_ab_sync.py` 与 A 主目录逐文件比对（含 call_llm 内容级守卫），防双源漂移。
 
-已知限制（明示不做）：明文 http 传输 token；SECRET_KEY 硬编码、DEBUG=True；不做多 worker 横向扩展；Trip 只保留每用户当前行程（新 plan 覆写）；无注册审批/邮箱验证。
+已知限制（明示不做）：明文 http 传输 token；SECRET_KEY 硬编码、DEBUG=True；不做多 worker 横向扩展；Trip 只保留每用户当前行程（新 plan 覆写；旧规划有 `TripPlanArchive` 归档，最近 20 份）；无注册审批/邮箱验证。
 
 ---
 
-## 七、文档索引
+## 八、文档索引
 
 **现行**：`docs/tool_introduction.md`（工具层）、`docs/chat_api.md`（对话）、
 `docs/transport_contract.md`（交通契约）、`docs/hotel_tool.md` 系列（酒店）、
 `docs/demo_event_injection.md` + `docs/event_injection_cookbook.md`（演示注入）、
-`docs/sync_notes_multiuser_for_ac_20260912.md`（多用户接入，最新交付口径）。
+`docs/sync_notes_multiuser_for_ac_20260912.md`（多用户接入）、
+`docs/sync_notes_server_log_for_ac_20260915.md`（服务端日志与历史归档，最新交付口径）。
 
 **已归档**：早期报告/对齐/交付/设计稿与带日期 sync notes 共 10 篇移入 `docs/archive/`
 （见 `docs/archive/README.md`），仅作历史参考，描述与现状不符处一律以代码为准。
