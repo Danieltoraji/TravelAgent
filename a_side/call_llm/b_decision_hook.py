@@ -159,12 +159,22 @@ class BDecisionHook:
         travel_time_provider: Optional[Any] = None,
     ) -> Dict[str, Any]:
         if self._replan_fn is not None:
-            # 8.30 酒店真源：外部注入的 replan_fn 若不接受 hotel_provider 则回退旧签名
+            # 8.30 酒店真源：外部注入的 replan_fn 按签名能力逐级回退——
+            # 全新签名（+travel_time_provider）→ 8.30 签名（+hotel_provider）→
+            # 旧签名（2026-09-15 教训：单次 TypeError 回退会把 hotel_provider
+            # 一并丢掉，test_hook_passes_hotel_provider_to_replan_fn 实锤）
             try:
                 return self._replan_fn(
                     requirement, current_plan, spots, events,
                     hotel_provider=hotel_provider,
                     travel_time_provider=travel_time_provider,
+                )
+            except TypeError:
+                pass
+            try:
+                return self._replan_fn(
+                    requirement, current_plan, spots, events,
+                    hotel_provider=hotel_provider,
                 )
             except TypeError:
                 return self._replan_fn(requirement, current_plan, spots, events)
