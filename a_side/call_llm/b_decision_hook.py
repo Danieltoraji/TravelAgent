@@ -31,6 +31,7 @@ B 侧代码零改动。本模块提供开箱即用的 ``BDecisionHook``：
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -38,6 +39,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+logger = logging.getLogger("call_llm.b_decision_hook")
 
 from core.schemas import DecisionRequest, ReplanRequest  # noqa: E402
 from data_transmission.b_contract import (  # noqa: E402
@@ -153,6 +156,7 @@ class BDecisionHook:
         spots: Any,
         events: Sequence[Dict[str, Any]],
         hotel_provider: Optional[Callable[[str], Any]] = None,
+        travel_time_provider: Optional[Any] = None,
     ) -> Dict[str, Any]:
         if self._replan_fn is not None:
             # 8.30 酒店真源：外部注入的 replan_fn 若不接受 hotel_provider 则回退旧签名
@@ -160,6 +164,7 @@ class BDecisionHook:
                 return self._replan_fn(
                     requirement, current_plan, spots, events,
                     hotel_provider=hotel_provider,
+                    travel_time_provider=travel_time_provider,
                 )
             except TypeError:
                 return self._replan_fn(requirement, current_plan, spots, events)
@@ -168,7 +173,58 @@ class BDecisionHook:
         return replan(
             requirement, current_plan, spots, events,
             hotel_provider=hotel_provider,
+            travel_time_provider=travel_time_provider,
         )
+
+    def _live_travel_provider(self, spots: Any) -> Optional[Any]:
+        """live 候选池的重规划交通矩阵（与规划同源：map 工具 batch_route 预取）。
+
+        - ``USE_LIVE_DATA`` 开 + 工具在 + 池内 ≥2 个带坐标景点 → 构建
+          ``LiveTravelTimeProvider``（id→名→坐标映射 + 整矩阵注入）；
+        - 构建/矩阵失败 → None（回落本地图路径，行为与既往一致）。
+        """
+        if self.tool_provider is None or not spots:
+            return None
+        try:
+            from data_transmission.live_data import (
+                _coord_str,
+                make_live_eta_fn,
+                make_live_matrix_fn,
+                use_live_data,
+            )
+            from transport.providers import LiveTravelTimeProvider
+
+            if not use_live_data():
+                return None
+            pool_spots = [
+                s for group in spots if isinstance(group, (list, tuple))
+                for s in (group or []) if isinstance(s, dict)
+            ]
+            name_to_coord: Dict[str, str] = {}
+            name_by_id: Dict[str, str] = {}
+            for s in pool_spots:
+                name = str(s.get("name") or "").strip()
+                coord = _coord_str(s.get("location"))
+                sid = str(s.get("id") or "").strip()
+                if name and coord:
+                    name_to_coord.setdefault(name, coord)
+                if sid and name:
+                    name_by_id.setdefault(sid, name)
+            if len(name_to_coord) < 2:
+                return None
+            provider = LiveTravelTimeProvider(
+                make_live_eta_fn(self.tool_provider, city=self.city),
+                name_by_id=name_by_id,
+            )
+            provider.set_matrix(
+                make_live_matrix_fn(self.tool_provider, city=self.city)(
+                    name_to_coord
+                ),
+                name_to_coord=name_to_coord,
+            )
+            return provider
+        except Exception:  # noqa: BLE001  构建失败回落本地图（不阻断重规划）
+            return None
 
     def _live_hotel_provider_or_none(self) -> Optional[Any]:
         """真源酒店 provider（供重规划换宿注入）；未注入工具 → None。
@@ -241,13 +297,33 @@ class BDecisionHook:
                 affected_spots=[],
             )
 
-        result = self._replan(
-            self.requirement,
-            current_plan,
-            spots,
-            a_events,
-            hotel_provider=self._live_hotel_provider_or_none(),
-        )
+        # 重规划交通矩阵：live 模式下候选池是真源 id（不在本地 spots_graph 里），
+        # 默认 JsonTravelTimeProvider 会因缺边 ValueError 崩掉整条 replan（被执行
+        # 层吞掉 → replans=0，83caa6f 部署 smoke 实锤）——与规划同源走 map 工具
+        # 的 LiveTravelTimeProvider（batch_route 预取整矩阵）；构建失败回落本地图。
+        travel_provider = self._live_travel_provider(spots)
+        try:
+            result = self._replan(
+                self.requirement,
+                current_plan,
+                spots,
+                a_events,
+                hotel_provider=self._live_hotel_provider_or_none(),
+                travel_time_provider=travel_provider,
+            )
+        except Exception as exc:  # noqa: BLE001  重规划失败降级「只决策」并如实记录
+            # （此前异常直接穿透，被执行层吞掉 → replan_history 无记录 → smoke
+            # `replans=0`；降级保留决策记录，C 端保留原行程）
+            logger.warning("重规划执行失败，降级只决策：%s: %s",
+                           type(exc).__name__, exc)
+            return ReplanRequest(
+                new_timeline=None,
+                reason=f"{reason}；重规划执行失败已降级只决策（{type(exc).__name__}）",
+                diff_summary=[],
+                need_replan=True,
+                impact=impact,
+                affected_spots=[],
+            )
         if isinstance(result, dict) and result.get("new_plan"):
             self._current_plan = result["new_plan"]
         return replan_result_to_replan_request(
