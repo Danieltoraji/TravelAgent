@@ -652,6 +652,7 @@ def _select_outbound_combination(
     departure_time_minutes: Optional[int] = None,
     priority: Optional[str] = None,
     local_departure_minutes: int = 0,
+    arrival_penalty: Optional[Dict[str, int]] = None,
 ) -> Optional[Dict[str, Any]]:
     """去程班次组合搜索：从真源候选选「偏好感知」的可行组合。
 
@@ -669,6 +670,12 @@ def _select_outbound_combination(
       推进到达时刻（估算段如实保留，绝不虚构班次时刻）；
     - 目标（偏好感知）：``priority=="cost"`` → 组合票价和最低（并列取早到）；
       其余（earliest/speed/rail/air/缺省）→ 末腿最早到达（并列取便宜）。
+    - **到达站位置惩罚（P1 修复，2026-09-15，中心先行拍板落实）**：
+      ``arrival_penalty`` = {到达站: 站→目的地市中心高德实测分钟}——
+      京津城际碎片段「北京南→武清 21min」曾凭最早到达压过完整班次
+      「北京南→天津 35min」，把用户卸在距市区 70min 的武清（验收实锤）。
+      到达站惩罚加进比较 key 后碎片段不再胜出；``priority=="cost"`` 不加
+      （用户明确要省钱）；measure 失败的站缺省 0（不误杀）。
 
     返回 ``{"dep_first": 首班发车分钟, "arr_last": 末腿到达分钟, "cost": 票价和,
     "choices": [逐 intercity 腿选中的候选 dict 或 None（无候选腿）]}``；
@@ -704,10 +711,19 @@ def _select_outbound_combination(
         if idx == len(intercity):
             if dep_first is None:
                 return  # 整链无任何真源班次 → 无从精排
+            arrival_station = ""
+            if choices and choices[-1]:
+                arrival_station = _candidate_station(
+                    choices[-1], "to_station", "to_airport"
+                )
             if priority == "cost":
                 key = (round(cost, 2), int(arr_last or 0))
             else:
-                key = (int(arr_last or 0), round(cost, 2))
+                penalty = (
+                    int(arrival_penalty.get(arrival_station, 0))
+                    if arrival_penalty else 0
+                )
+                key = (int(arr_last or 0) + penalty, round(cost, 2))
             if best_key is None or key < best_key:
                 best_key = key
                 best = {
@@ -777,6 +793,7 @@ def _realize_outbound_with_schedule(
     departure_time_minutes: Optional[int] = None,
     priority: Optional[str] = None,
     local_route_fn: Optional[Callable[[str, str], Optional[int]]] = None,
+    arrival_penalty: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """去程段按真实班次精排（镜像 ``_rebuild_return_with_schedule`` 的去程方向）。
 
@@ -830,6 +847,7 @@ def _realize_outbound_with_schedule(
     combo = _select_outbound_combination(
         outbound_seg, departure_time_minutes, priority,
         local_departure_minutes=local_departure_minutes,
+        arrival_penalty=arrival_penalty,
     )
     if combo is None:
         return segments
@@ -878,6 +896,7 @@ def _realize_outbound_with_schedule(
             combo = _select_outbound_combination(
                 outbound_seg, departure_time_minutes, priority,
                 local_departure_minutes=local_departure_minutes,  # 保守沿用实测约束
+                arrival_penalty=arrival_penalty,
             )
             if combo is None:
                 return segments
@@ -1208,6 +1227,77 @@ class TripSegmentAttacher:
             logger.info("城际站对精修（阶段2）：到达站/市内腿按酒店位置优化")
         return segments
 
+    def _arrival_station_penalty(
+        self, segments: List[Dict[str, Any]], city: str
+    ) -> Optional[Dict[str, int]]:
+        """去程到达站惩罚（P1 修复，2026-09-15，中心先行拍板落实）。
+
+        收集 outbound 候选里的 distinct 到达站，逐站 map 驾车实测「站→目的地
+        城市」（geocode 绑目的地城市，与 _refine_intercity_stations 同款模式），
+        返回 {到达站: 分钟}（cap 120）。京津城际碎片段「北京南→武清 21min」
+        曾凭最早到达把用户卸在距市区 70min 的武清（验收实锤）——组合评分加
+        此惩罚后完整班次胜出。map 失败的站不进 dict（缺省 0 不误杀）；
+        无 tool_provider / 无候选站 → None（行为与既往一致）。
+        """
+        provider = getattr(self, "_tool_provider", None)
+        city = str(city or "").strip()
+        if provider is None or not city:
+            return None
+        stations = set()
+        for seg in segments or []:
+            det = seg.get("details") or {} if isinstance(seg, dict) else {}
+            if det.get("kind") != "outbound":
+                continue
+            for leg in det.get("legs") or []:
+                if not isinstance(leg, dict) or leg.get("kind") != "intercity":
+                    continue
+                for cand in leg.get("candidates") or []:
+                    if isinstance(cand, dict):
+                        st = _candidate_station(cand, "to_station", "to_airport")
+                        if st:
+                            stations.add(st)
+        if not stations:
+            return None
+        try:
+            from data_transmission.live_data import (
+                _minutes_from_payload,
+                _tool_payload,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        cache: Dict[Tuple[str, str], Optional[int]] = {}
+        penalty: Dict[str, int] = {}
+        measured = 0
+
+        def _minutes(station: str) -> Optional[int]:
+            key = (station, city)
+            if key in cache:
+                return cache[key]
+            minutes = None
+            try:
+                result = provider.call(
+                    "map", action="route", mode="driving",
+                    origin=station, destination=city, city=city or None,
+                )
+                minutes = _minutes_from_payload(_tool_payload(result) or {})
+            except Exception:  # noqa: BLE001  实测失败 → 不惩罚（不误杀）
+                minutes = None
+            cache[key] = minutes
+            return minutes
+
+        for st in sorted(stations):
+            if st == city:
+                penalty[st] = 0  # 目的地市内站零惩罚
+                continue
+            m = _minutes(st)
+            if isinstance(m, (int, float)) and m > 0:
+                penalty[st] = min(int(m), 120)
+                measured += 1
+        # 全部测不到 → 无实测信号，返回 None（等同无惩罚，调用方按既往口径）
+        if not measured:
+            return None
+        return penalty or None
+
     def _build_trip_segments(self) -> List[Dict[str, Any]]:
         """构建城际来去程段（**一次**查询：demo 候选 → 主链 build_trip_segments）。
 
@@ -1277,8 +1367,15 @@ class TripSegmentAttacher:
             (content.get("travel_schedule") or {}).get("departure_time")
         )
         priority = (content.get("preferences") or {}).get("travel_priority") or None
+        # P1 修复（2026-09-15）：去程到达站惩罚——碎片段「最早到达」曾把用户
+        # 卸在距市区 70min 的武清（站→目的地实测进组合评分）
+        destination_city = str(
+            (self.requirement.get("content") or {}).get("destination") or ""
+        )
+        arrival_penalty = self._arrival_station_penalty(segments, destination_city)
         return _realize_outbound_with_schedule(
-            segments, dep_min, priority, local_route_fn=self._local_route_fn()
+            segments, dep_min, priority, local_route_fn=self._local_route_fn(),
+            arrival_penalty=arrival_penalty,
         )
 
     def _inject_trip_segments(
