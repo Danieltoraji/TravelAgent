@@ -293,6 +293,8 @@ class RestaurantOrchestrator:
             )
             from transport.restaurants import RestaurantResolver
 
+            from call_llm.meal_filter import build_llm_meal_filter
+
             nearby_pool = None
             anchor_locations = {}
             if name_to_coord:
@@ -318,6 +320,9 @@ class RestaurantOrchestrator:
                 travel_time_provider=self._travel_time_provider,
                 restaurant_provider=make_live_restaurants_provider(self._tool_provider),
                 nearby_pool=nearby_pool,
+                # LLM 正餐过滤（2026-09-15）：关键词黑名单挡不住的长尾非正餐
+                # venue 由 LLM 兜底；USE_LLM_TOOLS 门控，失败不过滤不阻断
+                meal_filter_fn=build_llm_meal_filter(),
             )
             if anchor_locations:
                 resolver.set_anchor_locations(anchor_locations)

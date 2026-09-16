@@ -50,6 +50,7 @@ class RestaurantResolver:
         data_dir: Path = DEFAULT_GRAPH_DIR,
         restaurant_provider: Optional[Callable[[str], List[Restaurant]]] = None,
         nearby_pool: Optional[Callable[[Tuple[float, float], int], List[Restaurant]]] = None,
+        meal_filter_fn: Optional[Callable[[List[Restaurant]], List[Restaurant]]] = None,
     ):
         """餐厅选择器。
 
@@ -73,6 +74,10 @@ class RestaurantResolver:
         self.provider = travel_time_provider or JsonTravelTimeProvider(city, data_dir)
         self._by_id = {restaurant.id: restaurant for restaurant in self.restaurants}
         self._nearby_pool = nearby_pool
+        # 正餐过滤函数（可选注入，2026-09-15：LLM 兜底剔除非正餐 venue）——
+        # fn(candidates) -> candidates；transport 层保持无 LLM 依赖，由
+        # call_llm.meal_filter 构造注入。在 _filter_meal 关键词过滤后应用。
+        self._meal_filter_fn = meal_filter_fn
         # 锚点 id → 坐标 (lat, lng)：附近搜索与 haversine 兜底都要用锚点坐标，
         # 由接线方（BPlannerHook）在拿到候选景点后 ``set_anchor_locations`` 注入。
         # 键既可能是景点名（live 模式 name_to_coord 的键），也可能是假池景点 id
@@ -316,6 +321,11 @@ class RestaurantResolver:
         原池**（放宽兜底：附近只有奶茶店的锚点也要有餐厅可用，观感差于没饭）。
         """
         filtered = [r for r in candidates if not is_non_meal_name(r.name)]
+        if self._meal_filter_fn is not None and filtered:
+            try:
+                filtered = self._meal_filter_fn(filtered) or filtered
+            except Exception:  # noqa: BLE001  注入过滤失败不阻断（双保险）
+                pass
         return filtered if filtered else candidates
 
     def _candidates_for(self, anchor_spot_id: str) -> List[Restaurant]:

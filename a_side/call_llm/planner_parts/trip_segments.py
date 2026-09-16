@@ -1227,6 +1227,62 @@ class TripSegmentAttacher:
             logger.info("城际站对精修（阶段2）：到达站/市内腿按酒店位置优化")
         return segments
 
+    def _notice_slow_intercity(
+        self, segments: List[Dict[str, Any]], origin: str, destination: str
+    ) -> None:
+        """普速降级告知（2026-09-15 三问题 1，用户南京实测 794min 静默选中 K 车）。
+
+        当日 G/D 售罄时"最早到达"合法选中普速（13h，到达确实早于晚班高铁），
+        但静默替用户决定 13h vs 3.4h 取舍零告知。口径：选中 intercity 腿历时
+        vs 估算表典型时长（``find_city_travel`` 本地表）偏离 >2x → notices
+        告知，并附候选中最快班次（若有）供用户取舍。
+        """
+        try:
+            from data_transmission.city_travel import find_city_travel
+
+            base = find_city_travel(origin, destination)
+            base_minutes = int(base.transport_minutes) if base else 0
+        except Exception:  # noqa: BLE001  估算表缺失 → 无基准不告知
+            base_minutes = 0
+        if base_minutes <= 0:
+            return
+        for seg in segments or []:
+            det = seg.get("details") or {} if isinstance(seg, dict) else {}
+            if det.get("kind") != "outbound":
+                continue
+            for leg in det.get("legs") or []:
+                if not isinstance(leg, dict) or leg.get("kind") != "intercity":
+                    continue
+                duration = leg.get("duration_min")
+                service = str(leg.get("service_no") or "")
+                if not (isinstance(duration, (int, float)) and duration > 0):
+                    continue
+                if duration <= base_minutes * 2:
+                    continue  # 正常高铁/动车量级，不告知
+                hours, mins = divmod(int(duration), 60)
+                text = (
+                    f"当日 {origin}→{destination} 高铁余票不足，已选普速班次 "
+                    f"{service}（{leg.get('depart_time','')}→{leg.get('arrive_time','')}，"
+                    f"历时 {hours}小时{mins}分）——比高铁慢约 "
+                    f"{duration // max(base_minutes, 1)} 倍，建议考虑改期"
+                )
+                # 候选中最快班次（供用户取舍；非选中班次才提示）
+                cands = [
+                    c for c in (leg.get("candidates") or [])
+                    if isinstance(c, dict)
+                    and isinstance(c.get("transport_minutes"), (int, float))
+                    and c["transport_minutes"] < duration
+                ]
+                if cands:
+                    fast = min(cands, key=lambda c: c["transport_minutes"])
+                    f_h, f_m = divmod(int(fast["transport_minutes"]), 60)
+                    text += (
+                        f"；另有 {fast.get('code','')}（{fast.get('depart_time','')}→"
+                        f"{fast.get('arrive_time','')}，历时 {f_h}小时{f_m}分）可选"
+                    )
+                self._add_notice(text)
+                return  # 每方向一条足够
+
     def _arrival_station_penalty(
         self, segments: List[Dict[str, Any]], city: str
     ) -> Optional[Dict[str, int]]:
@@ -1373,10 +1429,19 @@ class TripSegmentAttacher:
             (self.requirement.get("content") or {}).get("destination") or ""
         )
         arrival_penalty = self._arrival_station_penalty(segments, destination_city)
-        return _realize_outbound_with_schedule(
+        realized = _realize_outbound_with_schedule(
             segments, dep_min, priority, local_route_fn=self._local_route_fn(),
             arrival_penalty=arrival_penalty,
         )
+        # 普速降级告知（三问题 1）：选中班次历时 >> 高铁基准 → notices
+        origin_city = str(
+            (self.requirement.get("content") or {}).get("origin") or ""
+        )
+        try:
+            self._notice_slow_intercity(realized, origin_city, destination_city)
+        except Exception:  # noqa: BLE001  告知失败不阻断规划
+            pass
+        return realized
 
     def _inject_trip_segments(
         self, plan: Dict[str, Any], segments: List[Dict[str, Any]]
