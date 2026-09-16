@@ -55,9 +55,14 @@ def digest_args(tool: str, args: Any) -> Dict[str, Any]:
 
 
 def digest_result(tool: str, result: Any) -> Dict[str, Any]:
-    """工具返回摘要（按工具白名单取关键事实；错误如实透出）。"""
+    """工具返回摘要（按工具白名单取关键事实；错误如实透出）。
+
+    非 dict 对象（如 B 侧 ToolResult dataclass——编排器 tool_executor 经
+    QuotaManager 返回的真源结果）必须 str 化，否则原始对象会混进 trace 步骤，
+    JsonResponse 序列化直接 TypeError 500（襄阳实锤，2026-09-16）。
+    """
     if not isinstance(result, dict):
-        return {"raw": _cap(result)}
+        return {"raw": _cap(str(result))}
     if result.get("status") == "error":
         return {
             "status": "error",
