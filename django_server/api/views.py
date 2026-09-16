@@ -629,6 +629,11 @@ def booking_confirm(request: HttpRequest, booking_id: str) -> JsonResponse:
                     "error": str(exc),
                     "booking": to_dict(rec),
                     "actions": actions,
+                    # 确认异步化（2026-09-16，只增字段）：满房触发的重规划已转
+                    # 后台执行，confirm 不再等待——C 端可经 /api/plan-trace/
+                    # 轮询步骤流、/api/status/ 看 replan_in_progress
+                    "replan_async": True,
+                    "replan_in_progress": getattr(rt, "replan_in_progress", None),
                 }, status=400)
             except KeyError:
                 return _error(str(exc), status=400)

@@ -88,7 +88,11 @@ class TestReplanToActions(unittest.TestCase):
 
 
 class TestBookingEventDedup(unittest.TestCase):
-    """修复 ①：满房 confirm 失败后 BOOKING 事件只缓冲一次。"""
+    """修复 ①：满房 confirm 失败后 BOOKING 事件只缓冲一次。
+
+    确认异步化（2026-09-16）：事件缓冲随重规划挪进后台线程——confirm 返回
+    后需等后台任务收口（shutdown(wait=True)）再断言。
+    """
 
     def test_booking_failure_buffers_event_once(self) -> None:
         rt = AgentRuntime()
@@ -104,6 +108,7 @@ class TestBookingEventDedup(unittest.TestCase):
         )
         with self.assertRaises(RuntimeError):
             rt.booking_manager.confirm(rec.booking_id)
+        rt._replan_executor.shutdown(wait=True)   # 等后台重规划跑完
         n_booking = sum(1 for e in rt.events if e.event_type == EventType.BOOKING)
         self.assertEqual(n_booking, 1, f"/api/events 不应出现重复 BOOKING，实际 {n_booking} 条")
 

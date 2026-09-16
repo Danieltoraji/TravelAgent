@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -65,6 +66,8 @@ class ExecutionAgent:
     tool_provider: Optional[ToolProvider] = None
     # 可注入的“当前时间”函数：生产用 datetime.now，Demo/测试可注入模拟时钟
     now_fn: Callable[[], datetime] = datetime.now
+    # 事件冷却窗（秒）：同指纹显著事件窗内只触发一次决策（2026-09-16）
+    event_cooldown_s: int = 600
 
     def __post_init__(self) -> None:
         self.scheduler = MonitorScheduler()
@@ -73,6 +76,10 @@ class ExecutionAgent:
         # 自动预约状态跟踪
         self._booked_places: Set[str] = set()
         self._place_info: Dict[str, Place] = {}
+        # 事件冷却去重（2026-09-16）：指纹 → 最近一次放行进决策的时刻。
+        # 修复「poll 全量重发显著事件反复 replan」「调整计划卡片重复弹」——
+        # persist 注入态每轮 poll 重发同一事件，此前 _significant 无状态全放行。
+        self._event_fingerprints: Dict[str, datetime] = {}
         # 默认给 A 侧 LLM 暴露一个只读工具门面
         if self.tool_provider is None:
             self.tool_provider = ToolProvider(self.registry)
@@ -210,6 +217,21 @@ class ExecutionAgent:
                 logger.exception("on_event handler failed")
         if not self._significant(event):
             return None
+        # 事件冷却去重（2026-09-16）：同指纹事件在冷却窗内只放行进决策一次
+        #（放行即记指纹，decision 返回 None 也算已处理——重复打分同样浪费 LLM）
+        fingerprint = self._event_fingerprint(event)
+        now = self.now_fn()
+        last_seen = self._event_fingerprints.get(fingerprint)
+        if last_seen is not None and (
+            (now - last_seen).total_seconds() < self.event_cooldown_s
+        ):
+            logger.info(
+                "event %s@%s within %ss cooldown, skip decision",
+                event.event_type.value, event.place, self.event_cooldown_s,
+            )
+            return None
+        self._event_fingerprints[fingerprint] = now
+        self._prune_fingerprints(now)
         req = DecisionRequest(
             events=[event],
             current_timeline=self.timeline,
@@ -267,6 +289,31 @@ class ExecutionAgent:
                 data.get("hotel_full") or data.get("price_delta") is not None
             )
         return False
+
+    @staticmethod
+    def _event_fingerprint(event: MonitorEvent) -> str:
+        """事件指纹（冷却去重键）：type + place + data 稳定序列化。
+
+        data 用 sort_keys 的 JSON（default=str 兜底非 JSON 类型）——同一
+        满房/排队/天气事件每轮 poll 重发时指纹稳定，place 不同的酒店满房
+        各自成键（换宿后的新酒店不会被误冷却）。
+        """
+        try:
+            data_key = json.dumps(
+                event.data or {}, sort_keys=True, ensure_ascii=False, default=str
+            )
+        except Exception:  # noqa: BLE001
+            data_key = str(event.data)
+        return f"{event.event_type.value}|{event.place}|{data_key}"
+
+    def _prune_fingerprints(self, now: datetime) -> None:
+        """冷却表膨胀兜底：超过 200 条时清掉已出窗的旧指纹。"""
+        if len(self._event_fingerprints) <= 200:
+            return
+        cutoff = now - timedelta(seconds=self.event_cooldown_s)
+        self._event_fingerprints = {
+            k: v for k, v in self._event_fingerprints.items() if v > cutoff
+        }
 
     # -- 驱动入口（Demo / 测试用异步驱动） ---------------------------------
     async def poll_once(self) -> List[MonitorEvent]:

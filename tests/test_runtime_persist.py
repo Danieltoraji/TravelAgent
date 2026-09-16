@@ -49,7 +49,10 @@ class TestSnapshotJsonSafe(unittest.TestCase):
         json.dumps(snap, ensure_ascii=False)
         self.assertEqual(snap["timeline"]["city"], "北京")
         self.assertEqual(snap["timeline"]["days"][0]["date"], "2026-10-01")
-        self.assertEqual(snap["booking_state"], {"records": [], "actions": []})
+        # 满房循环终结（2026-09-16）只增键 failed_hotels（空会话恒空列表）
+        self.assertEqual(
+            snap["booking_state"], {"records": [], "actions": [], "failed_hotels": []}
+        )
 
     def test_event_snapshot_json_safe(self) -> None:
         rt = _fresh_runtime()

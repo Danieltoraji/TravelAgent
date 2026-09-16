@@ -182,6 +182,14 @@ class AgentRuntime:
         # 多用户改造（2026-09）：每运行时一把可重入锁，视图层写端点持有；
         # gunicorn 单 worker + gthread 下串行化同一用户的并发写。
         self.lock = threading.RLock()
+        # 确认异步化（2026-09-16）：满房触发的重规划（选点+池审核+估时+排程，
+        # 30~110s）不再在 confirm 请求线程内同步执行——放后台单线程串行，
+        # confirm 秒级返回。修复用户实测「点确认一直执行中」。
+        self._replan_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="replan"
+        )
+        # 后台重规划进行中的事件概要（None=空闲）；透出 /api/status/ 供 C 观测
+        self.replan_in_progress: Optional[Dict[str, Any]] = None
         self._wrap_tool_call_logging()
 
     # -- C 侧事件回调 -----------------------------------------------------
@@ -240,7 +248,56 @@ class AgentRuntime:
         # （/api/events 轮询可见），再走决策 → 重规划。
         # 修复 0827：这里不再显式 _on_event——否则同一条 BOOKING 事件会被缓冲两次
         # （服务器核对实测：/api/events 出现重复 bevt-*）。
-        asyncio.run(agent.handle_event(event))
+        # 确认异步化（2026-09-16）：handle_event（含完整重规划，30~110s）改在
+        # 后台线程执行，confirm 请求只做预订提交+受理即返回；C 端经
+        # /api/plan-trace/（无锁轮询）看重规划步骤流。
+        self.replan_in_progress = {
+            "event_id": event.event_id,
+            "event_type": event.event_type.value,
+            "place": event.place,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self._replan_executor.submit(self._run_background_replan, event)
+
+    def _run_background_replan(self, event: MonitorEvent) -> None:
+        """后台执行满房触发的重规划（确认异步化，2026-09-16）。
+
+        持 runtime.lock 执行（与视图层写互斥；execution_poll 非阻塞拿不到锁
+        返回 busy，天然避让），并挂 PlanTraceRecorder——C 端 GET /api/plan-trace/
+        的 running 分支可实时看到重规划步骤，结束后落在 last_plan_trace。
+        后台线程兜底：任何失败只记日志，绝不向调用方（executor）抛。
+        """
+        agent = self.agent
+        recorder = PlanTraceRecorder(request_id=str(event.event_id))
+        try:
+            with self.lock:
+                if self.agent is not agent:
+                    # 新计划已重建 agent（新会话）：旧事件的重规划作废
+                    logger.warning(
+                        "background replan skipped: stale event %s (session changed)",
+                        event.event_id,
+                    )
+                    return
+                self.current_trace_recorder = recorder
+                try:
+                    recorder.add_milestone(
+                        "预订失败重规划开始", phase="plan",
+                        detail=f"{event.event_type.value} @ {event.place}",
+                    )
+                    asyncio.run(agent.handle_event(event))
+                    recorder.add_milestone("重规划完成", phase="final")
+                finally:
+                    self.current_trace_recorder = None
+        except Exception:  # noqa: BLE001
+            logger.exception("background replan failed: %s", event.event_id)
+        finally:
+            self.replan_in_progress = None
+            try:
+                self.last_plan_trace = recorder.assemble(
+                    plan_meta={"kind": "booking_replan", "event": str(event.event_id)},
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("booking replan trace assemble failed")
 
     # -- A 侧接入点 -------------------------------------------------------
 
@@ -288,6 +345,14 @@ class AgentRuntime:
             # 修复 0827：重规划结果回填 Action Queue（更新路线 auto / 换宿预订 confirm），
             # 让 C 端的 Action Queue 展示「决策 → 动作 → 用户确认」完整链路。
             items = _replan_to_actions(replan)
+            # 满房循环终结（2026-09-16）：已知满房的酒店不再生成预订动作卡片
+            #（换宿由重规划本身完成，重复卡片只会在 C 端逐圈累积）
+            items = [
+                it for it in items
+                if not (it.target.startswith("hotel:")
+                        and self.booking_manager.is_hotel_failed(
+                            it.target.split(":", 1)[1]))
+            ]
             if items:
                 self.booking_manager.enqueue_actions(items)
 
@@ -433,6 +498,8 @@ class AgentRuntime:
         self.replan_history = []
         self.timeline_history = []
         self.tool_call_log = []
+        # 确认异步化（2026-09-16）：新会话清空后台重规划状态
+        self.replan_in_progress = None
         # plan trace（2026-09-16）：新规划开始前清空上次规划的元信息
         self.last_llm_trace = None
         self.last_data_source = None
@@ -496,6 +563,8 @@ class AgentRuntime:
             "replan_history_count": len(self.replan_history),
             "timeline_history_count": len(self.timeline_history),
             "tool_call_count": len(self.tool_call_log),
+            # 确认异步化（2026-09-16，只增不改）：后台重规划进行中的事件概要
+            "replan_in_progress": self.replan_in_progress,
             # 观测字段（2026-09-14 复验补回，只增不改）：真源判定金标准信号
             # + 编排门控现场（USE_LLM_ORCHESTRATOR 开启且工具面启用时非 None）
             "last_data_source": self._last_data_source,

@@ -87,8 +87,21 @@ class BookingManager:
         # restore=False 用于"新会话清空重建"场景（AgentRuntime.init_from_requirement）：
         # 不加载旧状态，首次落盘时覆写旧文件。
         self._persist_path = persist_path
+        # 满房循环终结（2026-09-16）：确认失败的酒店（归一化键）——同酒店
+        # 不再重复 prepare/生成预订动作，换宿由重规划完成，新酒店才新建动作。
+        # 修复「满房失败→replan→同酒店再确认→再失败」的无限循环与重复卡片。
+        self._failed_hotels: set = set()
         if persist_path and restore:
             self._load_persisted()
+
+    @staticmethod
+    def _hotel_key(place: str) -> str:
+        """酒店名归一化键（剥离「满房」标记，口径同 runtime._resolve_hotel_id）。"""
+        return str(place).replace("（满房）", "").replace("满房", "").strip()
+
+    def is_hotel_failed(self, place: str) -> bool:
+        """该酒店此前确认是否满房失败（满房循环终结，2026-09-16）。"""
+        return self._hotel_key(place) in self._failed_hotels
 
     # -- E5：持久化 ---------------------------------------------------------
     def snapshot(self) -> Dict[str, Any]:
@@ -102,10 +115,15 @@ class BookingManager:
                 }
                 for a in self._actions
             ],
+            # 满房循环终结（2026-09-16，只增键）：满房酒店集合随快照持久化
+            "failed_hotels": sorted(self._failed_hotels),
         }
 
     def restore_snapshot(self, snapshot: Dict[str, Any]) -> None:
         """从 snapshot() 形态恢复（多用户 M2：重启懒重建用）。"""
+        self._failed_hotels = {
+            str(x) for x in snapshot.get("failed_hotels", [])
+        }
         for d in snapshot.get("records", []):
             rec = BookingRecord(**{**d, "status": BookingStatus(d["status"])})
             self._records[rec.booking_id] = rec
@@ -175,6 +193,12 @@ class BookingManager:
         当 booking_type == "scenic" 时，自动调用 scenic Tool 获取景点真实信息
         （票价、电话、是否需预约、地址、营业时间）并填入预约草稿。
         """
+        # 满房循环终结（2026-09-16）：已确认满房的酒店直接拒绝 prepare——
+        # 调用方（approve 端点）会把动作置 BLOCKED，不再产生新预约单/新卡片
+        if booking_type == "hotel" and self._hotel_key(place) in self._failed_hotels:
+            raise RuntimeError(
+                f"酒店 {place} 此前确认已满房，不再重复预订（等待重规划换宿）"
+            )
         # 自动填充景点信息
         price = 0.0
         tel = ""
@@ -273,6 +297,10 @@ class BookingManager:
             rec.status = BookingStatus.FAILED
             rec.note = result.error or "submit failed"
             self._mark_action(booking_id, ActionStatus.BLOCKED)
+            # 满房循环终结（2026-09-16）：记满房酒店（仅 hotel 类）——同酒店
+            # 之后不再重复 prepare，杜绝「确认→满房→replan→同酒店再确认」循环
+            if rec.booking_type == "hotel":
+                self._failed_hotels.add(self._hotel_key(rec.place))
             self._persist()
             if self._on_booking_failed is not None:
                 try:
