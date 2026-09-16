@@ -35,7 +35,9 @@ def _json_body(request: HttpRequest) -> Dict[str, Any]:
         return {}
     try:
         return json.loads(request.body.decode("utf-8"))
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        # 非 UTF-8 体（如 GBK）此前会穿透成 500；与 views._json_body 同修
+        logger.warning("invalid JSON body: %s %s", request.method, request.path)
         return {}
 
 
@@ -111,16 +113,19 @@ def register(request: HttpRequest) -> JsonResponse:
     if len(password) < MIN_PASSWORD_LEN:
         return _error(f"password 至少 {MIN_PASSWORD_LEN} 位")
     if User.objects.filter(username=username).exists():
+        logger.info("register conflict: %s", username)
         return _error("用户名已存在", status=409)
     try:
         user = User.objects.create_user(username=username, password=password)
     except IntegrityError:
         # review P3：exists() 检查与 create_user 之间的 TOCTOU 竞态——
         # 并发同名注册在此处落入唯一约束，映射 409 固定文案（不泄漏异常）
+        logger.info("register conflict (race): %s", username)
         return _error("用户名已存在", status=409)
     except Exception:  # noqa: BLE001
         logger.exception("register failed for %s", username)
         return _error("注册失败（服务端内部错误）", status=500)
+    logger.info("registered user %s", username)
     return JsonResponse({
         "status": "ok",
         "token": issue_token(user),
@@ -139,7 +144,9 @@ def login(request: HttpRequest) -> JsonResponse:
         return _error("username 和 password 必填")
     user = User.objects.filter(username=username).first()
     if user is None or not user.check_password(password):
+        logger.info("login failed for %s", username)
         return _error("用户名或密码错误", status=401)
+    logger.info("login ok: %s", username)
     return JsonResponse({
         "status": "ok",
         "token": issue_token(user),

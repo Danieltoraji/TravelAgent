@@ -57,3 +57,33 @@ class Trip(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"trip:{self.user_id}"
+
+
+class TripPlanArchive(models.Model):
+    """历史规划归档（server_log 2026-09-15）。
+
+    新 plan 整行覆写 Trip 前，``views.plan`` 把当前会话快照存到这里
+    （此前旧规划被覆写后无处可查）；blob 口径与 Trip 完全一致（均出自
+    ``AgentRuntime.snapshot()``）。每用户仅保留最近 N 份
+    （``views.PLAN_ARCHIVE_KEEP``，超出删最旧）。
+    查询：GET /api/plans/history/（列表）、GET /api/plans/history/<id>/（全量）。
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="plan_archives")
+    requirement = models.JSONField(null=True, blank=True)
+    timeline = models.JSONField(null=True, blank=True)
+    events = models.JSONField(default=list, blank=True)
+    replans = models.JSONField(default=list, blank=True)
+    timeline_history = models.JSONField(default=list, blank=True)
+    booking_state = models.JSONField(null=True, blank=True)
+    reason = models.CharField(max_length=32, default="new_plan")
+    archived_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "历史规划归档"
+        verbose_name_plural = "历史规划归档"
+        ordering = ["-archived_at"]
+        indexes = [models.Index(fields=["user", "-archived_at"])]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"archive:{self.user_id}:{self.id}"
