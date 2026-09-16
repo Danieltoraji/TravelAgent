@@ -168,6 +168,10 @@ class BPlannerHook(
         # 降级告知（真源查不到 → 告知用户 + 假源/估算替代，2026-09-14）：
         # 人话清单，随计划透出（B 侧 plan 响应/status 的 notices 字段）
         self.fallback_notices: List[str] = []
+        # 候选池 LLM 轨迹（plan_trace 工作项，2026-09-16）：ScenicSearchPlanner
+        # 的 generate 轨迹经 data_source 透传，B 侧 runtime 收集进 plan trace；
+        # 门控关 / LLM 失败保持 None（B 侧按缺席降级）
+        self.last_llm_trace: Optional[Dict[str, Any]] = None
         # A 侧内部计划缓存：首次规划后保留，可被决策钩子（replan）复用
         self._current_plan: Optional[Dict[str, Any]] = None
         self._current_timeline: Optional[TripTimeline] = None

@@ -102,6 +102,10 @@ class DataSourceResolver:
                 ),
                 must_visit=self._must_visit_names(),
             )
+            # 候选池 LLM 轨迹透传（plan_trace 工作项，2026-09-16）：planner 上
+            # last_llm_trace（generate 完整轨迹）挂到 BPlannerHook 实例，B 侧
+            # runtime 经 getattr(planner_hook, "last_llm_trace") 收集
+            self.last_llm_trace = getattr(planner, "last_llm_trace", None)
         except Exception as exc:  # noqa: BLE001  计划失败不阻断候选池
             logger.warning("search_plan 生成失败（%s）：%s", city, exc)
             plan = None

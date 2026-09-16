@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from call_llm.client_factory import create_llm_client
@@ -376,6 +377,11 @@ class ScenicSearchPlanner:
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout
+        # 候选池 LLM 轨迹透传（2026-09-16，B 侧 plan_trace 工作项）：plan_for
+        # 每次成功 generate 后挂到最后一次轨迹（model/耗时/tool_trace/reviews），
+        # BPlannerHook 经 data_source 透传给 B 侧 runtime/plan_trace；失败/门控关
+        # 保持 None（B 侧按缺席降级）。
+        self.last_llm_trace: Optional[Dict[str, Any]] = None
 
     @property
     def enabled(self) -> bool:
@@ -398,6 +404,7 @@ class ScenicSearchPlanner:
             return None
         if not destination:
             return None
+        started = time.monotonic()
         try:
             client = create_llm_client(
                 model_name=self.model_name,
@@ -418,6 +425,20 @@ class ScenicSearchPlanner:
                 messages=messages,
                 response_schema=SCENIC_SEARCH_PLAN_SCHEMA,
             )
+            # 候选池 LLM 轨迹透传（plan_trace 工作项）：generate 完整结果在此
+            # 原样保住（tool_trace/reviews 不做语义加工），即使后续校验不过、
+            # 轨迹也已挂上。组装失败只降级轨迹本身（绝不影响规划主链路）。
+            try:
+                self.last_llm_trace = {
+                    "model": getattr(client, "model_name", None),
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "tool_trace": result.get("tool_trace") or [],
+                    "reviews": result.get("reviews") or [],
+                    "content_summary": str(result.get("content") or "")[:100],
+                }
+            except Exception as exc:  # noqa: BLE001
+                self.last_llm_trace = None
+                logger.warning("last_llm_trace 组装失败（%s）：%s", destination, exc)
         except Exception as exc:  # noqa: BLE001  LLM 失败不阻断候选池
             logger.warning("ScenicSearchPlanner 调用失败（%s）：%s", destination, exc)
             return None
