@@ -322,8 +322,11 @@ class PlanTraceRecorder:
             for step in steps or []:
                 if not isinstance(step, dict):
                     continue
-                merged = {**step, "phase": step.get("phase") or phase}
-                self._append(merged)
+                # _json_safe 防御性归一：外部步骤可能携带非 JSON-safe 对象
+                # （如 ToolResult dataclass），在此兜底序列化
+                merged = _json_safe({**step, "phase": step.get("phase") or phase})
+                self._append(merged if isinstance(merged, dict)
+                             else {"title": "编排步", "phase": phase})
         except Exception:  # noqa: BLE001
             logger.warning("plan trace: extend_from_steps failed", exc_info=True)
 
