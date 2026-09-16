@@ -27,7 +27,6 @@ urlpatterns = [
     path("hotel-tags/", views.hotel_tags, name="hotel_tags"),
 
     path("timeline/history/", views.timeline_history, name="timeline_history"),
-    path("agent-trace/", views.agent_trace, name="agent_trace"),
     path("timeline/", views.timeline, name="timeline"),
 
     path("plan/", views.plan, name="plan"),

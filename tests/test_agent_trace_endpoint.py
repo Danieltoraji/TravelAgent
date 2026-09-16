@@ -1,8 +1,8 @@
-"""agent_trace 端点测试（C 端展示 LLM 思考/调 tool 过程，2026-09-15）。
+"""agent_trace 数据捕获测试（2026-09-16 归一：端点已下线，数据层保留）。
 
-- runtime 捕获：planner_hook._orchestration_result.agent_trace → runtime.agent_trace；
-- 端点：GET /api/agent-trace/ → {"enabled", "trace"}（门控关/未编排 → enabled false）；
-- status 小旗：agent_trace_enabled。
+- runtime 捕获：planner_hook._orchestration_result.agent_trace → runtime.agent_trace
+  （供队友 plan_trace recorder 消费，并入统一 trace）；
+- /api/agent-trace/ 端点与 status 小旗已下线（归一到 plan_trace 单一通道）。
 """
 
 from types import SimpleNamespace
@@ -70,7 +70,6 @@ class AgentTraceRuntimeTest(SimpleTestCase):
                 rt.init_from_requirement({"content": {"destination": "北京", "days": 1}})
             assert rt.agent_trace is not None
             assert rt.agent_trace["steps"][2]["phase"] == "收尾"
-            assert rt.status()["agent_trace_enabled"] is True
         finally:
             os.environ.pop("USE_LLM_ORCHESTRATOR", None)
 
@@ -83,27 +82,4 @@ class AgentTraceRuntimeTest(SimpleTestCase):
                    return_value=_stub_hook(agent_trace=None, orch_enabled=False)):
             rt.init_from_requirement({"content": {"destination": "北京", "days": 1}})
         assert rt.agent_trace is None
-        assert rt.status()["agent_trace_enabled"] is False
-
-
-class AgentTraceEndpointTest(SimpleTestCase):
-    def _request(self, rt):
-        request = RequestFactory().get("/api/agent-trace/")
-        request.runtime = rt
-        request.auth_user = SimpleNamespace(username="tester")
-        return request
-
-    def test_endpoint_returns_trace(self):
-        rt = SimpleNamespace(agent_trace=_TRACE)
-        resp = views.agent_trace(self._request(rt))
-        import json
-        data = json.loads(resp.content)
-        assert data["enabled"] is True
-        assert data["trace"]["steps"][0]["tool"] == "train_trip"
-
-    def test_endpoint_disabled_when_no_trace(self):
-        rt = SimpleNamespace(agent_trace=None)
-        resp = views.agent_trace(self._request(rt))
-        import json
-        data = json.loads(resp.content)
-        assert data == {"enabled": False, "trace": None}
+        assert "agent_trace_enabled" not in rt.status()   # 端点已归一下线

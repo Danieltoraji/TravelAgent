@@ -25,6 +25,7 @@ C 端要的是「调了什么、看到什么关键事实、据此做了什么决
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 MAX_STEPS = 50
@@ -175,6 +176,7 @@ def build_orchestrator_trace(orch_result: Any, *, tool_stats: Any = None) -> Dic
                 args_digest=digest_args(name, call.get("arguments")),
                 result_digest=digest_result(name, call.get("result")),
                 ms=ms,
+                ok=ok,
             )
         review = next(
             (r for r in reviews if isinstance(r, dict)
@@ -220,3 +222,50 @@ def build_minimal_trace(
     for i, n in enumerate((notices or [])[: MAX_STEPS - len(steps)], start=len(steps) + 1):
         steps.append(_step(i, "降级告知", reason=_cap(n, 200)))
     return {"enabled": False, "steps": steps, "fallback_reason": fallback_reason}
+
+
+def to_plan_trace_steps(agent_trace: Any, *, t_base_ms: int = 0) -> List[Dict[str, Any]]:
+    """agent_trace 步骤 → 队友 plan_trace 步骤 schema（2026-09-16 归一约定）。
+
+    归一决定：编排轨迹不再单设 /api/agent-trace/ 端点，由 B 侧 plan_trace
+    recorder 调本函数把编排步骤并入统一 trace（单通道，C 端只接一套）。
+
+    映射（phase → plan_trace 枚举）：查真源→data、落锤→plan、审查→review、
+    提名站对→data、收尾→final、回落/降级告知→milestone；status：ok/error
+    原样，无 → ok。``t`` = t_base_ms + 累计 ms（回放时间轴）。
+    """
+    _PHASE = {"查真源": "data", "落锤": "plan", "审查": "review",
+              "提名站对": "data", "收尾": "final", "回落": "milestone",
+              "降级告知": "milestone"}
+    result = agent_trace if isinstance(agent_trace, dict) else {}
+    out: List[Dict[str, Any]] = []
+    t = int(t_base_ms)
+    for step in result.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        phase = _PHASE.get(str(step.get("phase") or ""), "llm")
+        ms = step.get("ms")
+        elapsed = int(ms) if isinstance(ms, (int, float)) else None
+        if elapsed is not None:
+            t += elapsed
+        out.append({
+            "seq": len(out) + 1,
+            "t": t,
+            "phase": phase,
+            "kind": "tool" if step.get("tool") else "milestone",
+            "title": (
+                f"{step.get('phase')}：{step.get('tool')}"
+                if step.get("tool")
+                else str(step.get("phase") or "编排步")
+            ),
+            "tool": step.get("tool"),
+            "args": json.dumps(step.get("args_digest"), ensure_ascii=False)
+            if step.get("args_digest") else None,
+            "result_digest": json.dumps(step.get("result_digest"),
+                                        ensure_ascii=False)
+            if step.get("result_digest") else _cap(step.get("summary"), 200),
+            "elapsed_ms": elapsed,
+            "status": "error" if step.get("ok") is False else "ok",
+            "source": "orchestrator",
+        })
+    return out
