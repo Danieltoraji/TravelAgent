@@ -172,6 +172,20 @@ class BPlannerHook(
         # 的 generate 轨迹经 data_source 透传，B 侧 runtime 收集进 plan trace；
         # 门控关 / LLM 失败保持 None（B 侧按缺席降级）
         self.last_llm_trace: Optional[Dict[str, Any]] = None
+        # LLM 兜底两件套（2026-09-16，用户设计：选完点交大模型审核，过了加
+        # 时长字段、没过重选——迭代）——USE_LLM_TOOLS 门控，失败 = 保持既往
+        self._pool_review = None         # 池审核：verdict/exclude/补搜建议词
+        self._duration_estimator = None  # 通过后加时间字段（估时）
+        if tool_provider is not None:
+            try:
+                from call_llm.duration_estimator import build_llm_duration_estimator
+                from call_llm.scenic_filter import build_llm_pool_review
+
+                self._pool_review = build_llm_pool_review()
+                self._duration_estimator = build_llm_duration_estimator()
+            except Exception:  # noqa: BLE001
+                self._pool_review = None
+                self._duration_estimator = None
         # A 侧内部计划缓存：首次规划后保留，可被决策钩子（replan）复用
         self._current_plan: Optional[Dict[str, Any]] = None
         self._current_timeline: Optional[TripTimeline] = None
@@ -245,12 +259,56 @@ class BPlannerHook(
                 # select_spots 的 spots_provider 是 fn(city) 单参：这里用闭包
                 # 注入天数联动的 limit + 必去景点强拉名单（LiveSpotsSource 支持）。
                 def _source_with_limit(city: str):
-                    return live_source(
+                    spots_result = live_source(
                         city,
                         limit=self._pool_days_limit(),
                         ensure_spots=self._must_visit_names(),
                         search_plan=search_plan,
                     )
+                    # 审核迭代（2026-09-16 用户设计）：LLM 审池 → fail 则剔除
+                    # 并按建议词补搜重选 → 过了才加时间字段。上限 2 轮；审核
+                    # 失败/门控关 → 直接用当前池（行为与既往一致）
+                    if isinstance(spots_result, list) and self._pool_review is not None:
+                        limit_value = self._pool_days_limit()
+                        for _round in range(2):
+                            try:
+                                spots_result, meta = self._pool_review(spots_result)
+                            except Exception:  # noqa: BLE001
+                                break
+                            if meta.get("verdict") == "pass":
+                                break
+                            # fail：按建议词补搜重选（仅第一轮 fail 后补搜）
+                            more = meta.get("more_keywords") or []
+                            if _round == 0 and more:
+                                extra_plan = {"buckets": [
+                                    {"keywords": [city, "景点"], "quota_ratio": 0.5},
+                                    {"keywords": more[:4], "quota_ratio": 0.5},
+                                ]}
+                                try:
+                                    extra = live_source(
+                                        city, limit=limit_value,
+                                        ensure_spots=[], search_plan=extra_plan,
+                                    )
+                                    if isinstance(extra, list):
+                                        seen = {str(s.get("name") or "")
+                                                for s in spots_result
+                                                if isinstance(s, dict)}
+                                        spots_result = spots_result + [
+                                            s for s in extra
+                                            if isinstance(s, dict)
+                                            and str(s.get("name") or "") not in seen
+                                        ]
+                                except Exception:  # noqa: BLE001
+                                    pass
+                    # 过了审核（或迭代耗尽）→ 加时间字段（LLM 估时，原地填 duration）
+                    if self._duration_estimator is not None and isinstance(
+                        spots_result, list
+                    ):
+                        try:
+                            self._duration_estimator(spots_result)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return spots_result
 
                 return select_spots(
                     self.requirement,
