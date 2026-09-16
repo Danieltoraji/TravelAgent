@@ -297,13 +297,17 @@ class ExecutionAgent:
         data 用 sort_keys 的 JSON（default=str 兜底非 JSON 类型）——同一
         满房/排队/天气事件每轮 poll 重发时指纹稳定，place 不同的酒店满房
         各自成键（换宿后的新酒店不会被误冷却）。
+        ``hotel_id`` 剔除：B 侧映射多级兜底（池 id → 时间轴 id → 名称/
+        booking_id 回退），同一酒店的两次触发可能解析出不同 hotel_id
+        （2026-09-16 线上实测：577984 vs 名称回退）——酒店身份由
+        place/hotel_name 承担，id 不进指纹。
         """
+        data = dict(event.data or {})
+        data.pop("hotel_id", None)
         try:
-            data_key = json.dumps(
-                event.data or {}, sort_keys=True, ensure_ascii=False, default=str
-            )
+            data_key = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
         except Exception:  # noqa: BLE001
-            data_key = str(event.data)
+            data_key = str(data)
         return f"{event.event_type.value}|{event.place}|{data_key}"
 
     def _prune_fingerprints(self, now: datetime) -> None:

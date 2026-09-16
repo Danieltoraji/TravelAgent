@@ -135,6 +135,17 @@ class TestEventCooldown(unittest.IsolatedAsyncioTestCase):
         await agent.handle_event(_make_event(EventType.WEATHER, "北京", {"rain_probability": 85}))
         self.assertEqual(len(decisions), 1)
 
+    async def test_hotel_id_unstable_not_breaking_cooldown(self) -> None:
+        """hotel_id 解析回退（池 id vs 名称/booking_id）不破坏冷却——
+        2026-09-16 线上实测：同酒店两次注入解析出不同 hotel_id，指纹必须稳定。"""
+        decisions: list = []
+        agent = self._agent(decisions)
+        await agent.handle_event(_make_event(
+            EventType.BOOKING, "布丁酒店", {"hotel_id": "577984", "hotel_full": True}))
+        await agent.handle_event(_make_event(
+            EventType.BOOKING, "布丁酒店", {"hotel_id": "布丁酒店", "hotel_full": True}))
+        self.assertEqual(len(decisions), 1)
+
 
 # ── 修复 3：满房循环终结 ──────────────────────────────────────────────
 
