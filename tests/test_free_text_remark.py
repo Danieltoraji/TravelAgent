@@ -91,8 +91,9 @@ def test_empty_remark_skips_llm(monkeypatch):
     """备注为空串 / None / 缺失 → 原样返回且零 LLM 调用（不产生延迟）。"""
     for payload in (_body(""), _body(None), _body(with_remark_key=False)):
         calls = _patch_parse(monkeypatch, lambda raw, **kw: raw)
-        result = views._parse_free_text_requirement(payload)
+        result, parse_meta = views._parse_free_text_requirement(payload)
         assert result is payload
+        assert parse_meta["skipped"] is True
         assert calls == []
 
 
@@ -104,9 +105,11 @@ def test_llm_success_replaces_payload(monkeypatch):
     calls = _patch_parse(monkeypatch, lambda raw, **kw: parsed)
 
     payload = _body("带老人出行，慢节奏，不吃辣")
-    result = views._parse_free_text_requirement(payload)
+    result, parse_meta = views._parse_free_text_requirement(payload)
 
     assert result is parsed
+    assert parse_meta["failed"] is False
+    assert parse_meta["llm_meta"]["tool_trace"] == []
     assert parsed["content"]["preferences"]["preferred_tags"] == ["历史文化"]
     assert calls == [payload], "原始 body（含备注原文）应整体交给 LLM"
 
@@ -118,8 +121,9 @@ def test_llm_failure_falls_back_to_original(monkeypatch):
         lambda raw, **kw: (_ for _ in ()).throw(RuntimeError("LLM 超时（测试注入）")),
     )
     payload = _body("备注内容")
-    result = views._parse_free_text_requirement(payload)
+    result, parse_meta = views._parse_free_text_requirement(payload)
     assert result is payload
+    assert parse_meta["failed"] is True
     assert len(calls) == 1
 
 
@@ -128,8 +132,9 @@ def test_llm_bad_shape_falls_back_to_original(monkeypatch):
     for bad in (None, "not a dict", {"content": "not a dict"}, {}):
         _patch_parse(monkeypatch, lambda raw, **kw: bad)
         payload = _body("备注内容")
-        result = views._parse_free_text_requirement(payload)
+        result, parse_meta = views._parse_free_text_requirement(payload)
         assert result is payload
+        assert parse_meta["failed"] is True
 
 
 def test_plan_view_feeds_parsed_payload_to_runtime(monkeypatch):
@@ -180,7 +185,7 @@ def test_llm_null_include_meal_time_downgraded(monkeypatch):
     parsed["content"]["constraints"]["include_meal_time_in_daily_limit"] = None
     _patch_parse(monkeypatch, lambda raw, **kw: parsed)
 
-    result = views._parse_free_text_requirement(_body("备注内容"))
+    result, _ = views._parse_free_text_requirement(_body("备注内容"))
 
     assert (
         result["content"]["constraints"]["include_meal_time_in_daily_limit"] is False
@@ -193,7 +198,7 @@ def test_llm_false_include_meal_time_kept(monkeypatch):
     parsed["content"]["constraints"]["include_meal_time_in_daily_limit"] = False
     _patch_parse(monkeypatch, lambda raw, **kw: parsed)
 
-    result = views._parse_free_text_requirement(_body("备注内容"))
+    result, _ = views._parse_free_text_requirement(_body("备注内容"))
 
     assert result["content"]["constraints"]["include_meal_time_in_daily_limit"] is False
 

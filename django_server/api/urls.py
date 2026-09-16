@@ -31,6 +31,10 @@ urlpatterns = [
 
     path("plan/", views.plan, name="plan"),
 
+    # 规划轨迹（plan trace 2026-09-16）：等待期准实时轮询（无锁，不碰
+    # runtime.lock）；完整轨迹另随 POST /api/plan/ 响应 "trace" 字段返回
+    path("plan-trace/", views.plan_trace, name="plan_trace"),
+
     # 历史规划归档（server_log 2026-09-15）：plan 覆写前的旧会话快照可回查
     path("plans/history/", views.plan_history, name="plan_history"),
     path("plans/history/<int:archive_id>/", views.plan_history_detail, name="plan_history_detail"),

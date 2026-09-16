@@ -24,6 +24,7 @@ from config.settings import settings
 from core.schemas import ActionStatus, EventType, MonitorEvent, to_dict
 from itinerary.ics_exporter import build_ics
 from itinerary.markdown_exporter import render_markdown
+from runtime.plan_trace import PlanTraceRecorder
 from tools import ToolProvider
 
 logger = logging.getLogger("api.views")
@@ -203,13 +204,18 @@ def timeline_history(request: HttpRequest) -> JsonResponse:
 # ── A 侧需求 → 规划（AB 合码方案 §三.5）────────────────────────────────────
 
 
-def _parse_free_text_requirement(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _parse_free_text_requirement(payload: Dict[str, Any]) -> tuple:
     """备注解析（问题六修复，8.30）：非空 ``free_text_requirement`` → LLM 结构化。
 
     把 C 端备注框的原始文本 + 表单字段整体交给 A 的
     ``call_llm.parse_input.parse_requirement_input``（LLM 把备注语义归并到
     preferred_tags / avoid_tags / constraints / food_preferences /
     travel_priority / hotel_preferences，标签映射到知识库标准名）。
+
+    返回 ``(payload, parse_meta)``：parse_meta 供 plan trace（2026-09-16）记录
+    解析步骤——``parse_requirement_input`` 返回的本来就是完整 ``generate``
+    结果 dict（含 tool_trace/reviews），此前只取 content 把轨迹丢了，现一并
+    保留（B 侧零 A 侧改动的 LLM 轨迹来源之一）。
 
     - 解析成功 → 返回解析后的完整需求（表单数值字段由解析 prompt 规则 1
       原样保留，语义字段是新增量）；
@@ -220,17 +226,26 @@ def _parse_free_text_requirement(payload: Dict[str, Any]) -> Dict[str, Any]:
     content = payload.get("content") if isinstance(payload, dict) else None
     remark = content.get("free_text_requirement") if isinstance(content, dict) else None
     if not isinstance(remark, str) or not remark.strip():
-        return payload
+        return payload, {"skipped": True, "failed": False, "llm_meta": None}
+    started = time.monotonic()
     try:
         from call_llm.parse_input import parse_requirement_input
 
         parsed = parse_requirement_input(payload)
     except Exception as exc:  # noqa: BLE001  备注解析失败不阻断规划
         logger.warning("free_text_requirement LLM 解析失败，按无备注规划：%s", exc)
-        return payload
+        return payload, {
+            "skipped": False, "failed": True, "error": str(exc),
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "llm_meta": None,
+        }
     if not isinstance(parsed, dict) or not isinstance(parsed.get("content"), dict):
         logger.warning("free_text_requirement LLM 解析结果形状异常，按无备注规划")
-        return payload
+        return payload, {
+            "skipped": False, "failed": True, "error": "解析结果形状异常",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "llm_meta": None,
+        }
     # LLM 按 prompt 规则会把「没有对应信息」的字段填 null，而 A 侧
     # ``_include_meal_time_in_daily_limit`` 对显式 null 报错（要求用户确认）。
     # 备注里通常不含这个信息 → 解析结果里把它降级为历史默认 False，
@@ -240,7 +255,32 @@ def _parse_free_text_requirement(payload: Dict[str, Any]) -> Dict[str, Any]:
         "include_meal_time_in_daily_limit"
     ) is None:
         constraints["include_meal_time_in_daily_limit"] = False
-    return parsed
+    llm_meta = {
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+        "tool_trace": parsed.get("tool_trace") or [],
+        "reviews": parsed.get("reviews") or [],
+        "content_summary": _requirement_summary(parsed["content"]),
+    }
+    return parsed, {"skipped": False, "failed": False, "llm_meta": llm_meta}
+
+
+def _requirement_summary(content: Dict[str, Any]) -> str:
+    """解析后的需求 → 一句话摘要（trace parse 步骤的 result_digest）。"""
+    try:
+        bits = []
+        if content.get("destination"):
+            bits.append(f"目的地={content['destination']}")
+        if content.get("days"):
+            bits.append(f"{content['days']} 天")
+        budget = (content.get("constraints") or {}).get("budget")
+        if budget is not None:
+            bits.append(f"预算 {budget} 元")
+        prefs = (content.get("preferences") or {}).get("preferred_tags") or []
+        if prefs:
+            bits.append(f"偏好 {len(prefs)} 项")
+        return "，".join(bits) or "需求已结构化"
+    except Exception:  # noqa: BLE001
+        return "需求已结构化"
 
 
 @csrf_exempt
@@ -256,6 +296,10 @@ def plan(request: HttpRequest) -> JsonResponse:
     规划失败（BPlannerHook 降级为空时间轴）返回 400 + ``planner_error``。
     旧 ``POST /api/timeline/`` 保留：C 直接喂时间轴的兼容路径。
 
+    plan trace（2026-09-16）：全程采集结构化轨迹（工具/LLM/里程碑），成功与
+    失败响应顶层都带 ``trace``（只增不改）；同时存 ``rt.last_plan_trace`` 供
+    ``GET /api/plan-trace/`` 断线重取。
+
     多用户：持本用户 runtime.lock——规划 20-70s 期间只阻塞该用户自己的
     并发请求，其他用户不受影响（gthread 线程池并行）。
     """
@@ -263,7 +307,11 @@ def plan(request: HttpRequest) -> JsonResponse:
     if not payload:
         logger.info("plan rejected: empty/invalid JSON body")
         return _error("requirement JSON body required")
-    payload = _parse_free_text_requirement(payload)
+    # plan trace（2026-09-16）：request_id 与 X-Request-ID 响应头一致，
+    # C 端可拿 trace.request_id 到 server.log 里 grep 对账。
+    recorder = PlanTraceRecorder(request_id=getattr(request, "request_id", ""))
+    payload, parse_meta = _parse_free_text_requirement(payload)
+    _record_parse_steps(recorder, parse_meta)
     # B1（8.28 反馈）：C 端一直发 `departure_location` 但从未映射到
     # `content.origin`（views 零引用）→ 一行映射（已传 origin 则以其为准）。
     content = payload.get("content") if isinstance(payload, dict) else None
@@ -276,29 +324,63 @@ def plan(request: HttpRequest) -> JsonResponse:
         budget = (content.get("constraints") or {}).get("budget")
         if budget is None or (isinstance(budget, (int, float)) and not isinstance(budget, bool) and budget < 0):
             logger.info("plan rejected: missing constraints.budget")
-            return _error(
-                "缺少总预算（constraints.budget）：预算必填。请提供整趟行程的"
-                "人均总预算（元，含城际交通/住宿/餐饮/门票），例如 3000。",
-                status=400,
-            )
+            return _plan_error("缺少总预算（constraints.budget）：预算必填。请提供"
+                               "整趟行程的人均总预算（元，含城际交通/住宿/餐饮/"
+                               "门票），例如 3000。", request, recorder, status=400)
     username = getattr(getattr(request, "auth_user", None), "username", "-")
     rt = request.runtime
     with rt.lock:
-        # 历史规划归档（server_log 2026-09-15）：新需求会在
-        # init_from_requirement 内清空旧内存态、Trip 行随后整行覆写——
-        # 旧规划必须在此之前写入 TripPlanArchive，plan 失败场景也不丢
-        _archive_previous_plan(request, rt)
+        # 锁的归属规则（plan trace 2026-09-16）：recorder 仅在持锁后挂到
+        # runtime——同用户并发 plan 在锁外不会互相污染轨迹缓冲；logged_call
+        # （含 enrich 线程池）读它写入工具步骤。
+        rt.current_trace_recorder = recorder
         try:
-            timeline_obj = rt.init_from_requirement(payload)
-        except Exception as exc:
-            logger.exception("plan failed for user %s", username)
-            return _error(f"plan failed: {exc}", status=500)
-        if not timeline_obj.days:
-            err = getattr(rt, "_last_planner_error", None) or "planner produced empty timeline"
-            logger.error("plan produced empty timeline for user %s: %s", username, err)
-            return _error(f"规划失败：{err}")
-        # 2026-09-01：规划后补充真源公交导航（并发3、失败静默，约 +2~8s）
-        rt.enrich_transport_details(timeline_obj)
+            recorder.set_phase("data")
+            started = time.monotonic()
+            # 历史规划归档（server_log 2026-09-15）：新需求会在
+            # init_from_requirement 内清空旧内存态、Trip 行随后整行覆写——
+            # 旧规划必须在此之前写入 TripPlanArchive，plan 失败场景也不丢
+            _archive_previous_plan(request, rt)
+            recorder.add_milestone("归档上一份规划", phase="plan",
+                                   elapsed_ms=_ms(started))
+            started = time.monotonic()
+            try:
+                timeline_obj = rt.init_from_requirement(payload)
+            except Exception as exc:
+                logger.exception("plan failed for user %s", username)
+                return _plan_error(f"plan failed: {exc}", request, recorder,
+                                   status=500)
+            recorder.add_milestone(
+                "规划管线完成", phase="plan", elapsed_ms=_ms(started),
+                detail=f"数据源={getattr(rt, 'last_data_source', None) or '未知'}",
+            )
+            # A 侧透传的候选池 LLM 轨迹（镜像未合入时为 None，自动跳过）
+            recorder.extend_from_llm_meta(
+                getattr(rt, "last_llm_trace", None),
+                phase="llm", title="候选池定制（LLM）",
+            )
+            # 编排器思考/调 tool 轨迹并入（agent_trace 归一，2026-09-16）：
+            # A 侧 to_plan_trace_steps 产出，编排未启用时 rt.agent_trace 为
+            # None → to_plan_trace_steps 返回空列表，自动跳过
+            from call_llm.agent_trace import to_plan_trace_steps
+
+            recorder.extend_from_steps(
+                to_plan_trace_steps(getattr(rt, "agent_trace", None)),
+                phase="plan",
+            )
+            if not timeline_obj.days:
+                err = getattr(rt, "_last_planner_error", None) or "planner produced empty timeline"
+                logger.error("plan produced empty timeline for user %s: %s", username, err)
+                return _plan_error(f"规划失败：{err}", request, recorder)
+            # 2026-09-01：规划后补充真源公交导航（并发3、失败静默，约 +2~8s）
+            recorder.set_phase("enrich")
+            started = time.monotonic()
+            rt.enrich_transport_details(timeline_obj)
+            recorder.add_milestone("交通增强完成", phase="enrich",
+                                   elapsed_ms=_ms(started))
+        finally:
+            rt.current_trace_recorder = None
+    trace = _finish_plan_trace(request, recorder, timeline_obj=timeline_obj)
     return JsonResponse({
         "status": "ok",
         "message": "Timeline generated from requirement",
@@ -307,7 +389,87 @@ def plan(request: HttpRequest) -> JsonResponse:
         # 降级告知（真源查不到 → 告知用户，2026-09-14）：estimated 段/假池
         # 回退/自驾兜底的人话清单；C 端可直接展示（只增字段，旧解析不受影响）
         "notices": list(getattr(rt, "_last_notices", None) or []),
+        "trace": trace,
     })
+
+
+# ── plan trace（2026-09-16）装配辅助 ───────────────────────────────────
+
+_UNSET = object()   # 区分「未传 error」与「显式 error=None」（对齐 a_interface 口径）
+
+
+def _ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
+
+
+def _record_parse_steps(recorder: PlanTraceRecorder, parse_meta: Dict[str, Any]) -> None:
+    """把备注解析阶段（锁外）的结果写为 trace 的 parse 前几步。"""
+    if parse_meta.get("skipped"):
+        recorder.add_milestone("需求解析：无备注，跳过 LLM", phase="parse")
+        return
+    if parse_meta.get("failed"):
+        recorder.add_milestone(
+            f"需求解析失败（{parse_meta.get('error', '')}），按无备注规划",
+            phase="parse", detail=parse_meta.get("error", ""),
+        )
+        return
+    recorder.extend_from_llm_meta(
+        parse_meta.get("llm_meta"), phase="parse", title="备注解析（LLM 结构化）",
+    )
+
+
+def _timeline_stats(timeline_obj: Any) -> Optional[Dict[str, Any]]:
+    """timeline → 落锤统计（天数/景点数/总成本）；对假对象全防御退 None。"""
+    try:
+        return {
+            "city": timeline_obj.city,
+            "days": len(timeline_obj.days),
+            "spots": sum(len(day.items) for day in timeline_obj.days),
+            "total_cost": timeline_obj.total_cost,
+        }
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _plan_meta(rt: Any, timeline_obj: Any = None, error: Any = _UNSET) -> Dict[str, Any]:
+    """trace.plan_meta：数据源三态 / 搜索计划 / 规划错误 / 落锤统计。"""
+    if error is _UNSET:
+        error = getattr(rt, "_last_planner_error", None)
+    return {
+        "data_source": getattr(rt, "last_data_source", None),
+        "search_plan_tried": getattr(rt, "last_search_plan_tried", None),
+        "planner_error": error,
+        "timeline": _timeline_stats(timeline_obj) if timeline_obj is not None else None,
+    }
+
+
+def _finish_plan_trace(
+    request: HttpRequest,
+    recorder: PlanTraceRecorder,
+    timeline_obj: Any = None,
+    error: Any = _UNSET,
+) -> Dict[str, Any]:
+    """装配最终 trace 并留存 rt.last_plan_trace（done 分支查询用）。"""
+    rt = request.runtime
+    trace = recorder.assemble(plan_meta=_plan_meta(
+        rt, timeline_obj=timeline_obj, error=error,
+    ))
+    try:
+        rt.last_plan_trace = trace
+    except Exception:  # noqa: BLE001  观测旁路不阻断响应
+        logger.warning("plan trace: persist last_plan_trace failed", exc_info=True)
+    return trace
+
+
+def _plan_error(
+    message: str,
+    request: HttpRequest,
+    recorder: PlanTraceRecorder,
+    status: int = 400,
+) -> JsonResponse:
+    """失败响应（400/500）也带部分轨迹（排障价值：失败发生在哪一步）。"""
+    trace = _finish_plan_trace(request, recorder, error=message)
+    return JsonResponse({"error": message, "trace": trace}, status=status)
 
 
 # ── 历史规划归档（server_log 2026-09-15）───────────────────────────────
@@ -629,6 +791,28 @@ def tool_calls(request: HttpRequest) -> JsonResponse:
         "tool_calls": request.runtime.tool_call_log,
         "count": len(request.runtime.tool_call_log),
     })
+
+
+@require_http_methods(["GET"])
+def plan_trace(request: HttpRequest) -> JsonResponse:
+    """最近/进行中规划轨迹（``GET /api/plan-trace/``，plan trace 2026-09-16）。
+
+    C 端在 ``POST /api/plan/`` 等待期以 1~2s 间隔轮询本端点获得准实时步骤流；
+    轮询异常时静默降级为等响应后的 trace 回放。**全程无锁**（不碰
+    runtime.lock，规划长写期间也能即时返回）：
+
+    - ``running``：规划进行中，返回已完成步骤（recorder 挂在 runtime 上）；
+    - ``done``：返回最近一次完成（含失败）的完整 trace；
+    - ``idle``：本运行时尚无任何规划。
+    """
+    rt = request.runtime
+    recorder = getattr(rt, "current_trace_recorder", None)
+    if recorder is not None:
+        return JsonResponse({"status": "running", **recorder.progress()})
+    last = getattr(rt, "last_plan_trace", None)
+    if last is not None:
+        return JsonResponse({"status": "done", "trace": last})
+    return JsonResponse({"status": "idle", "trace": None})
 
 
 @csrf_exempt
@@ -1192,7 +1376,8 @@ def chat(request: HttpRequest) -> JsonResponse:
          "history": [{"role": "user|assistant", "content": "..."}, ...]}
 
     ``history`` 由 C 端维护（服务端无状态），仅最近 ``CHAT_HISTORY_LIMIT``
-    条生效。返回 ``{"reply": "...", "elapsed_ms": 123}``。
+    条生效。返回 ``{"reply": "...", "elapsed_ms": 123, "trace": {...}}``，
+    trace 为本次对话的 LLM/工具轨迹（plan trace 2026-09-16，schema 同规划）。
     错误：400 参数不合法；502 LLM 未配置或调用失败。
     """
     payload = _json_body(request)
@@ -1214,43 +1399,66 @@ def chat(request: HttpRequest) -> JsonResponse:
             cleaned.append({"role": role, "content": content})
     rt = request.runtime
     with rt.lock:
-        messages = [
-            {"role": "system", "content": _chat_system_prompt(rt)},
-            *cleaned,
-            {"role": "user", "content": message},
-        ]
+        # plan trace（2026-09-16）：chat 的 LLM 与工具轮次同样可观测——
+        # generate() 结果 dict 就在 B 手里（零 A 侧改动），工具步经
+        # logged_call → rt.current_trace_recorder 写入。
+        recorder = PlanTraceRecorder(request_id=getattr(request, "request_id", ""))
+        rt.current_trace_recorder = recorder
         try:
-            from call_llm.client_factory import create_llm_client
+            recorder.set_phase("data")
+            messages = [
+                {"role": "system", "content": _chat_system_prompt(rt)},
+                *cleaned,
+                {"role": "user", "content": message},
+            ]
+            try:
+                from call_llm.client_factory import create_llm_client
 
-            client = create_llm_client(ask_user_if_missing=False)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("chat: create_llm_client failed: %s", exc)
-            return _error(
-                "LLM 未配置（检查 DEEPSEEK_API_KEY / GLM_API_KEY 环境变量）",
-                status=502,
-            )
-        started = time.monotonic()
-        try:
-            result = client.generate(
-                messages,
-                tools=_chat_tools(rt),
-                tool_executor=lambda name, arguments: _exec_chat_tool(rt, name, arguments),
-                max_tool_rounds=5,   # v2.2：查询真源 + 改行程 + 校验重试需要更多轮
-                expect_json=False,   # 对话模式：工具回路后返回自然语言
-            )
+                client = create_llm_client(ask_user_if_missing=False)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("chat: create_llm_client failed: %s", exc)
+                return _error(
+                    "LLM 未配置（检查 DEEPSEEK_API_KEY / GLM_API_KEY 环境变量）",
+                    status=502,
+                )
+            started = time.monotonic()
+            try:
+                result = client.generate(
+                    messages,
+                    tools=_chat_tools(rt),
+                    tool_executor=lambda name, arguments: _exec_chat_tool(rt, name, arguments),
+                    max_tool_rounds=5,   # v2.2：查询真源 + 改行程 + 校验重试需要更多轮
+                    expect_json=False,   # 对话模式：工具回路后返回自然语言
+                )
+            except ValueError as exc:
+                # 工具轮次超限等「流程性」失败：给用户友好提示而非 502
+                elapsed_ms = _ms(started)
+                logger.warning("chat flow rejected: %s", exc)
+                return JsonResponse({
+                    "reply": "抱歉，这次调整没有完成（操作步骤过多）。"
+                             "请简化需求或分步提出，例如只调整一个景点。",
+                    "elapsed_ms": elapsed_ms,
+                    "trace": recorder.assemble(plan_meta={"error": str(exc)}),
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.error("chat failed: %s", exc)
+                return JsonResponse(
+                    {"error": f"LLM 调用失败: {exc}",
+                     "trace": recorder.assemble(plan_meta={"error": str(exc)})},
+                    status=502,
+                )
+            elapsed_ms = _ms(started)
             reply = str(result.get("content") or "").strip()
             if not reply:
                 reply = "已处理你的请求。"
-        except ValueError as exc:
-            # 工具轮次超限等「流程性」失败：给用户友好提示而非 502
-            logger.warning("chat flow rejected: %s", exc)
-            return JsonResponse({
-                "reply": "抱歉，这次调整没有完成（操作步骤过多）。"
-                         "请简化需求或分步提出，例如只调整一个景点。",
-                "elapsed_ms": int((time.monotonic() - started) * 1000),
-            })
-        except Exception as exc:  # noqa: BLE001
-            logger.error("chat failed: %s", exc)
-            return _error(f"LLM 调用失败: {exc}", status=502)
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-    return JsonResponse({"reply": reply, "elapsed_ms": elapsed_ms})
+            recorder.add_llm_step(
+                "对话生成", phase="llm", summary=reply,
+                model=getattr(client, "model_name", None), elapsed_ms=elapsed_ms,
+            )
+            recorder.extend_from_llm_meta(
+                result, phase="llm", title="对话工具轮", main_step=False,
+            )
+            trace = recorder.assemble()
+        finally:
+            rt.current_trace_recorder = None
+    return JsonResponse({"reply": reply, "elapsed_ms": elapsed_ms, "trace": trace})
