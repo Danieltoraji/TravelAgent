@@ -5,10 +5,11 @@
 > 本仓库是**人物 B（系统）的交付物**，对外交付面是 `django_server`（Django REST 服务）。
 > 本 README 面向 **A（智能决策）/ C（产品与展示）队友**。
 >
-> **当前状态（2026-09-15，`server_log_dxd_260915` 分支）**：多用户改造已落地（账号 Bearer token、
-> 每用户隔离运行时、SQLite 持久化、gthread 并发）；本轮补齐服务端日志观测
+> **当前状态（2026-09-16，`server_log_dxd_260915` 分支）**：多用户改造已落地（账号 Bearer token、
+> 每用户隔离运行时、SQLite 持久化、gthread 并发）；服务端日志观测
 > （LOGGING 双通道 + request_id + 报错补记录）与**历史规划归档**（`TripPlanArchive` +
-> `/api/plans/history/`）。测试基线 **622 passed**
+> `/api/plans/history/`）；本轮新增**规划轨迹**（plan trace：plan/chat 响应新增
+> `trace` 字段 + `GET /api/plan-trace/` 准实时轮询，见 §六）。测试基线 **637 passed**
 > （另有 3 例 ab_sync 用例依赖本机外层 A 仓库布局，无该布局的环境挂属预期）。
 
 ---
@@ -168,6 +169,19 @@ python -m demo.demo_scenario
 - `GET /api/plans/history/<id>/`：单份全量快照（requirement/timeline/events/replans/
   timeline_history/booking_state）；非本人一律 404。
 
+**规划轨迹**（plan trace，2026-09-16：让 C 端在 30~110s 规划等待期"看见"智能体）：
+
+- `POST /api/plan/`（及 `/api/chat/`）响应顶层新增 **`trace`**：结构化轨迹
+  （模型调用/工具调用/里程碑，含 `result_digest` 关键事实摘要，敏感参数脱敏）；
+  失败响应也带部分轨迹（定位失败环节）；契约只增不改；
+- `GET /api/plan-trace/`：**无锁**轮询端点（规划长写期间即时返回）——
+  `running`（已完成步骤）/ `done`（最近一次完整 trace）/ `idle`；
+- 前端形态：等待期轮询出实时步骤流（1~2s），完成后按 ms 比例回放（压缩到
+  10~15s）；轮询异常静默降级为回放。协议全量口径：
+  `docs/sync_notes_plan_trace_20260916.md`；
+- A 侧配合项（唯一代码改动，未合入前自动降级不影响其余轨迹）：
+  `docs/plan_trace_a_side_guide_20260916.md`。
+
 ---
 
 ## 七、设计决策要点（当前仍成立的）
@@ -189,7 +203,9 @@ python -m demo.demo_scenario
 `docs/transport_contract.md`（交通契约）、`docs/hotel_tool.md` 系列（酒店）、
 `docs/demo_event_injection.md` + `docs/event_injection_cookbook.md`（演示注入）、
 `docs/sync_notes_multiuser_for_ac_20260912.md`（多用户接入）、
-`docs/sync_notes_server_log_for_ac_20260915.md`（服务端日志与历史归档，最新交付口径）。
+`docs/sync_notes_server_log_for_ac_20260915.md`（服务端日志与历史归档）、
+`docs/sync_notes_plan_trace_20260916.md`（规划轨迹，最新交付口径）、
+`docs/plan_trace_a_side_guide_20260916.md`（A 侧透传工作项）。
 
 **已归档**：早期报告/对齐/交付/设计稿与带日期 sync notes 共 10 篇移入 `docs/archive/`
 （见 `docs/archive/README.md`），仅作历史参考，描述与现状不符处一律以代码为准。

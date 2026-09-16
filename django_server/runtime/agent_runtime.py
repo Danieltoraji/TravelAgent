@@ -34,6 +34,7 @@ from core.schemas import (
 )
 from execution.execution_agent import ExecutionAgent
 from runtime.a_interface import build_decision_hook, build_planner_hook
+from runtime.plan_trace import PlanTraceRecorder, SENSITIVE_ARG_KEYS
 from tools import MockWorld, ToolProvider, ToolRegistry, build_registry
 
 logger = logging.getLogger("runtime.agent")
@@ -108,18 +109,14 @@ def _replan_to_actions(replan: Any) -> List[ActionItem]:
     return actions
 
 
-# 日志脱敏（PR review 2026-09-15）：这些键的值是用户数据（如 booking 工具的
-# tel 联系电话），不落日志；其余键值（city/place 等排障关键值）保留
-_SENSITIVE_ARG_KEYS = {
-    "tel", "phone", "mobile", "password", "passwd", "token",
-    "secret", "id_card", "email",
-}
-
-
 def _brief_args(kwargs: Dict[str, Any]) -> str:
-    """工具调用参数概要（日志单行用）：敏感键脱敏 + JSON 序列化 + 截断 200。"""
+    """工具调用参数概要（日志单行用）：敏感键脱敏 + JSON 序列化 + 截断 200。
+
+    脱敏黑名单 SENSITIVE_ARG_KEYS 规范源在 runtime/plan_trace.py（plan trace
+    2026-09-16 迁入，与轨迹 args 共用同一份，防两处漂移）。
+    """
     safe = {
-        k: ("***" if str(k).lower() in _SENSITIVE_ARG_KEYS else v)
+        k: ("***" if str(k).lower() in SENSITIVE_ARG_KEYS else v)
         for k, v in kwargs.items()
     }
     try:
@@ -155,6 +152,15 @@ class AgentRuntime:
         self.replan_history: List[Dict[str, Any]] = []
         self.timeline_history: List[Dict[str, Any]] = []
         self.tool_call_log: List[Dict[str, Any]] = []
+        # plan trace（2026-09-16）：current_trace_recorder 仅在视图持
+        # runtime.lock 期间被设置（logged_call 读它写轨迹，enrich 线程池并发
+        # 安全）；last_* 供 GET /api/plan-trace/ 查询最近一次规划。均不落库
+        # （snapshot 白名单外，重启即失，v2 再考虑随归档持久化）。
+        self.current_trace_recorder: Optional[PlanTraceRecorder] = None
+        self.last_plan_trace: Optional[Dict[str, Any]] = None
+        self.last_llm_trace: Optional[Dict[str, Any]] = None
+        self.last_data_source: Optional[str] = None
+        self.last_search_plan_tried: bool = False
         # 酒店数据缓存：由 A/Planner/B 调度调用 hotel_tool 时自动记录，供 C 只读展示
         self.hotel_search_results: List[Dict[str, Any]] = []
         self.hotel_details: Dict[str, Any] = {}
@@ -284,11 +290,26 @@ class AgentRuntime:
             started = time.monotonic()
             try:
                 result = original_call(name, **kwargs)
-            except Exception:
+            except Exception as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
                 logger.exception(
                     "tool %s(%s) raised after %dms",
-                    name, _brief_args(kwargs),
-                    int((time.monotonic() - started) * 1000),
+                    name, _brief_args(kwargs), elapsed_ms,
+                )
+                # plan trace（2026-09-16）：异常调用同步补一条失败留痕
+                self.tool_call_log.append({
+                    "tool": name,
+                    "arguments": kwargs,
+                    "status": "error",
+                    "source": None,
+                    "elapsed_ms": elapsed_ms,
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "error": str(exc),
+                    "has_data": False,
+                    "data": None,
+                })
+                self._trace_add_tool(
+                    name, kwargs, "error", None, elapsed_ms, error=str(exc),
                 )
                 raise
             tool = self.registry.get(name)
@@ -308,6 +329,10 @@ class AgentRuntime:
                 "has_data": logged_data is not None,
                 "data": logged_data,
             })
+            self._trace_add_tool(
+                name, kwargs, result.status.value, result.source,
+                result.elapsed_ms, error=result.error, data=logged_data,
+            )
             _capture_hotel_data(name, kwargs, result)
             return result
 
@@ -335,6 +360,29 @@ class AgentRuntime:
 
         # 实例属性覆盖方法，确保 registry / ToolProvider / BookingManager 都走这里。
         self.registry.call = logged_call  # type: ignore[method-assign]
+
+    def _trace_add_tool(
+        self,
+        name: str,
+        arguments: Any,
+        status: str,
+        source: Optional[str],
+        elapsed_ms: Optional[int],
+        error: Optional[str] = None,
+        data: Any = None,
+    ) -> None:
+        """plan trace（2026-09-16）观测旁路：工具调用写入当前请求的轨迹缓冲。
+
+        recorder 由视图在持 runtime.lock 期间挂到 current_trace_recorder；
+        未挂（无规划进行中）时零开销直通。Recorder 内部已兜底不抛。
+        """
+        recorder = self.current_trace_recorder
+        if recorder is None:
+            return
+        recorder.add_tool(
+            name, arguments, status, source=source,
+            elapsed_ms=elapsed_ms, error=error, data=data,
+        )
 
     # -- 初始化 -----------------------------------------------------------
 
@@ -374,6 +422,10 @@ class AgentRuntime:
         self.replan_history = []
         self.timeline_history = []
         self.tool_call_log = []
+        # plan trace（2026-09-16）：新规划开始前清空上次规划的元信息
+        self.last_llm_trace = None
+        self.last_data_source = None
+        self.last_search_plan_tried = False
         self.hotel_search_results = []
         self.hotel_details = {}
         self.hotel_tags = None
@@ -388,6 +440,14 @@ class AgentRuntime:
         )
         timeline = planner_hook.generate_timeline()
         self._last_planner_error = getattr(planner_hook, "last_error", None)
+        # plan trace（2026-09-16）：数据源元信息 + A 侧透传的候选池 LLM 轨迹。
+        # last_llm_trace 是 A 侧工作项（见 docs/plan_trace_a_side_guide_20260916.md），
+        # 镜像未合入时 getattr 容忍缺失 → None，视图层降级为里程碑粒度。
+        self.last_llm_trace = getattr(planner_hook, "last_llm_trace", None)
+        self.last_data_source = getattr(planner_hook, "last_data_source", None)
+        self.last_search_plan_tried = bool(
+            getattr(planner_hook, "_search_plan_tried", False)
+        )
         self.init_timeline(timeline)
         return timeline
 
