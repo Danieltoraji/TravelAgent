@@ -94,6 +94,18 @@ replan；换宿后的新酒店 place 不同、指纹不同，不受影响。
   超时，环境相关），与本次改动无关，**已移交 B 侧排查**（同 rollinggo 序跑
   超时问题家族）。
 
+## 六、上线后修订（c5a4f2d，2026-09-16 深夜线上复验实测）
+
+首次部署（b914208）线上复验抓到一个缺口：**冷却指纹含 `hotel_id` 会被
+B 侧映射的不稳定性打穿**——同一家酒店两次触发满房事件，`hotel_id` 一次
+解析成池 id（`577984`）、一次回退成酒店名（映射多级兜底所致），指纹漂移 →
+冷却不命中 → 仍会重复 replan。
+
+**修订**：`_event_fingerprint` 剔除 `hotel_id`，酒店身份由 place/hotel_name
+承担（+1 回归用例 `test_hotel_id_unstable_not_breaking_cooldown`）。
+另记录一处 P3 观察（未修）：同酒店重复 `prepare` 被业务拒绝时走 HTTP 500
+（booking_prepare 视图 RuntimeError→500），语义上 400 更合适，后续可调。
+
 ## 五、部署与验证建议
 
 1. 部署后用满房注入验证闭环：`/api/debug/inject/`（hotel_full）或
