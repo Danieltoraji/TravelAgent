@@ -24,9 +24,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
+    from data_transmission.adapters import is_non_meal_name
     from data_transmission.city_graph import DEFAULT_GRAPH_DIR
     from data_transmission.restaurant import Restaurant, load_restaurants
 except ModuleNotFoundError:
+    from ..data_transmission.adapters import is_non_meal_name
     from ..data_transmission.city_graph import DEFAULT_GRAPH_DIR
     from ..data_transmission.restaurant import Restaurant, load_restaurants
 
@@ -204,6 +206,7 @@ class RestaurantResolver:
                 restaurants = []
         for restaurant in restaurants:
             self._extra_by_id.setdefault(restaurant.id, restaurant)
+        restaurants = self._filter_meal(restaurants)
         self._nearby_cache[key] = restaurants
         return restaurants
 
@@ -293,6 +296,7 @@ class RestaurantResolver:
                 candidates = list(self._nearby_pool(center, 25) or [])
             except Exception:  # noqa: BLE001
                 candidates = []
+            candidates = self._filter_meal(candidates)
             for restaurant in candidates:
                 self._extra_by_id.setdefault(restaurant.id, restaurant)
             for key, coord in members.items():
@@ -304,13 +308,23 @@ class RestaurantResolver:
             clusters.append({"members": list(members), "restaurants": candidates})
         return anchor_results, clusters
 
+    def _filter_meal(self, candidates: List[Restaurant]) -> List[Restaurant]:
+        """选餐候选过滤非正餐 venue（2026-09-15，用户南京实测：午餐选中咖啡店
+        /蜜雪冰城——food 附近搜索 POI 无正餐类目过滤）。
+
+        名称命中黑名单（adapters.is_non_meal_name）的候选剔除；**全命中时保留
+        原池**（放宽兜底：附近只有奶茶店的锚点也要有餐厅可用，观感差于没饭）。
+        """
+        filtered = [r for r in candidates if not is_non_meal_name(r.name)]
+        return filtered if filtered else candidates
+
     def _candidates_for(self, anchor_spot_id: str) -> List[Restaurant]:
         """select 的候选集：附近模式取锚点附近候选，失败/空 → 全池兜底。"""
         if self._nearby_pool is not None:
             nearby = self.nearby(anchor_spot_id)
             if nearby:
-                return nearby
-        return list(self.restaurants)
+                return self._filter_meal(nearby)
+        return self._filter_meal(list(self.restaurants))
 
     def _estimate_minutes(self, origin_id: str, destination_id: str) -> int:
         """矩阵缺边时的 haversine 兜底（附近餐厅不在景点矩阵里是常态）。"""

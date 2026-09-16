@@ -21,6 +21,12 @@ _RATING_TIERS = (
 )
 _RATING_LOW_BAD = 3.5   # 0 < rating < 3.5 主动压掉
 _RATING_LOW_PENALTY = 5
+# 自由文本强偏好加分（2026-09-15，用户南京实测「太平天国」三层全空 + 拍板
+# 「具体偏好应主题成簇多排」）：景点名称/别名含偏好词 → 每词加分（对齐
+# required 档）——专门手打的具体偏好是旅行核心意图，主题景点应成簇多排
+# 而非按普通标签 +3 混池。与 scenic 搜索召回配合：搜索计划把主题词作为
+# 搜索词召回的主题景点，名称天然含主题词 → 在此获得确定性兑现。
+_PREFERENCE_NAME_BONUS = 10
 # 9.2 十一节层三：距池质心距离惩罚（仅真源池启用）——>25km 每超 10km 减 2 分
 _DISTANCE_PENALTY_THRESHOLD_KM = 25.0
 _DISTANCE_PENALTY_PER_10KM = 2
@@ -314,6 +320,17 @@ def select_spots(
         # 2. preferred标签加分：每个匹配+3
         match_preferred = spot_tags & preferred_tags
         score += len(match_preferred) * 3
+
+        # 2.5 自由文本强偏好（2026-09-15）：名称/别名含偏好词 → 每词+10
+        # （对齐 required 档）——主题景点成簇多排；知识库标签名称命中同样
+        # 生效（「自然」命中山水园，方向正确无副作用）。
+        name_text = str(spot.get("name") or "")
+        alias_list = spot.get("alias") or []
+        if isinstance(alias_list, (list, tuple)):
+            name_text += "|" + "|".join(str(a) for a in alias_list)
+        for tag in preferred_tags:
+            if tag and tag in name_text:
+                score += _PREFERENCE_NAME_BONUS
 
         # 3. avoid标签扣分：每个匹配-8
         match_avoid = spot_tags & avoid_tags
