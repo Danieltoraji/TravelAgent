@@ -43,6 +43,7 @@ build_planner_hook，与 ``build_decision_hook`` 并列）：
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -123,6 +124,9 @@ from call_llm.planner_parts import (  # noqa: E402
 from call_llm.planner_parts.restaurants import (  # noqa: E402
     _collect_meal_anchors,
     _collect_plan_spot_names,
+)
+from call_llm.planner_parts.data_source import (  # noqa: E402
+    multi_city_enabled,
 )
 from call_llm.planner_parts.trip_segments import (  # noqa: E402
     _first_day_start_from_segments,
@@ -288,7 +292,13 @@ class BPlannerHook(
             def _live_loader(_city: str) -> Any:
                 from algorithoms.select_spots import select_spots
 
-                city_plan = getattr(self, "city_plan", None) or []
+                # D9 门控（2026-09-17 补）：多城执行需显式开 USE_MULTI_CITY——
+                # 首次上线实测跨城混排（门控亲和在真实链路失效，本地桩未复现），
+                # 回退阶段 1 行为（单城执行+连游计划告知）直至根因修复。
+                city_plan = (
+                    getattr(self, "city_plan", None) or []
+                    if multi_city_enabled() else []
+                )
 
                 def _single_city_select(target_city: str) -> Any:
                     # 单城原路径（方案 b / 无多城计划时，语义零变化）
@@ -402,7 +412,9 @@ class BPlannerHook(
         # 平山湖簇日被掏空），可选分配的亲和救不了已错位的锚。
         affinity_fn = None
         day_anchors = None
-        city_plan = getattr(self, "city_plan", None) or []
+        city_plan = (
+            getattr(self, "city_plan", None) or [] if multi_city_enabled() else []
+        )
         if spots and city_plan:
             # 方案 c 阶段 2：城市门控亲和（非当日城大负分，实现「哪几天在
             # 哪个城就选哪个城的景点」）；POI 级中心计划暂不叠加（多城城内

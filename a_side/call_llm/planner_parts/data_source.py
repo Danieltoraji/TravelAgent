@@ -47,6 +47,20 @@ from call_llm.planner_parts.trip_segments import (  # noqa: E402
 )
 
 
+def multi_city_enabled() -> bool:
+    """D9 门控：多城执行（逐城池+城市门控分天）需显式开启，默认关。
+
+    方案 c 阶段 2 首次上线实测跨城混排（门控亲和在真实链路失效，本地桩
+    未复现），回退阶段 1 行为（单城执行+连游计划告知）直至根因修复——
+    决策（city_plan 产出与告知）不受此门控，执行与落地受控。
+    """
+    import os
+
+    return os.environ.get("USE_MULTI_CITY", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+
+
 class DataSourceResolver:
     """数据源三态解析（mixin）：live / fake / live_fallback。"""
 
@@ -146,7 +160,9 @@ class DataSourceResolver:
         - 多城：按 day_from/day_to span 给每天写 ``city``，``timeline.cities``
           记录访问序城市列表（``timeline.city`` 保留首城语义不变）。
         """
-        plan = getattr(self, "city_plan", None) or []
+        plan = (
+            getattr(self, "city_plan", None) or [] if multi_city_enabled() else []
+        )
         if not plan or timeline is None or not getattr(timeline, "days", None):
             return timeline
         for day in timeline.days:
