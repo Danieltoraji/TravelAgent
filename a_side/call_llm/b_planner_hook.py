@@ -288,82 +288,87 @@ class BPlannerHook(
             def _live_loader(_city: str) -> Any:
                 from algorithoms.select_spots import select_spots
 
-                # 9.2 十二节 A / P5.7-S3：LLM 定制候选池搜索计划（惰性一次，
-                # gate off → None）。search_plan = {"buckets": [...],
-                # "center_schedule": [...], "trip_center": 过渡字段}；
-                # buckets 透传 B 侧 scenic；center_schedule（多中心）交给
-                # select_spots 做「最近中心」层三锚点、并保存在实例上供
-                # _planner 构造按日 affinity_fn（S3）；无 schedule 时回退单
-                # trip_center 过渡字段（12 节行为不变）。
-                search_plan = self._search_plan_once(_city)
-                trip_center = None
-                center_schedule = None
-                if isinstance(search_plan, dict):
-                    trip_center = search_plan.get("trip_center")
-                    cs = search_plan.get("center_schedule")
-                    if isinstance(cs, list) and cs:
-                        center_schedule = cs
-                self._live_center_schedule = center_schedule
+                city_plan = getattr(self, "city_plan", None) or []
 
-                # select_spots 的 spots_provider 是 fn(city) 单参：这里用闭包
-                # 注入天数联动的 limit + 必去景点强拉名单（LiveSpotsSource 支持）。
-                def _source_with_limit(city: str):
-                    spots_result = live_source(
-                        city,
-                        limit=self._pool_days_limit(),
-                        ensure_spots=self._must_visit_names(),
-                        search_plan=search_plan,
+                def _single_city_select(target_city: str) -> Any:
+                    # 单城原路径（方案 b / 无多城计划时，语义零变化）
+                    search_plan = self._search_plan_once(target_city)
+                    trip_center = None
+                    center_schedule = None
+                    if isinstance(search_plan, dict):
+                        trip_center = search_plan.get("trip_center")
+                        cs = search_plan.get("center_schedule")
+                        if isinstance(cs, list) and cs:
+                            center_schedule = cs
+                    self._live_center_schedule = center_schedule
+
+                    def _source_with_limit(city: str):
+                        return self._build_city_pool(
+                            city, self._pool_days_limit(), search_plan
+                        )
+
+                    return select_spots(
+                        self.requirement,
+                        ask_user_on_conflict=ask,
+                        spots_provider=_source_with_limit,
+                        trip_center=trip_center,
+                        center_schedule=center_schedule,
                     )
-                    # 审核迭代（2026-09-16 用户设计）：LLM 审池 → fail 则剔除
-                    # 并按建议词补搜重选 → 过了才加时间字段。上限 2 轮；审核
-                    # 失败/门控关 → 直接用当前池（行为与既往一致）
-                    if isinstance(spots_result, list) and self._pool_review is not None:
-                        limit_value = self._pool_days_limit()
-                        for _round in range(2):
-                            try:
-                                spots_result, meta = self._pool_review(spots_result)
-                            except Exception:  # noqa: BLE001
-                                break
-                            if meta.get("verdict") == "pass":
-                                break
-                            # fail：按建议词补搜重选（仅第一轮 fail 后补搜）
-                            more = meta.get("more_keywords") or []
-                            if _round == 0 and more:
-                                extra_plan = {"buckets": [
-                                    {"keywords": [city, "景点"], "quota_ratio": 0.5},
-                                    {"keywords": more[:4], "quota_ratio": 0.5},
-                                ]}
-                                try:
-                                    extra = live_source(
-                                        city, limit=limit_value,
-                                        ensure_spots=[], search_plan=extra_plan,
-                                    )
-                                    # 2026-09-17 补搜污染修复：id 续编 + names/spots
-                                    # 全池不变量重建（原内联合并只动池、不动
-                                    # live_source 状态，主搜批映射被 __call__ 整批
-                                    # 替换冲掉 → 规划期「缺少节点名称映射」→ 400）
-                                    spots_result = _merge_extra_results(
-                                        live_source, spots_result, extra
-                                    )
-                                except Exception:  # noqa: BLE001
-                                    pass
-                    # 过了审核（或迭代耗尽）→ 加时间字段（LLM 估时，原地填 duration）
-                    if self._duration_estimator is not None and isinstance(
-                        spots_result, list
-                    ):
-                        try:
-                            self._duration_estimator(spots_result)
-                        except Exception:  # noqa: BLE001
-                            pass
-                    return spots_result
 
-                return select_spots(
-                    self.requirement,
-                    ask_user_on_conflict=ask,
-                    spots_provider=_source_with_limit,
-                    trip_center=trip_center,
-                    center_schedule=center_schedule,
-                )
+                if not city_plan:
+                    return _single_city_select(_city)
+
+                # 多城（方案 c 阶段 2，2026-09-17）：逐城「主搜+审池迭代+估时」
+                # → 逐城 select_spots（per-city requirement：destination/days
+                # 换成该城）→ 按 select_spots 契约**三元组**合并（must/conflicts/
+                # scored；conflicts 为各城未决冲突，直接丢弃）→ spot.city 落地
+                # → plan_multi_day 城市亲和门控分天（_planner /
+                # build_city_affinity_fn）。降级（D8）：某城失败剔城并告知；
+                # 全部失败回退单城原路径。
+                merged_must: List[Dict[str, Any]] = []
+                merged_scored: List[Dict[str, Any]] = []
+                seen_names: set = set()
+                union_pools: List[Dict[str, Any]] = []
+                union_names: Dict[str, str] = {}
+                for cp in city_plan:
+                    city = str(cp.get("city") or "")
+                    cdays = int(cp.get("day_to") or 0) - int(cp.get("day_from") or 0) + 1
+                    if not city or cdays < 1:
+                        continue
+                    try:
+                        pool, triple = self._select_city_spots(city, cdays)
+                        must, _conflicts, scored = triple
+                    except Exception as exc:  # noqa: BLE001  剔城不阻断
+                        logger.warning("多城候选构建失败（%s），剔城：%s", city, exc)
+                        if callable(getattr(self, "_add_notice", None)):
+                            self._add_notice(f"{city} 候选获取失败，已从连游中剔除")
+                        continue
+                    for s in pool or []:
+                        name = str(s.get("name") or "")
+                        if name and name not in union_names:
+                            union_names[name] = name
+                            s["city"] = city     # 城市字段落地（亲和门控依赖）
+                            union_pools.append(s)
+                    for bucket, spots_part in (
+                        (merged_must, must), (merged_scored, scored),
+                    ):
+                        for s in spots_part or []:
+                            name = str(s.get("name") or "")
+                            if not name or name in seen_names:
+                                continue
+                            seen_names.add(name)
+                            s["city"] = city
+                            bucket.append(s)
+                if not merged_must and not merged_scored:
+                    logger.warning("多城候选全部失败，回退单城路径（%s）", _city)
+                    return _single_city_select(_city)
+                # 全池不变量：供给期矩阵/名称映射覆盖全部候选（跨城合并语义）
+                live_source.spots = union_pools
+                live_source.names = {
+                    str(s.get("id") or s.get("name") or ""): str(s.get("name") or "")
+                    for s in union_pools
+                }
+                return [merged_must, [], merged_scored]
 
             self._live_spots_provider = _live_loader
             self._live_spots_source = live_source
@@ -397,7 +402,15 @@ class BPlannerHook(
         # 平山湖簇日被掏空），可选分配的亲和救不了已错位的锚。
         affinity_fn = None
         day_anchors = None
-        if spots and getattr(self, "_live_center_schedule", None):
+        city_plan = getattr(self, "city_plan", None) or []
+        if spots and city_plan:
+            # 方案 c 阶段 2：城市门控亲和（非当日城大负分，实现「哪几天在
+            # 哪个城就选哪个城的景点」）；POI 级中心计划暂不叠加（多城城内
+            # 分布由评分与时间窗决定，阶段 2.5 叠 per-city center_schedule）
+            from algorithoms.select_spots import build_city_affinity_fn
+
+            affinity_fn = build_city_affinity_fn(city_plan)
+        elif spots and getattr(self, "_live_center_schedule", None):
             from algorithoms.select_spots import (
                 build_center_affinity_fn,
                 resolve_day_anchors,
@@ -435,6 +448,97 @@ class BPlannerHook(
             day_anchors=day_anchors,
             min_spots=min_spots,
         )
+
+    def _build_city_pool(
+        self, city: str, limit: int, search_plan: Optional[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """单城候选池构建（主搜 + 审池迭代 + 补搜 + 估时）。
+
+        从 `_source_with_limit` 抽出（方案 c 阶段 2）：单城路径与多城路径
+        共用同一套迭代流。语义与既往完全一致（含 `_merge_extra_results`
+        全池不变量修复）。
+        """
+        spots_result = self._live_spots_source(
+            city,
+            limit=limit,
+            ensure_spots=self._must_visit_names(),
+            search_plan=search_plan,
+        )
+        # 审核迭代（2026-09-16 用户设计）：LLM 审池 → fail 则剔除并按建议词
+        # 补搜重选 → 过了才加时间字段。上限 2 轮；审核失败/门控关 → 当前池
+        if isinstance(spots_result, list) and self._pool_review is not None:
+            for _round in range(2):
+                try:
+                    spots_result, meta = self._pool_review(spots_result)
+                except Exception:  # noqa: BLE001
+                    break
+                if meta.get("verdict") == "pass":
+                    break
+                # fail：按建议词补搜重选（仅第一轮 fail 后补搜）
+                more = meta.get("more_keywords") or []
+                if _round == 0 and more:
+                    extra_plan = {"buckets": [
+                        {"keywords": [city, "景点"], "quota_ratio": 0.5},
+                        {"keywords": more[:4], "quota_ratio": 0.5},
+                    ]}
+                    try:
+                        extra = self._live_spots_source(
+                            city, limit=limit,
+                            ensure_spots=[], search_plan=extra_plan,
+                        )
+                        # 2026-09-17 补搜污染修复：id 续编 + names/spots
+                        # 全池不变量重建
+                        spots_result = _merge_extra_results(
+                            self._live_spots_source, spots_result, extra
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+        # 过了审核（或迭代耗尽）→ 加时间字段（LLM 估时，原地填 duration）
+        if self._duration_estimator is not None and isinstance(spots_result, list):
+            try:
+                self._duration_estimator(spots_result)
+            except Exception:  # noqa: BLE001
+                pass
+        return spots_result
+
+    def _select_city_spots(
+        self, city: str, cdays: int
+    ) -> tuple:
+        """多城管线的每城步骤：城内池构建 → select_spots 按该城天数挑选。
+
+        per-city requirement：destination/days 换成该城（select_spots 内部
+        按 destination 过滤池子、天数驱动分配）；必去收敛到该城池内（其他
+        城的必去不进本城选择）。返回 ``(pool, selected)``——pool 供多城
+        合并全池（矩阵/名称映射），selected 供跨城合并分天。
+        """
+        from algorithoms.select_spots import select_spots
+
+        search_plan = self._search_plan_once(city)
+        limit = max(10, cdays * 5)
+        pool = self._build_city_pool(city, limit, search_plan)
+        content = self.requirement.get("content") or {}
+        pool_names = {str(s.get("name") or "") for s in pool or []}
+        req_city = {
+            **self.requirement,
+            "content": {
+                **content,
+                "destination": city,
+                "days": cdays,
+                "constraints": {
+                    **(content.get("constraints") or {}),
+                    "must_visit": [
+                        m for m in (content.get("constraints") or {}).get("must_visit") or []
+                        if str(m) in pool_names
+                    ],
+                },
+            },
+        }
+        selected = select_spots(
+            req_city,
+            ask_user_on_conflict=self._ask_user_on_conflict,
+            spots_provider=lambda _c: pool,
+        )
+        return pool, selected
 
     def _empty_timeline(self) -> TripTimeline:
         start = _as_date(self.start_date)
@@ -480,9 +584,11 @@ class BPlannerHook(
         if self._use_live:
             # 阶段 b（2026-09-14）：编排门控开 → LLM 主导编排路径（未接受/
             # 异常真回落固定管线）；默认关 → 原固定管线零回归。
+            # 方案 c 阶段 2（2026-09-17）：多城 city_plan 在场时跳过编排——
+            # 编排器工作台按单城假设搭建，多城走固定管线（城市亲和门控）。
             from call_llm.orchestrator import use_llm_orchestrator
 
-            if use_llm_orchestrator():
+            if use_llm_orchestrator() and not getattr(self, "city_plan", None):
                 return self._generate_orchestrated()
             return self._generate_live_or_fallback()
         return self._run_pipeline(

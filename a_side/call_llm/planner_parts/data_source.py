@@ -82,34 +82,43 @@ class DataSourceResolver:
         return names
 
     def _search_plan_once(self, city: str) -> Optional[Dict[str, Any]]:
-        """9.2 十二节 A：LLM 定制候选池搜索计划（惰性生成一次并缓存）。
+        """9.2 十二节 A：LLM 定制候选池搜索计划（**per-city 缓存**，惰性生成）。
 
         - gate 关 / 无 planner → None（B 侧 scenic 走内置固定词表，零回归）；
         - 成功 → ``{"buckets": [...]}``；LLM 失败 / 校验不过 → planner 内部
-          返回 None（同样回退固定词表），此处只做一次尝试不重试。
+          返回 None（同样回退固定词表），此处只做一次尝试不重试；
+        - 方案 c 阶段 2（2026-09-17）：单槽缓存改 **per-city 字典**——多城
+          逐城定制 buckets，第二城不得复用第一城的搜索计划。
         """
         planner = getattr(self, "_search_planner", None)
-        if planner is None or getattr(self, "_search_plan_tried", False):
-            return getattr(self, "_search_plan", None)
-        self._search_plan_tried = True
+        cache = getattr(self, "_search_plan_cache", None)
+        if cache is None:
+            cache = {}
+            self._search_plan_cache = cache
+        if city in cache:
+            return cache[city]
         content = self.requirement.get("content") or {}
-        try:
-            plan = planner.plan_for(
-                str(city or ""),
-                days=int(content.get("days") or 2),
-                preferred_tags=(content.get("preferences") or {}).get(
-                    "preferred_tags"
-                ),
-                must_visit=self._must_visit_names(),
-            )
-            # 候选池 LLM 轨迹透传（plan_trace 工作项，2026-09-16）：planner 上
-            # last_llm_trace（generate 完整轨迹）挂到 BPlannerHook 实例，B 侧
-            # runtime 经 getattr(planner_hook, "last_llm_trace") 收集
-            self.last_llm_trace = getattr(planner, "last_llm_trace", None)
-        except Exception as exc:  # noqa: BLE001  计划失败不阻断候选池
-            logger.warning("search_plan 生成失败（%s）：%s", city, exc)
-            plan = None
-        self._search_plan = plan
+        plan = None
+        if planner is not None:
+            try:
+                plan = planner.plan_for(
+                    str(city or ""),
+                    days=int(content.get("days") or 2),
+                    preferred_tags=(content.get("preferences") or {}).get(
+                        "preferred_tags"
+                    ),
+                    must_visit=self._must_visit_names(),
+                )
+                # 候选池 LLM 轨迹透传（plan_trace 工作项，2026-09-16）：planner 上
+                # last_llm_trace（generate 完整轨迹）挂到 BPlannerHook 实例，B 侧
+                # runtime 经 getattr(planner_hook, "last_llm_trace") 收集
+                self.last_llm_trace = getattr(planner, "last_llm_trace", None)
+            except Exception as exc:  # noqa: BLE001  计划失败不阻断候选池
+                logger.warning("search_plan 生成失败（%s）：%s", city, exc)
+                plan = None
+        cache[city] = plan
+        self._search_plan = plan            # 兼容旧单槽读取方（观测/测试）
+        self._search_plan_tried = True
         return plan
 
     def _add_notice(self, text: str) -> None:
@@ -128,6 +137,24 @@ class DataSourceResolver:
         )
         self.last_data_source = PipelineSource.LIVE_FALLBACK.value
         self.last_error = reason
+        return timeline
+
+    def _apply_city_plan(self, timeline: TripTimeline) -> TripTimeline:
+        """多城计划落地（方案 c 阶段 2，2026-09-17）：DayPlan.city 按天写回。
+
+        - ``city_plan`` 缺省（单城）→ 原样返回（新字段保持默认，契约零感知）；
+        - 多城：按 day_from/day_to span 给每天写 ``city``，``timeline.cities``
+          记录访问序城市列表（``timeline.city`` 保留首城语义不变）。
+        """
+        plan = getattr(self, "city_plan", None) or []
+        if not plan or timeline is None or not getattr(timeline, "days", None):
+            return timeline
+        for day in timeline.days:
+            for cp in plan:
+                if cp["day_from"] <= day.day <= cp["day_to"]:
+                    day.city = str(cp.get("city") or "")
+                    break
+        timeline.cities = [str(cp.get("city") or "") for cp in plan]
         return timeline
 
     def _provision_live_planning(self) -> Dict[str, Any]:
@@ -283,12 +310,12 @@ class DataSourceResolver:
         self.fallback_notices = plan_fallback_notices(
             plan, list(getattr(self, "fallback_notices", []) or [])
         )
-        timeline = plan_to_trip_timeline(
+        timeline = self._apply_city_plan(plan_to_trip_timeline(
             plan,
             city=self.city,
             start_date=self.start_date,
             plan_id=self.plan_id,
-        )
+        ))
         self._current_timeline = timeline
         return timeline
 
@@ -385,12 +412,12 @@ class DataSourceResolver:
         self.fallback_notices = plan_fallback_notices(
             plan, list(getattr(self, "fallback_notices", []) or [])
         )
-        timeline = plan_to_trip_timeline(
+        timeline = self._apply_city_plan(plan_to_trip_timeline(
             plan,
             city=self.city,
             start_date=self.start_date,
             plan_id=self.plan_id,
-        )
+        ))
         self._current_timeline = timeline
         return timeline
 
@@ -446,11 +473,11 @@ class DataSourceResolver:
         # 城际两阶段·阶段2（十三节）：酒店已知后站对精修（到达站重选 +
         # 尾/首腿实测填充）；无酒店坐标/无工具时原段返回
         self._refine_intercity_stations(plan)
-        timeline = plan_to_trip_timeline(
+        timeline = self._apply_city_plan(plan_to_trip_timeline(
             plan,
             city=self.city,
             start_date=self.start_date,
             plan_id=self.plan_id,
-        )
+        ))
         self._current_timeline = timeline
         return timeline

@@ -395,6 +395,49 @@ def select_spots(
     return [must_spots,unresolved_conflicts,scored_spots]
 
 
+# 城市门控惩罚（方案 c 阶段 2）：非当日城景点的大负分——分配排序中恒排最后，
+# 当日城有候选时永不被选中；仅当日城候选不足时兜底填充（不硬拒，防空天）。
+_CITY_GATE_PENALTY = -1000.0
+
+
+def build_city_affinity_fn(
+    city_plan: Sequence[dict],
+) -> Optional[Callable[[dict, int], float]]:
+    """方案 c 阶段 2：多城计划的**城市门控亲和函数**。
+
+    ``city_plan``：``[{"city": "沈阳", "day_from": 1, "day_to": 2}, ...]``
+    （归一层产出，按访问序）。返回 ``(spot, day_index0) -> float``：
+
+    - spot 所属城市 ≠ 该日所属城市 → ``_CITY_GATE_PENALTY``（大负分）——
+      plan_multi_day 可选分配按亲和排序，跨城景点被自然排到末位，实现
+      「哪几天在哪个城就选哪个城的景点」；
+    - 同城 / spot 无 city 字段（假池旧数据） / 该日不在任何 span → 0 中性。
+
+    供 ``plan_multi_day(affinity_fn=...)`` 使用；与 POI 级 center_schedule
+    亲和（``build_center_affinity_fn``）互斥使用（多城阶段 2 先不做城内
+    POI 中心，城内分布由评分与时间窗决定）。
+    """
+    spans = [
+        (str(cp.get("city") or ""), int(cp.get("day_from") or 0),
+         int(cp.get("day_to") or 0))
+        for cp in city_plan or []
+    ]
+    if not spans:
+        return None
+
+    def affinity(spot: dict, index: int) -> float:
+        day_no = index + 1
+        day_city = next(
+            (c for c, f, t in spans if f <= day_no <= t), ""
+        )
+        spot_city = str(spot.get("city") or "")
+        if day_city and spot_city and spot_city != day_city:
+            return _CITY_GATE_PENALTY
+        return 0.0
+
+    return affinity
+
+
 def resolve_day_anchors(
     center_schedule: list,
     candidate_spots: Sequence[Sequence[dict]],
