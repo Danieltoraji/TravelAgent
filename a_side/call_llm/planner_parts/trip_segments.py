@@ -1098,6 +1098,14 @@ class TripSegmentAttacher:
                     "城际地名归一：%s=%s → %s（%s）", key, raw, canonical, result.method
                 )
                 content[key] = canonical
+        # 目的地联动（方案 b 完整版，2026-09-17）：self.city 在构造时固化，
+        # 池搜索/矩阵/城际全链都读它——归一化写回 content 后必须同步，否则
+        # 目的地为区域名（「东北」）时池子仍按原名搜。
+        dest = str((content.get("destination") or "")).strip()
+        if dest and dest != self.city:
+            logger.info("目的地归一联动：%s → %s（池/矩阵/城际全链生效）",
+                        self.city, dest)
+            self.city = dest
 
     def _llm_resolve_place_city(
         self, raw: str, content: Dict[str, Any], key: str

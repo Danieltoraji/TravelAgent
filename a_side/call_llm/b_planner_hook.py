@@ -463,6 +463,20 @@ class BPlannerHook(
         if not regenerate and self._current_timeline is not None:
             return self._current_timeline
         self.fallback_notices = []  # 每次规划 fresh（告知只描述本次降级）
+        # 地名映射方案 b 完整版（2026-09-17）：目的地/出发地归一**先行**——
+        # 此前归一只在 _build_trip_segments（城际构建）里做，目的地为区域名
+        # （「东北」）时景点池已按原名搜出垃圾或直接 LiveDataError。提前到
+        # 管线入口：LLM 地址→主城 + 二次确认写回 + self.city 联动（池/矩阵/
+        # 城际全链读干净地名）。_build_trip_segments 内的调用保留（幂等：
+        # 已归一城市二次 normalize 直接命中，不再触发 LLM）。
+        try:
+            content0 = self.requirement.get("content")
+            if isinstance(content0, dict) and (
+                content0.get("origin") or content0.get("destination")
+            ):
+                self._normalize_intercity_places(content0)
+        except Exception as exc:  # noqa: BLE001  归一失败不阻断规划
+            logger.warning("入口地名归一失败（用原值）：%s", exc)
         if self._use_live:
             # 阶段 b（2026-09-14）：编排门控开 → LLM 主导编排路径（未接受/
             # 异常真回落固定管线）；默认关 → 原固定管线零回归。
