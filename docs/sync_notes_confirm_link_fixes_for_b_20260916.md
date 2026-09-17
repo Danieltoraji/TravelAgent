@@ -124,3 +124,13 @@ fail 触发的**补搜**把 `LiveSpotsSource.names/spots` 整批替换冲掉主�
 names/spots 全池不变量），**`a_side/call_llm/b_planner_hook.py` 已同步更新
 （SHA256 全等）**，本仓无 B 侧代码改动。A 820 / B 669 全绿，线上复验
 200 + 主题景点成簇进行程。
+
+## 八、追加（2026-09-17 晚）：a_side 镜像更新通知（LLM 出发地归一）
+
+出发地填小区级地址（如「天津东丽区旭茗苑」）此前只有 driving 兜底（不查
+火车班次）。已加 LLM 地址→主城归一（PlaceNormalizer 未命中时触发，
+USE_LLM_TOOLS 门控、二次确认防幻觉、失败不阻断），**a_side 两个文件已同步
+（SHA256 全等）：`a_side/call_llm/address_city_resolver.py`（新）+
+`a_side/call_llm/planner_parts/trip_segments.py`**。本仓 B 侧代码无改动。
+线上实证：同地址出发 → 真源高铁（天津西→西安北 G1713）+ notices 告知。
+A 828 / B 669 全绿。
