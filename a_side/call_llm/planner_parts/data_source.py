@@ -48,17 +48,10 @@ from call_llm.planner_parts.trip_segments import (  # noqa: E402
 
 
 def multi_city_enabled() -> bool:
-    """D9 门控：多城执行（逐城池+城市门控分天）需显式开启，默认关。
+    """D9 门控（re-export，规范源在 trip_segments——防循环导入）。"""
+    from call_llm.planner_parts.trip_segments import multi_city_enabled as _fn
 
-    方案 c 阶段 2 首次上线实测跨城混排（门控亲和在真实链路失效，本地桩
-    未复现），回退阶段 1 行为（单城执行+连游计划告知）直至根因修复——
-    决策（city_plan 产出与告知）不受此门控，执行与落地受控。
-    """
-    import os
-
-    return os.environ.get("USE_MULTI_CITY", "").strip().lower() in (
-        "1", "true", "yes",
-    )
+    return _fn()
 
 
 class DataSourceResolver:
@@ -158,6 +151,7 @@ class DataSourceResolver:
         first_day_start_time: Optional[str] = None,
         last_day_end_minutes: Optional[int] = None,
         min_spots: int = 0,
+        city_windows: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """方案 c 阶段 2：按 city_plan **逐城规划再拼接**（城市纯度结构性保证）。
 
@@ -191,6 +185,16 @@ class DataSourceResolver:
             if not must and not scored:
                 self._add_notice(f"{city} 无可用候选，已从连游中剔除")
                 continue
+            # 逐城窗口（方案 c 阶段 3）：transfer/outbound 段的到达+90 /
+            # 出发−60 → 每城 first_day_start / last_day_end；无窗口的城
+            # 回落 trip 级值（首城/末城）或 None（默认 09:00 起）。
+            w = (city_windows or {}).get(city) or [None, None]
+            first_start = w[0] or (
+                first_day_start_time if idx == 0 else None
+            )
+            last_end = w[1] if w[1] is not None else (
+                last_day_end_minutes if idx == last_index else None
+            )
             req_city = {
                 **self.requirement,
                 "content": {
@@ -204,12 +208,8 @@ class DataSourceResolver:
                     req_city,
                     [must, [], scored],
                     travel_time_provider=travel_time_provider,
-                    first_day_start_time=(
-                        first_day_start_time if idx == 0 else None
-                    ),
-                    last_day_end_minutes=(
-                        last_day_end_minutes if idx == last_index else None
-                    ),
+                    first_day_start_time=first_start,
+                    last_day_end_minutes=last_end,
                     min_spots=min_spots,
                 )
             except Exception as exc:  # noqa: BLE001  剔城不阻断
@@ -324,6 +324,8 @@ class DataSourceResolver:
             "segments": segments,
             "first_day_start_time": first_day_start_time,
             "last_day_end_minutes": last_day_end_minutes,
+            # 方案 c 阶段 3：多城逐城窗口（transfer/outbound 到达+90、出发−60）
+            "city_windows": getattr(self, "_multi_city_windows", None),
             "live_hotels": live_hotels,
             "base_matrix": base_matrix,
             "name_to_coord": name_to_coord,
@@ -369,6 +371,10 @@ class DataSourceResolver:
                     first_day_start_time=first_day_start_time,
                     last_day_end_minutes=last_day_end_minutes,
                     min_spots=_PRODUCTION_MIN_SPOTS,
+                    city_windows=(
+                        provisioned.get("city_windows")
+                        if isinstance(provisioned, dict) else None
+                    ),
                 )
                 if plan is None:
                     return self._fallback_fake_pipeline(
