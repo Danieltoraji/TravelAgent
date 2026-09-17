@@ -153,6 +153,92 @@ class DataSourceResolver:
         self.last_error = reason
         return timeline
 
+    def _plan_multi_city(
+        self, spots: Any, *, travel_time_provider: Any = None,
+        first_day_start_time: Optional[str] = None,
+        last_day_end_minutes: Optional[int] = None,
+        min_spots: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """方案 c 阶段 2：按 city_plan **逐城规划再拼接**（城市纯度结构性保证）。
+
+        全局合并规划在真实池上跨城混排（2026-09-17 线上实测：repair/fine-tune/
+        refill 打磨阶段不感知城市，把门控预分配的跨城景点换了回去），改为每城
+        独立跑 ``plan_multi_day``（单城假设城内成立，复用全部既有管线），再按
+        访问序拼接天序列。spots 为 select_spots 契约三元组（各城 spot 已带
+        city 字段）；剔城时天数并入相邻城（Σ 恒等于总天数）。
+        """
+        from algorithoms.planner import plan_multi_day
+
+        city_plan = getattr(self, "city_plan", None) or []
+        if isinstance(spots, list) and len(spots) == 3:
+            must_all, _conflicts, scored_all = spots
+        else:
+            must_all, scored_all = [], (spots or [])
+        content = self.requirement.get("content") or {}
+
+        merged_days: List[Dict[str, Any]] = []
+        total_cost = 0.0
+        new_plan: List[Dict[str, int]] = []
+        cursor = 1
+        last_index = len(city_plan) - 1
+        for idx, cp in enumerate(city_plan):
+            city = str(cp.get("city") or "")
+            cdays = int(cp.get("day_to") or 0) - int(cp.get("day_from") or 0) + 1
+            if not city or cdays < 1:
+                continue
+            must = [s for s in must_all if str(s.get("city") or "") == city]
+            scored = [s for s in scored_all if str(s.get("city") or "") == city]
+            if not must and not scored:
+                self._add_notice(f"{city} 无可用候选，已从连游中剔除")
+                continue
+            req_city = {
+                **self.requirement,
+                "content": {
+                    **content,
+                    "destination": city,
+                    "days": cdays,
+                },
+            }
+            try:
+                sub = plan_multi_day(
+                    req_city,
+                    [must, [], scored],
+                    travel_time_provider=travel_time_provider,
+                    first_day_start_time=(
+                        first_day_start_time if idx == 0 else None
+                    ),
+                    last_day_end_minutes=(
+                        last_day_end_minutes if idx == last_index else None
+                    ),
+                    min_spots=min_spots,
+                )
+            except Exception as exc:  # noqa: BLE001  剔城不阻断
+                logger.warning("多城规划失败（%s），剔城：%s", city, exc)
+                self._add_notice(f"{city} 规划失败，已从连游中剔除")
+                continue
+            if not isinstance(sub, dict) or not sub.get("days"):
+                self._add_notice(f"{city} 规划未产出，已从连游中剔除")
+                continue
+            day_from = cursor
+            for d in sub["days"]:
+                d["day"] = cursor
+                cursor += 1
+                merged_days.append(d)
+            new_plan.append({
+                "city": city, "day_from": day_from, "day_to": cursor - 1,
+            })
+            total_cost += float(sub.get("total_cost") or 0)
+        if not merged_days:
+            return None
+        # span 压缩回写（剔城后天数并入相邻城，_apply_city_plan 与之一致）
+        self.city_plan = new_plan
+        logger.info(
+            "多城逐城规划完成：%s",
+            " → ".join(f"{p['city']}{p['day_to'] - p['day_from'] + 1}天"
+                       for p in new_plan),
+        )
+        return {"days": merged_days, "total_cost": total_cost}
+
     def _apply_city_plan(self, timeline: TripTimeline) -> TripTimeline:
         """多城计划落地（方案 c 阶段 2，2026-09-17）：DayPlan.city 按天写回。
 
@@ -274,7 +360,21 @@ class DataSourceResolver:
         base_matrix = provisioned["base_matrix"]
         name_to_coord = provisioned["name_to_coord"]
         try:
-            if self._travel_time_provider is not None:
+            if getattr(self, "city_plan", None) and multi_city_enabled():
+                # 方案 c 阶段 2：多城**逐城规划再拼接**（2026-09-17 线上实测
+                # 全局合并规划在打磨阶段跨城混排，逐城规划结构性保证纯度）。
+                # 餐厅两阶段暂不叠加（跨城餐厅定位属阶段 3/4），行程含抽象餐段。
+                plan = self._plan_multi_city(
+                    spots, travel_time_provider=self._travel_time_provider,
+                    first_day_start_time=first_day_start_time,
+                    last_day_end_minutes=last_day_end_minutes,
+                    min_spots=_PRODUCTION_MIN_SPOTS,
+                )
+                if plan is None:
+                    return self._fallback_fake_pipeline(
+                        "多城规划未产出可用计划，已回退假数据"
+                    )
+            elif self._travel_time_provider is not None:
                 # 阶段 1 规划：restaurants=None → meal 段抽象无餐厅（plan_multi_day
                 # 不自行拉假池餐厅），只用于确定用餐锚点 + 计划内景点集合。
                 plan1 = self._planner(
