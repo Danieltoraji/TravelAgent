@@ -1071,7 +1071,19 @@ class TripSegmentAttacher:
                 # LLM 幻觉天然被拦），命中走既有真源精排；LLM 失败/门控关
                 # 保持原值不阻断。原文已 stash 进 origin_address/return_address
                 # 供「家→车站」市内腿实测（见本方法上方 stash 逻辑）。
-                mapped = self._llm_resolve_place_city(raw, content, key)
+                # 方案 c 阶段 1（2026-09-17）：目的地为区域名且天数足够 →
+                # 先尝试多城计划（city_plan，硬校验+重问一次+失败回退）；
+                # 产出后**执行仍按首城走单城管线**（决策与执行解耦，线上
+                # 零行为变化，阶段 2 起执行层逐城消费）。产出失败 → 落回
+                # 方案 b 单主城归一。origin 侧不做多城（出发地是单点）。
+                city_plan = (
+                    self._plan_region_cities(raw, content, key)
+                    if key == "destination" else None
+                )
+                mapped = (
+                    city_plan[0]["city"] if city_plan
+                    else self._llm_resolve_place_city(raw, content, key)
+                )
                 if mapped and mapped != raw:
                     try:
                         retry = normalizer.normalize(mapped)
@@ -1134,6 +1146,53 @@ class TripSegmentAttacher:
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM 地址归一调用异常（%s=%s）：%s", key, raw, exc)
             return None
+
+    def _plan_region_cities(
+        self, raw: str, content: Dict[str, Any], key: str
+    ) -> Optional[List[Dict[str, int]]]:
+        """区域目的地 → 多城计划（方案 c 阶段 1，决策与执行解耦）。
+
+        产出 ``city_plan``（按访问序的每城天数分配）挂到 ``self.city_plan``
+        并告知用户；**执行仍按首城走单城管线**（阶段 2 起逐城消费）。
+        规则定界与硬校验见 ``region_city_planner``；非区域/天数不足/
+        门控关/LLM 失败 → None（调用方落回方案 b 单主城归一，不阻断）。
+        """
+        if getattr(self, "_region_city_planner", None) is None:
+            try:
+                from call_llm.region_city_planner import build_region_city_planner
+
+                self._region_city_planner = build_region_city_planner()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("LLM 多城计划构建失败，不启用：%s", exc)
+                self._region_city_planner = None
+        planner = getattr(self, "_region_city_planner", None)
+        if planner is None:
+            return None
+        try:
+            days = int(content.get("days") or 0)
+        except (TypeError, ValueError):
+            days = 0
+        prefs = (content.get("preferences") or {}).get("preferred_tags")
+        origin = str(content.get("origin") or "").strip()
+        try:
+            plan = planner(raw, days, prefs, origin)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM 多城计划调用异常（%s）：%s", raw, exc)
+            return None
+        if not plan:
+            return None
+        self.city_plan = plan
+        alloc = " → ".join(
+            f"{p['city']}{p['day_to'] - p['day_from'] + 1}天" for p in plan
+        )
+        logger.info("多城计划产出（%s）： %s（执行暂按首城 %s）",
+                    raw, alloc, plan[0]["city"])
+        if callable(getattr(self, "_add_notice", None)):
+            self._add_notice(
+                f"目的地「{raw}」范围较大，连游计划：{alloc}"
+                f"（当前版本按首城 {plan[0]['city']} 规划）"
+            )
+        return plan
 
     def _local_route_fn(self) -> Optional[Callable[[str, str], Optional[int]]]:
         """市内衔接真源化（2026-09-04）：高德驾车实测「出发地→车站」分钟。

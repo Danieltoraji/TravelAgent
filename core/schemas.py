@@ -206,6 +206,9 @@ class DayPlan:
     day: int
     date: date
     items: List[Place] = field(default_factory=list)
+    # 多城区域游（方案 c 阶段 1，2026-09-17，契约只增不改）：该天所在城市。
+    # 单城行程恒为 ""（既有消费方零感知）。
+    city: str = ""
 
 
 @dataclass
@@ -224,6 +227,9 @@ class TripTimeline:
     #   ticket 门票 / guide 讲解 / hotel 酒店（房费）/ meal 餐饮（人均 × 人数）
     cost_breakdown: Dict[str, float] = field(default_factory=dict)
     walking_distance: float = 0.0  # 总步行距离（km）
+    # 多城区域游（方案 c 阶段 1，2026-09-17，契约只增不改）：行程涉及的城市
+    # 列表（按访问序）。单城行程恒为 []，timeline.city 保留首城/主城语义。
+    cities: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
