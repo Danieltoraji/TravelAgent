@@ -134,3 +134,13 @@ USE_LLM_TOOLS 门控、二次确认防幻觉、失败不阻断），**a_side 两
 `a_side/call_llm/planner_parts/trip_segments.py`**。本仓 B 侧代码无改动。
 线上实证：同地址出发 → 真源高铁（天津西→西安北 G1713）+ notices 告知。
 A 828 / B 669 全绿。
+
+## 九、追加（2026-09-17 深夜）：a_side 镜像更新通知（区域目的地支持）
+
+`destination="东北"` 类区域目的地此前三层断（词典缺/城际无站对/池搜索按原名）。
+已修：东北进区域词典 + 归一化写回联动 self.city + 归一化提前到管线入口
+（主城选择走 LLM 地址归一层，东北→沈阳）。**a_side 三文件已同步（SHA256
+全等）：`a_side/data_transmission/place_normalizer.py`、
+`a_side/call_llm/b_planner_hook.py`、`a_side/call_llm/planner_parts/trip_segments.py`**。
+本仓 B 侧代码无改动。线上实证：东北 → city=沈阳 + 真源高铁 G1299/G1246 +
+notices。A 831 / B 669 全绿。
