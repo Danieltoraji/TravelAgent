@@ -55,6 +55,55 @@ import logging
 
 logger = logging.getLogger("call_llm.b_planner_hook")
 
+
+def _merge_extra_results(
+    live_source: Any, spots_result: Any, extra: Any
+) -> Any:
+    """补搜结果并入候选池，并重建 live_source 状态（2026-09-17 补搜污染修复）。
+
+    两件事，缺一不可：
+
+    1. **id 续编**：B 侧 scenic 工具每次搜索都从 ``scenic_0`` 起编号
+       （``scenic_tool.py``），补搜批与主搜批 id 空间重叠——直接并入会出现
+       同 id 不同名，矩阵/排程节点混淆。新增景点 id 从现有池最大序号 +1 续编。
+    2. **全池不变量**：``LiveSpotsSource.__call__`` 是整批替换语义
+       （``names``/``spots`` = 最近一次拉取），补搜后主搜批的 id→名称/坐标
+       映射全部丢失（2026-09-16 西安事变/李自成实测：规划期取主搜批景点
+       通勤边抛「缺少节点名称映射」→ 整链回退假源 → 400）。并入后把
+       ``names``/``spots`` 重建为**恒等于当前全池**，保证供给期矩阵与名称
+       映射覆盖全部候选。
+
+    ``extra`` 非 list / 无新增时也重建（只要补搜调用发生过，状态就需要归位）。
+    返回合并后的池。
+    """
+    pool = list(spots_result) if isinstance(spots_result, list) else []
+    added: list = []
+    if isinstance(extra, list):
+        seen = {str(s.get("name") or "") for s in pool if isinstance(s, dict)}
+        added = [
+            s for s in extra
+            if isinstance(s, dict) and str(s.get("name") or "") not in seen
+        ]
+    if added:
+        base = 0
+        for s in pool:
+            sid = str(s.get("id") or "")
+            if sid.startswith("scenic_"):
+                try:
+                    base = max(base, int(sid.split("_", 1)[1]) + 1)
+                except ValueError:
+                    pass
+        for offset, s in enumerate(added):
+            s["id"] = f"scenic_{base + offset}"
+        pool = pool + added
+    # 状态重建：names/spots 恒等于全池（含 id 续编后的最终形态）
+    if live_source is not None:
+        live_source.names = {
+            str(s.get("id") or s["name"]): s["name"] for s in pool
+        }
+        live_source.spots = pool
+    return pool
+
 from core.schemas import PlannerOutput, TripTimeline  # noqa: E402
 from data_transmission.b_contract import (  # noqa: E402
     _as_date,
@@ -289,15 +338,13 @@ class BPlannerHook(
                                         city, limit=limit_value,
                                         ensure_spots=[], search_plan=extra_plan,
                                     )
-                                    if isinstance(extra, list):
-                                        seen = {str(s.get("name") or "")
-                                                for s in spots_result
-                                                if isinstance(s, dict)}
-                                        spots_result = spots_result + [
-                                            s for s in extra
-                                            if isinstance(s, dict)
-                                            and str(s.get("name") or "") not in seen
-                                        ]
+                                    # 2026-09-17 补搜污染修复：id 续编 + names/spots
+                                    # 全池不变量重建（原内联合并只动池、不动
+                                    # live_source 状态，主搜批映射被 __call__ 整批
+                                    # 替换冲掉 → 规划期「缺少节点名称映射」→ 400）
+                                    spots_result = _merge_extra_results(
+                                        live_source, spots_result, extra
+                                    )
                                 except Exception:  # noqa: BLE001
                                     pass
                     # 过了审核（或迭代耗尽）→ 加时间字段（LLM 估时，原地填 duration）
