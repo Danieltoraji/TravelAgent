@@ -114,3 +114,13 @@ B 侧映射的不稳定性打穿**——同一家酒店两次触发满房事件�
 2. 同一满房事件重复注入：10 分钟内不应出现第二次 replan（服务端日志可见
    "within 600s cooldown, skip decision"）；
 3. C 端展示层（BLOCKED/旧卡片折叠）待前端处理（方案第 4 项，队友侧）。
+
+## 七、追加（2026-09-17）：a_side 镜像更新通知
+
+用户实测天津→西安（偏好西安事变/李自成）400——偏好解析层无恙，是池审核
+fail 触发的**补搜**把 `LiveSpotsSource.names/spots` 整批替换冲掉主搜批映射
+（叠加 scenic 工具每次搜索 scenic_0 重新编号的 id 冲突）→ 规划期
+「缺少节点名称映射」→ 无假池城市 400。已修（`_merge_extra_results`：id 续编 +
+names/spots 全池不变量），**`a_side/call_llm/b_planner_hook.py` 已同步更新
+（SHA256 全等）**，本仓无 B 侧代码改动。A 820 / B 669 全绿，线上复验
+200 + 主题景点成簇进行程。
