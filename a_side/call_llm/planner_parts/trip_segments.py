@@ -1064,6 +1064,33 @@ class TripSegmentAttacher:
                     "城际地名未识别（%s=%s），用原值；候选：%s",
                     key, raw, candidates or "无",
                 )
+                # 地名映射方案 b 过渡版（2026-09-17）：LLM 地址→主城归一。
+                # 小区级地址/区域名 PlaceNormalizer 不认 → 城际真源全挂 →
+                # driving 兜底（能出图但不查火车班次，2026-09-16 天津→西安
+                # 实测）。LLM 解读主城后**二次归一确认**（已知城市才写回，
+                # LLM 幻觉天然被拦），命中走既有真源精排；LLM 失败/门控关
+                # 保持原值不阻断。原文已 stash 进 origin_address/return_address
+                # 供「家→车站」市内腿实测（见本方法上方 stash 逻辑）。
+                mapped = self._llm_resolve_place_city(raw, content, key)
+                if mapped and mapped != raw:
+                    try:
+                        retry = normalizer.normalize(mapped)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("LLM 归一城市二次确认异常：%s", exc)
+                        retry = None
+                    if retry is not None and retry.matched:
+                        canonical2 = retry.city or retry.canonical
+                        if canonical2:
+                            logger.info(
+                                "城际地名 LLM 归一：%s=%s → %s（二次确认命中）",
+                                key, raw, canonical2,
+                            )
+                            content[key] = canonical2
+                            label = "出发地" if key == "origin" else "目的地"
+                            if callable(getattr(self, "_add_notice", None)):
+                                self._add_notice(
+                                    f"{label}「{raw}」已按 {canonical2} 查询城际班次"
+                                )
                 continue
             canonical = result.city or result.canonical
             if canonical and canonical != raw:
@@ -1071,6 +1098,34 @@ class TripSegmentAttacher:
                     "城际地名归一：%s=%s → %s（%s）", key, raw, canonical, result.method
                 )
                 content[key] = canonical
+
+    def _llm_resolve_place_city(
+        self, raw: str, content: Dict[str, Any], key: str
+    ) -> Optional[str]:
+        """LLM 地址→主城解读（惰性构建 resolver，一次规划内同参只调一次）。
+
+        门控 ``USE_LLM_TOOLS``（与池审核/估时同门控）；构建失败/调用异常
+        返回 None（保持原值，driving 兜底不阻断）。返回的城市**未验证**，
+        调用方必须经 PlaceNormalizer 二次确认后才写回 content。
+        """
+        if getattr(self, "_address_city_resolver", None) is None:
+            try:
+                from call_llm.address_city_resolver import build_address_city_resolver
+
+                self._address_city_resolver = build_address_city_resolver()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("LLM 地址归一构建失败，不启用：%s", exc)
+                self._address_city_resolver = None
+        resolver = getattr(self, "_address_city_resolver", None)
+        if resolver is None:
+            return None
+        other_key = "destination" if key == "origin" else "origin"
+        other_city = str((content.get(other_key) or "").strip())
+        try:
+            return resolver(raw, other_city)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM 地址归一调用异常（%s=%s）：%s", key, raw, exc)
+            return None
 
     def _local_route_fn(self) -> Optional[Callable[[str, str], Optional[int]]]:
         """市内衔接真源化（2026-09-04）：高德驾车实测「出发地→车站」分钟。
