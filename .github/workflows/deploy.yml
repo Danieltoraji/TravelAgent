@@ -85,6 +85,10 @@ jobs:
             # 明显上升；未接受/异常自动回落固定管线）。生效可通过
             # /api/status/ 的 orchestration 字段验证（非 null = 编排路径跑过）。
             USE_LLM_ORCHESTRATOR=${{ secrets.USE_LLM_ORCHESTRATOR || 'false' }}
+            # 方案 c 多城区域游执行门控（2026-09-18）：Secret USE_MULTI_CITY=true
+            # 才开启（默认关——关 = 单主城执行 + 连游计划告知，零回归）。开启后
+            # 区域目的地（东北类）走逐城池+逐城规划+顺序城际+跨城住宿全链。
+            USE_MULTI_CITY=${{ secrets.USE_MULTI_CITY || 'false' }}
             # 演示注入端点鉴权（公网必须设置；请求需带 X-Debug-Token 头）
             DEBUG_INJECT_TOKEN=${{ secrets.DEBUG_INJECT_TOKEN }}
             # 配置热更新端点鉴权（多用户 review P2 2026-09：进程级副作用影响
