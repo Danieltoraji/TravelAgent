@@ -1207,7 +1207,14 @@ class TripSegmentAttacher:
         prefs = (content.get("preferences") or {}).get("preferred_tags")
         origin = str(content.get("origin") or "").strip()
         try:
-            plan = planner(raw, days, prefs, origin)
+            # v2（§十六/§十七）：完整 context 进选城 prompt——备注原文/
+            # 全部偏好/必去/预算，支撑民俗类县级开放提名。
+            plan = planner(
+                raw, days, prefs, origin,
+                free_text=str(content.get("free_text_requirement") or ""),
+                preferences=content.get("preferences") or None,
+                constraints=content.get("constraints") or None,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM 多城计划调用异常（%s）：%s", raw, exc)
             return None
@@ -1217,13 +1224,21 @@ class TripSegmentAttacher:
         alloc = " → ".join(
             f"{p['city']}{p['day_to'] - p['day_from'] + 1}天" for p in plan
         )
-        logger.info("多城计划产出（%s）： %s（执行暂按首城 %s）",
-                    raw, alloc, plan[0]["city"])
-        if callable(getattr(self, "_add_notice", None)):
-            self._add_notice(
+        if multi_city_enabled():
+            logger.info("多城计划产出（%s）： %s（逐城执行）", raw, alloc)
+            notice = (
+                f"目的地「{raw}」范围较大，将连游多城：{alloc}"
+                f"（各城逐天安排、城际交通与住宿已按当城衔接）"
+            )
+        else:
+            logger.info("多城计划产出（%s）： %s（执行暂按首城 %s）",
+                        raw, alloc, plan[0]["city"])
+            notice = (
                 f"目的地「{raw}」范围较大，连游计划：{alloc}"
                 f"（当前版本按首城 {plan[0]['city']} 规划）"
             )
+        if callable(getattr(self, "_add_notice", None)):
+            self._add_notice(notice)
         return plan
 
     def _local_route_fn(self) -> Optional[Callable[[str, str], Optional[int]]]:
