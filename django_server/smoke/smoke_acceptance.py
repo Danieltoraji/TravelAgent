@@ -210,7 +210,14 @@ def main() -> None:
     be = booking_events[-1]
     print(f"[3] /api/events -> BOOKING: {be.get('place')} data={be.get('data')}")
 
-    code, rp = get("/api/replans/")
+    # 确认异步化（2026-09-16）：满房重规划后台执行，轮询等待其落地
+    # （此前同步断言在重规划完成前就读取，count=0 误报——Actions 首验实锤）
+    rp = {"count": 0}
+    for _ in range(15):
+        code, rp = get("/api/replans/")
+        if rp.get("count", 0) >= 1:
+            break
+        time.sleep(2)
     assert rp["count"] >= 1, rp
     last = rp["replans"][-1]
     reason = (last.get("decision") or {}).get("reason", "")
