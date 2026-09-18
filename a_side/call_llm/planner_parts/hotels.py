@@ -159,7 +159,10 @@ class HotelAttacher:
           `dist_km + 0.1×price + 60×(5−rating)`——锚点 = 该城首日首个 scenic；
         - bookings：night i（day i 之后那晚）归属 day i 所属城；换城夜
           `change=True` + reason="换城换宿"；`constant_hotel` = 首城店
-          （消费方形状兼容）；`switched_days` 为解释结构；
+          （消费方形状兼容，仅显示/单城语义）；`switched_days` 为解释结构；
+        - `city_hotels`：每城一家（R1 治本，2026-09-18，由 picks 落盘）——
+          多城消费方必须按城取 `city_hotels`，不得拿 `constant_hotel`
+          （首城店）消费其他城市（返程头腿跨城驾车缺陷教训）；
         - `hotel_cost` = Σ price×晚数（_plan_cost_summary 单一来源零改动）；
         - 残差：跨城通勤评分未走矩阵（per-city 子矩阵留二期）。
         """
@@ -278,6 +281,18 @@ class HotelAttacher:
             prev_city = city
         first_city = str(city_plan[0]["city"])
         first_entry = _entry(1, first_city, False)
+        # R1 治本（2026-09-18）：每城一家落盘（picks 是唯一事实源），供
+        # _refine_intercity_stations 等多城消费方按城取店；契约只增不改。
+        city_hotels: Dict[str, Dict[str, Any]] = {}
+        for _c, _h in picks.items():
+            _lat, _lng = _hotel_latlng(_h)
+            city_hotels[_c] = {
+                "hotel_id": str(_hf(_h, "id", "")),
+                "hotel_name": str(_hf(_h, "name", "") or _c),
+                "lat": _lat,
+                "lng": _lng,
+                "price": float(_hf(_h, "price_per_night", 0) or 0),
+            }
         plan["accommodation"] = {
             "constant_hotel": {
                 "hotel_id": first_entry["hotel_id"] if first_entry else "",
@@ -286,6 +301,7 @@ class HotelAttacher:
                 "lng": first_entry["lng"] if first_entry else None,
                 "price": first_entry["price"] if first_entry else 0.0,
             },
+            "city_hotels": city_hotels,
             "bookings": bookings,
             "switched_days": switched,
             "hotel_cost": hotel_cost,

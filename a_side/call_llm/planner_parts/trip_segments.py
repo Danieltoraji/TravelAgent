@@ -1314,12 +1314,20 @@ class TripSegmentAttacher:
         已知后做，「站→酒店」成本才可见（rv6/rv7：武清/亦庄/锦州南类中间站
         被时刻/费用口径选中，对酒店位置而言并非最优）。
 
+        **按段感知城市（R1 治本，2026-09-18）**：outbound 段用到达城
+        （``details.to``，多城=首城，与单城 constant_hotel 取值一致=零行为
+        变化）；return 段用出发城（``details.from``，多城=末城）查
+        ``accommodation.city_hotels``，查不到**保持占位如实**（不回退首城店
+        ——跨城驾车缺陷教训）；transfer 段不涉及酒店。map 实测 geocode 绑
+        当段城市（30001 教训姿势）。全局早退下沉为逐段判断（首城池空不再
+        连坐 return 侧）。
+
         - 到达侧：``_refine_outbound_arrival``（最后一程重选 + 尾腿实测填充；
           ``preferred_arrival_station`` = 编排阶段 b LLM 偏好到达站，可行集内
           带 90min 容忍度被尊重，中心先行拍板的选择口径吸收）；
         - 出发侧：``_fill_return_head``（返程首条 local 腿酒店→站实测填充）；
-        - 路线实测走 map driving（酒店端坐标直连、车站端站名 geocode 绑目的地
-          城市，(o,d) 缓存；distinct 站 ≤ ~8/方向，符合额度纪律）；
+        - 路线实测走 map driving（酒店端坐标直连、车站端站名 geocode 绑当段
+          城市，(o,d,city) 缓存；distinct 站 ≤ ~8/方向，符合额度纪律）；
         - 无酒店坐标 / 无 tool_provider → 原段返回（不阻断）。
         """
         segments = plan.get("trip_segments") or []
@@ -1329,27 +1337,25 @@ class TripSegmentAttacher:
         if provider is None:
             return segments
         acc = plan.get("accommodation") or {}
-        hotel = acc.get("constant_hotel") or ((acc.get("bookings") or [None])[0])
-        if not isinstance(hotel, dict):
-            return segments
-        try:
-            lat = float(hotel.get("lat") or 0.0)
-            lng = float(hotel.get("lng") or 0.0)
-        except (TypeError, ValueError):
-            return segments
-        if lat == 0.0 and lng == 0.0:
-            return segments  # 假池/真源均无坐标 → 精修无从谈起
-        hotel_name = str(hotel.get("hotel_name") or hotel.get("name") or "酒店")
+        default_hotel = acc.get("constant_hotel") or (
+            (acc.get("bookings") or [None])[0]
+        )
+        city_hotels = (
+            acc.get("city_hotels")
+            if isinstance(acc.get("city_hotels"), dict) else {}
+        )
         content = self.requirement.get("content") or {}
-        city = (content.get("destination") or "").strip()
+        fallback_city = (content.get("destination") or "").strip()
         departure_time_minutes = _hhmm_to_minutes_loose(
             (content.get("travel_schedule") or {}).get("departure_time")
         )
-        hotel_coord = f"{lng},{lat}"  # 高德坐标口径 lng,lat
-        cache: Dict[Tuple[str, str], Optional[int]] = {}
+        city_plan = getattr(self, "city_plan", None) or []
+        cache: Dict[Tuple[str, str, str], Optional[int]] = {}
 
-        def _minutes(origin: str, destination: str) -> Optional[int]:
-            key = (origin, destination)
+        def _minutes(
+            origin: str, destination: str, city: str
+        ) -> Optional[int]:
+            key = (origin, destination, city)
             if key in cache:
                 return cache[key]
             minutes: Optional[int] = None
@@ -1373,25 +1379,76 @@ class TripSegmentAttacher:
             cache[key] = minutes
             return minutes
 
-        def station_to_hotel(station: str) -> Optional[int]:
-            return _minutes(station, hotel_coord)
+        def _hotel_entry(city: str, seg_kind: str) -> Optional[Dict[str, Any]]:
+            """按段城市取酒店。单城形状（无 city_hotels）→ 全程唯一店
+            constant_hotel（原口径零变化）；多城下 return 段查不到当城店 →
+            None（占位如实，不回退首城店）；outbound 段回落 constant_hotel。"""
+            if not city_hotels:
+                return default_hotel if isinstance(default_hotel, dict) else None
+            entry = city_hotels.get(city)
+            if isinstance(entry, dict) and entry:
+                return entry
+            if seg_kind == "outbound":
+                return default_hotel if isinstance(default_hotel, dict) else None
+            return None
 
-        def hotel_to_station(station: str) -> Optional[int]:
-            return _minutes(hotel_coord, station)
+        def _valid_coord(hotel: Dict[str, Any]) -> bool:
+            try:
+                lat = float(hotel.get("lat") or 0.0)
+                lng = float(hotel.get("lng") or 0.0)
+            except (TypeError, ValueError):
+                return False
+            return not (lat == 0.0 and lng == 0.0)
 
         changed = False
         for seg in segments:
             if not isinstance(seg, dict) or seg.get("type") != "transport":
                 continue
-            kind = (seg.get("details") or {}).get("kind")
+            details = seg.get("details") or {}
+            kind = details.get("kind")
+            if kind not in ("outbound", "return"):
+                continue              # transfer 段不涉及酒店精修
+            # 段级城市：outbound=到达城（details.to）、return=出发城
+            # （details.from，make_segment 隐式契约，travel.py make_segment）；
+            # 空值防御回退 city_plan 末城/首城，再回退 destination。
+            if kind == "outbound":
+                seg_city = str(details.get("to") or "").strip()
+                if not seg_city and city_plan:
+                    seg_city = str(city_plan[0].get("city") or "")
+            else:
+                seg_city = str(details.get("from") or "").strip()
+                if not seg_city and city_plan:
+                    seg_city = str(city_plan[-1].get("city") or "")
+            seg_city = seg_city or fallback_city
+            hotel = _hotel_entry(seg_city, kind)
+            if not isinstance(hotel, dict) or not _valid_coord(hotel):
+                continue              # 逐段早退（原全局早退下沉；占位如实）
+            hotel_name = str(
+                hotel.get("hotel_name") or hotel.get("name") or "酒店"
+            )
+            try:
+                lat = float(hotel.get("lat") or 0.0)
+                lng = float(hotel.get("lng") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            hotel_coord = f"{lng},{lat}"  # 高德坐标口径 lng,lat
+
+            def station_to_hotel(station: str) -> Optional[int]:
+                return _minutes(station, hotel_coord, seg_city)
+
+            def hotel_to_station(station: str) -> Optional[int]:
+                return _minutes(hotel_coord, station, seg_city)
+
             if kind == "outbound":
                 changed |= _refine_outbound_arrival(
                     seg, station_to_hotel, hotel_name,
                     departure_time_minutes=departure_time_minutes,
                     preferred_station=preferred_arrival_station,
                 )
-            elif kind == "return":
-                changed |= _fill_return_head(seg, hotel_to_station, hotel_name)
+            else:
+                changed |= _fill_return_head(
+                    seg, hotel_to_station, hotel_name
+                )
         if changed:
             logger.info("城际站对精修（阶段2）：到达站/市内腿按酒店位置优化")
         return segments
