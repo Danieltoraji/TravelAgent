@@ -125,17 +125,17 @@ class HotelAttacher:
             self._mc_hotel_pools = cache
         if city in cache:
             return cache[city]
+        # 别名命中 → 直接用别名查询（R3 实锤：RollingGo hotel_search 对州名
+        # 不限定城市，「伊犁」返回乌鲁木齐非空池——空池判断接不住，须重定向）
+        query_city = self._HOTEL_CITY_ALIAS.get(city, city)
+        if query_city != city:
+            logger.info("hotel 池按别名查询：%s → %s", city, query_city)
         pool: List[Any] = []
         if self._use_live and self._tool_provider is not None:
             try:
                 from data_transmission.live_data import make_live_hotel_provider
 
-                pool = list(make_live_hotel_provider(self._tool_provider)(city))
-                if not pool and city in self._HOTEL_CITY_ALIAS:
-                    alias = self._HOTEL_CITY_ALIAS[city]
-                    pool = list(make_live_hotel_provider(self._tool_provider)(alias))
-                    logger.info("hotel 池按别名重拉：%s → %s（%d 条）",
-                                city, alias, len(pool))
+                pool = list(make_live_hotel_provider(self._tool_provider)(query_city))
                 if not pool:
                     logger.warning("hotel 工具返回空池（city=%s），回退假池", city)
             except Exception as exc:  # noqa: BLE001
