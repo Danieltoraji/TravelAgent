@@ -146,6 +146,42 @@ class DataSourceResolver:
         self.last_error = reason
         return timeline
 
+    def _plan_single_city(
+        self, city: str, cdays: int, must: List[Dict[str, Any]],
+        scored: List[Dict[str, Any]], travel_time_provider: Any = None,
+        first_start: Optional[str] = None,
+        last_end: Optional[int] = None, min_spots: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """单城子规划（方案 c 阶段 2/3 共用）：req_city 拷贝 + plan_multi_day。
+
+        失败/未产出 → None（调用方剔城/保旧天）。"""
+        from algorithoms.planner import plan_multi_day
+
+        content = self.requirement.get("content") or {}
+        req_city = {
+            **self.requirement,
+            "content": {
+                **content,
+                "destination": city,
+                "days": cdays,
+            },
+        }
+        try:
+            sub = plan_multi_day(
+                req_city,
+                [must, [], scored],
+                travel_time_provider=travel_time_provider,
+                first_day_start_time=first_start,
+                last_day_end_minutes=last_end,
+                min_spots=min_spots,
+            )
+        except Exception as exc:  # noqa: BLE001  剔城不阻断
+            logger.warning("多城规划失败（%s）：%s", city, exc)
+            return None
+        if not isinstance(sub, dict) or not sub.get("days"):
+            return None
+        return sub
+
     def _plan_multi_city(
         self, spots: Any, *, travel_time_provider: Any = None,
         first_day_start_time: Optional[str] = None,
@@ -153,36 +189,46 @@ class DataSourceResolver:
         min_spots: int = 0,
         city_windows: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """方案 c 阶段 2：按 city_plan **逐城规划再拼接**（城市纯度结构性保证）。
+        """方案 c 阶段 2/3：按 city_plan **逐城规划再拼接**（城市纯度结构性保证）。
 
         全局合并规划在真实池上跨城混排（2026-09-17 线上实测：repair/fine-tune/
         refill 打磨阶段不感知城市，把门控预分配的跨城景点换了回去），改为每城
         独立跑 ``plan_multi_day``（单城假设城内成立，复用全部既有管线），再按
         访问序拼接天序列。spots 为 select_spots 契约三元组（各城 spot 已带
-        city 字段）；剔城时天数并入相邻城（Σ 恒等于总天数）。
-        """
-        from algorithoms.planner import plan_multi_day
+        city 字段）。
 
+        剔城 **carry-forward**（阶段 3 评审定稿，S1）：城 i 失败时其天数并入
+        下一幸存城（``carry += cdays``），Σ 恒等于总天数、return_date 与末城
+        span 对齐；carry 滚到末城仍失败 → Σ 缩水 + notice（b_contract 追加
+        纯返程日兜底）。返回 dict 含 ``city_plan_changed``（span 是否压缩），
+        供调用方重建 transfer/return 段（S1）。
+        """
         city_plan = getattr(self, "city_plan", None) or []
+        spans_before = [
+            (cp.get("city"), cp.get("day_from"), cp.get("day_to"))
+            for cp in city_plan
+        ]
         if isinstance(spots, list) and len(spots) == 3:
             must_all, _conflicts, scored_all = spots
         else:
             must_all, scored_all = [], (spots or [])
-        content = self.requirement.get("content") or {}
 
         merged_days: List[Dict[str, Any]] = []
         total_cost = 0.0
         new_plan: List[Dict[str, int]] = []
         cursor = 1
         last_index = len(city_plan) - 1
+        carry = 0
         for idx, cp in enumerate(city_plan):
             city = str(cp.get("city") or "")
-            cdays = int(cp.get("day_to") or 0) - int(cp.get("day_from") or 0) + 1
+            cdays = int(cp.get("day_to") or 0) - int(cp.get("day_from") or 0) + 1 + carry
+            carry = 0
             if not city or cdays < 1:
                 continue
             must = [s for s in must_all if str(s.get("city") or "") == city]
             scored = [s for s in scored_all if str(s.get("city") or "") == city]
             if not must and not scored:
+                carry += cdays          # S1 carry-forward：天数并入下一幸存城
                 self._add_notice(f"{city} 无可用候选，已从连游中剔除")
                 continue
             # 逐城窗口（方案 c 阶段 3）：transfer/outbound 段的到达+90 /
@@ -195,29 +241,13 @@ class DataSourceResolver:
             last_end = w[1] if w[1] is not None else (
                 last_day_end_minutes if idx == last_index else None
             )
-            req_city = {
-                **self.requirement,
-                "content": {
-                    **content,
-                    "destination": city,
-                    "days": cdays,
-                },
-            }
-            try:
-                sub = plan_multi_day(
-                    req_city,
-                    [must, [], scored],
-                    travel_time_provider=travel_time_provider,
-                    first_day_start_time=first_start,
-                    last_day_end_minutes=last_end,
-                    min_spots=min_spots,
-                )
-            except Exception as exc:  # noqa: BLE001  剔城不阻断
-                logger.warning("多城规划失败（%s），剔城：%s", city, exc)
+            sub = self._plan_single_city(
+                city, cdays, must, scored, travel_time_provider,
+                first_start, last_end, min_spots,
+            )
+            if sub is None:
+                carry += cdays          # 规划失败：天数继续向后 carry
                 self._add_notice(f"{city} 规划失败，已从连游中剔除")
-                continue
-            if not isinstance(sub, dict) or not sub.get("days"):
-                self._add_notice(f"{city} 规划未产出，已从连游中剔除")
                 continue
             day_from = cursor
             for d in sub["days"]:
@@ -230,14 +260,24 @@ class DataSourceResolver:
             total_cost += float(sub.get("total_cost") or 0)
         if not merged_days:
             return None
-        # span 压缩回写（剔城后天数并入相邻城，_apply_city_plan 与之一致）
+        if carry > 0:
+            # 末城失败：carry 无处可去 → Σ 缩水（b_contract 追加纯返程日兜底）
+            self._add_notice(f"连游末段城市不可用，行程缩短 {carry} 天")
+        # span 压缩回写（carry-forward 后 _apply_city_plan 与之一致）
         self.city_plan = new_plan
+        city_plan_changed = spans_before != [
+            (p["city"], p["day_from"], p["day_to"]) for p in new_plan
+        ]
         logger.info(
-            "多城逐城规划完成：%s",
+            "多城逐城规划完成：%s（span%s）",
             " → ".join(f"{p['city']}{p['day_to'] - p['day_from'] + 1}天"
                        for p in new_plan),
+            "已压缩" if city_plan_changed else "未变",
         )
-        return {"days": merged_days, "total_cost": total_cost}
+        return {
+            "days": merged_days, "total_cost": total_cost,
+            "city_plan_changed": city_plan_changed,
+        }
 
     def _apply_city_plan(self, timeline: TripTimeline) -> TripTimeline:
         """多城计划落地（方案 c 阶段 2，2026-09-17）：DayPlan.city 按天写回。
@@ -378,8 +418,57 @@ class DataSourceResolver:
                 )
                 if plan is None:
                     return self._fallback_fake_pipeline(
-                        "多城规划未产出可用计划，已回退假数据"
-                    )
+                        "多城规划未产出可用计划，已回退假数据")
+                # S1+F10（方案 c 阶段 3）：剔城压缩 span → transfer/return 段
+                # 按新 spans 重建（outbound 首城未变则保留已精排段）；吸收城
+                # first_start 变化 → 重跑该城 plan_multi_day（本地零额度）。
+                # 顺序约束：重建必须在 _rebuild_return_with_schedule 与
+                # _inject_trip_segments 之前（本函数尾部）。
+                if plan.get("city_plan_changed"):
+                    old_windows = dict(provisioned.get("city_windows") or {})
+                    try:
+                        segments = self._rebuild_multi_city_transfer_segments(
+                            segments
+                        )
+                    except Exception as exc:  # noqa: BLE001  重建失败丢段兜底
+                        logger.warning("多城段重建失败，丢弃转场/返程段：%s", exc)
+                        segments = [
+                            s for s in segments
+                            if (s.get("details") or {}).get("kind") == "outbound"
+                        ]
+                        self._add_notice("连游城市有调整，城际衔接暂按直达提示")
+                    new_windows = getattr(self, "_multi_city_windows", None) or {}
+                    city_plan_now = getattr(self, "city_plan", None) or []
+                    for cp_idx, cp in enumerate(city_plan_now):
+                        city = str(cp.get("city") or "")
+                        cdays = int(cp["day_to"]) - int(cp["day_from"]) + 1
+                        old_first = (old_windows.get(city) or [None])[0]
+                        new_first = (new_windows.get(city) or [None])[0]
+                        if not new_first or new_first == old_first:
+                            continue
+                        is_last = cp_idx == len(city_plan_now) - 1
+                        last_end = (
+                            (new_windows.get(city) or [None, None])[1]
+                            if is_last else None
+                        )
+                        triple = spots if isinstance(spots, list) and len(spots) == 3 else ([], [], [])
+                        must = [s for s in triple[0]
+                                if str(s.get("city") or "") == city]
+                        scored = [s for s in triple[2]
+                                  if str(s.get("city") or "") == city]
+                        sub = self._plan_single_city(
+                            city, cdays, must, scored,
+                            self._travel_time_provider, new_first, last_end,
+                            _PRODUCTION_MIN_SPOTS,
+                        )
+                        if sub and sub.get("days"):
+                            for j, d in enumerate(sub["days"]):
+                                d["day"] = cp["day_from"] + j
+                                plan["days"][cp["day_from"] + j - 1] = d
+                        else:
+                            self._add_notice(
+                                f"{city} 依新衔接重排失败，保留原行程"
+                            )
             elif self._travel_time_provider is not None:
                 # 阶段 1 规划：restaurants=None → meal 段抽象无餐厅（plan_multi_day
                 # 不自行拉假池餐厅），只用于确定用餐锚点 + 计划内景点集合。
@@ -550,6 +639,10 @@ class DataSourceResolver:
         source: str,
     ) -> TripTimeline:
         """假数据（或回退）管线：候选池 → 规划 → 时间轴；失败降级为空时间轴。"""
+        # F7（方案 c 阶段 3，2026-09-18）：假数据/回退路径显式单城——清多城
+        # 标记，防「多城段 + 单城天序列 + span 硬贴」的标签错贴（裁决 F7 修正：
+        # 下沉到本入口，覆盖 fallback 与 fake 直入两个调用方）。
+        self.city_plan = []
         # 1) 候选池
         try:
             spots = spots_provider(self.city)
@@ -594,7 +687,11 @@ class DataSourceResolver:
         self._attach_hotels(plan)
         # 城际两阶段·阶段2（十三节）：酒店已知后站对精修（到达站重选 +
         # 尾/首腿实测填充）；无酒店坐标/无工具时原段返回
-        self._refine_intercity_stations(plan)
+        # F8（方案 c 阶段 3）：多城时跳过站对精修——return 侧 _fill_return_head
+        # 会以首城酒店+首城上下文实测到末城站的跨城驾车（裁决差异#2）；v1 保守
+        # 整体跳过（outbound 已有 realize 精排覆盖）。
+        if not (getattr(self, "city_plan", None) and multi_city_enabled()):
+            self._refine_intercity_stations(plan)
         timeline = self._apply_city_plan(plan_to_trip_timeline(
             plan,
             city=self.city,

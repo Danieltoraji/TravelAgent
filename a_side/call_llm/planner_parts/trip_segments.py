@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -287,6 +287,23 @@ def _select_return_combination(
     return best
 
 
+def _strict_date(value: Any) -> Optional[date]:
+    """严格日期解析：date/datetime 实例原样（datetime 取 date）、ISO 串解析、
+    非法/缺失 → None（与 ``b_contract._as_date`` 的 today() 兜底语义相反）。
+
+    方案 c 阶段 3（2026-09-18）：从 ``_return_date_after_trip`` 的嵌套实现
+    提升为模块级（多城城际段守卫共用；datetime 分支对齐 ``_as_date`` 口径，
+    datetime 型 start_date 不被误判 None）。"""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _return_date_after_trip(requirement: Optional[Dict[str, Any]]) -> bool:
     """return_date 晚于行程末日（start_date + days − 1）→ 返程是**独立返程日**。
 
@@ -303,15 +320,6 @@ def _return_date_after_trip(requirement: Optional[Dict[str, Any]]) -> bool:
     """
     content = (requirement or {}).get("content") or {}
     schedule = content.get("travel_schedule") or {}
-
-    def _strict_date(value: Any) -> Optional[date]:
-        # _as_date 对不可解析串兜底 date.today()，这里需要严格解析（失败=None）
-        if isinstance(value, date):
-            return value
-        try:
-            return date.fromisoformat(str(value or "").strip())
-        except ValueError:
-            return None
 
     return_date = _strict_date(schedule.get("return_date"))
     start_date = _strict_date(content.get("start_date"))
@@ -1095,10 +1103,19 @@ class TripSegmentAttacher:
                     self._plan_region_cities(raw, content, key)
                     if key == "destination" else None
                 )
-                mapped = (
-                    city_plan[0]["city"] if city_plan
-                    else self._llm_resolve_place_city(raw, content, key)
-                )
+                if city_plan:
+                    # F6（裁决 R6，2026-09-18）：城市来自 expand_region 白名单，
+                    # 可信度高于 LLM 二次归一——**无条件覆写**（不依赖
+                    # normalizer 认识它；v1.5 区域首城如宜昌的等价性前提）
+                    first_city = str(city_plan[0].get("city") or "")
+                    if first_city:
+                        content[key] = first_city
+                        if callable(getattr(self, "_add_notice", None)):
+                            self._add_notice(
+                                f"目的地「{raw}」已按 {first_city} 查询城际班次"
+                            )
+                    continue
+                mapped = self._llm_resolve_place_city(raw, content, key)
                 if mapped and mapped != raw:
                     try:
                         retry = normalizer.normalize(mapped)
@@ -1494,8 +1511,9 @@ class TripSegmentAttacher:
     def _realize_transfer_segment(self, seg: Dict[str, Any]) -> None:
         """中间城转场段精排（方案 c 阶段 3 v1）：选最早 ≥12:00 的单腿班次。
 
-        ≥12:00 保证前城末日还有上午窗口（last_end = 出发−60min ≥ 11:00）；
-        多腿联运转场 v1 不精排（保持推演占位）；无合适班次 → 原样推演。
+        ≥12:00 保证转场日上午出发（前城末日可玩到晚上，末日不设截止——
+        出发日在后城首日，前城末日与转场日不是同一天）；多腿联运转场 v1
+        不精排（保持推演占位）；无合适班次 → 原样推演。
         """
         details = seg.setdefault("details", {})
         legs = details.get("legs") or []
@@ -1519,125 +1537,237 @@ class TripSegmentAttacher:
         leg["service_no"] = str(cand.get("code") or cand.get("flight_no") or "")
         leg["depart_time"] = str(cand.get("depart_time") or "")
         leg["arrive_time"] = str(cand.get("arrive_time") or "")
+        leg["duration_min"] = arr - dep
         leg["transfer_realized"] = True
         seg["start_minutes"] = dep
         seg["end_minutes"] = arr
         seg["duration_minutes"] = arr - dep
-        details["source"] = "live"
-        details["from_station"] = str(
-            leg.get("from") or details.get("from_station") or "")
-        details["to_station"] = str(
-            leg.get("to") or details.get("to_station") or "")
+        price = cand.get("price")
+        if isinstance(price, (int, float)) and price > 0:
+            details["cost_per_person"] = float(price)
+            leg["cost_per_person"] = float(price)
+            details["source"] = "live"   # F9：有真价才标 live（口径同 return realize）
+        details["from_station"] = _candidate_station(cand, "from_station", "from_airport")
+        details["to_station"] = _candidate_station(cand, "to_station", "to_airport")
+        # 段名按真实站对重建（口径同 return realize；mode_text 转中文）
+        seg["name"] = (
+            f"{details['from_station']} → {details['to_station']}"
+            f"（{mode_text(str(details.get('mode') or 'train'))}）"
+        )
 
-    def _build_multi_city_trip_segments(self) -> List[Dict[str, Any]]:
+    def _rebuild_multi_city_transfer_segments(
+        self, old_segments: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """剔城压缩 span 后重建 transfer/return 段（方案 c 阶段 3，S1 修复）。
+
+        - outbound：首城未变 → 保留旧段（已精排）；变了 → 重建 + 重跑 realize；
+        - transfer：全部按压缩后 city_plan 重建 + 重跑 realize；
+        - return：重建占位形态（`_rebuild_return_with_schedule` 由调用方在其后
+          照常精排——plan 末日活动已按新 spans 拼接）；
+        - 窗口 `self._multi_city_windows` 同步刷新；
+        - 守卫不过/日期缺失 → 原样返回旧段（调用方兜底丢段 + notice）。
+
+        复用 `_build_pair_segments`（构建上下文已落实例：_mc_cache/_mc_shared_stats/
+        _mc_mode_budget——重建对命中共享 cache 不重复计费；跨越被剔城的新对
+        必然新查询，受 plan 级预算约束）。
+        """
+        from datetime import timedelta
+
+        content = self.requirement.get("content") or {}
+        origin = str(content.get("origin") or "").strip()
+        schedule = dict(content.get("travel_schedule") or {})
+        city_plan = getattr(self, "city_plan", None) or []
+        start_date = _strict_date(content.get("start_date"))
+        departure_date = str(schedule.get("departure_date") or "").strip()
+        return_date = str(schedule.get("return_date") or "").strip()
+        if (not origin or start_date is None or len(city_plan) < 2
+                or not departure_date or not return_date):
+            return old_segments
+        cities = [str(cp.get("city") or "") for cp in city_plan]
+        if any(not c for c in cities):
+            return old_segments
+        segments: List[Dict[str, Any]] = []
+        old_out = next(
+            (s for s in old_segments
+             if (s.get("details") or {}).get("kind") == "outbound"), None)
+        if (old_out is not None
+                and str((old_out.get("details") or {}).get("to") or "")
+                == cities[0]):
+            segments.append(old_out)      # 首城未变：保留已精排 outbound
+        else:
+            # 首城被剔：outbound 目的地改为新首城，重建 + 重跑 realize
+            segments += self._build_pair_segments(
+                "outbound", origin, cities[0], departure_date,
+                local_route_fn=self._local_route_fn(),
+            )
+            dep_min = _hhmm_to_minutes_loose(
+                str(schedule.get("departure_time") or "").strip() or None)
+            priority = (
+                (content.get("preferences") or {}).get("travel_priority") or None
+            )
+            segments = _realize_outbound_with_schedule(
+                segments, dep_min, priority,
+                local_route_fn=self._local_route_fn(),
+                arrival_penalty=self._arrival_station_penalty(
+                    segments, cities[0]),
+            )
+        for i in range(len(cities) - 1):
+            next_first = int(city_plan[i + 1].get("day_from") or 0)
+            date_iso = (
+                start_date + timedelta(days=max(next_first - 1, 0))
+            ).isoformat()
+            segs = self._build_pair_segments(
+                "transfer", cities[i], cities[i + 1], date_iso,
+                local_route_fn=None,       # M1：异城腿不做驾车实测
+            )
+            for s in segs:
+                self._realize_transfer_segment(s)
+            segments += segs
+        segments += self._build_pair_segments(
+            "return", origin, cities[-1], return_date,
+            local_route_fn=self._local_route_fn(),
+        )
+        self._multi_city_windows = self._multi_city_windows_from_segments(
+            segments, cities)
+        logger.info("多城城际段已按压缩 span 重建：%s 段", len(segments))
+        return segments
+
+    def _build_pair_segments(
+        self, kind: str, from_city: str, to_city: str, date_iso: str,
+        local_route_fn: Optional[Callable[[str, str], Optional[int]]],
+    ) -> List[Dict[str, Any]]:
+        """单对城际段构建（方案 c 阶段 3，从 `_build_multi_city_trip_segments`
+        的闭包提升为方法——剔城重建与首次构建共用）。
+
+        requirement 拷贝裁剪 travel_schedule 至单方向（出发对只带 departure、
+        返程对只带 return），复用 `build_trip_segments` 本体；provider 携带
+        **实例级 cache + 共享 stats**（M2：跨对/跨回退共享，(name,o,d,date)
+        命中不计数不重查）+ **mode_budget 按对数放大**（plan 级上限，防共享
+        后直达对饿死转烧 juhe——R3）。`local_route_fn=None` → local 腿全占位
+        （M1：transfer 对不做异城驾车实测）。
+        """
+        from data_transmission.travel import build_trip_segments
+
+        content = self.requirement.get("content") or {}
+        schedule = dict(content.get("travel_schedule") or {})
+        sched: Dict[str, str] = {}
+        if kind == "return":
+            sched["return_date"] = date_iso
+            rt = str(schedule.get("return_time") or "").strip()
+            if rt:
+                sched["return_time"] = rt
+        else:
+            sched["departure_date"] = date_iso
+            dt = str(schedule.get("departure_time") or "").strip()
+            sched["departure_time"] = dt if (kind == "outbound" and dt) else "12:00"
+        rc = {
+            **content,
+            "origin": from_city,
+            "destination": to_city,
+            "travel_schedule": sched,
+            # 地址 stash 只对真实 outbound/return 生效（中间段 city 级进出）
+            "origin_address": (
+                content.get("origin_address") if kind == "outbound" else ""
+            ),
+            "return_address": (
+                content.get("return_address") if kind == "return" else ""
+            ),
+        }
+        provider = None
+        if self._use_live and getattr(self, "_tool_provider", None) is not None:
+            from data_transmission.live_data import make_live_intercity_provider
+
+            provider = make_live_intercity_provider(
+                self._tool_provider, sched,
+                origin=from_city, destination=to_city,
+                mode_budget=getattr(self, "_mc_mode_budget", None),
+                stats=getattr(self, "_mc_shared_stats", None),
+                cache=getattr(self, "_mc_cache", None),
+            )
+        req = {**self.requirement, "content": rc}
+        segs = build_trip_segments(
+            {}, req, travel_provider=provider,
+            local_route_fn=local_route_fn,
+        )
+        want = "return" if kind == "return" else "outbound"
+        out: List[Dict[str, Any]] = []
+        for s in segs:
+            d = s.get("details") or {}
+            if d.get("kind") != want:
+                continue
+            if kind == "transfer":
+                d["kind"] = "transfer"
+            out.append(s)
+        return out
+
+    def _build_multi_city_trip_segments(self) -> Optional[List[Dict[str, Any]]]:
         """方案 c 阶段 3：多城顺序城际段（origin→c1→c2→…→origin）。
 
-        **逐对复用 `build_trip_segments` 本体**（每对一份 requirement 拷贝：
-        origin/destination/travel_schedule 按对该裁剪——出发对只带 departure、
-        返程对只带 return，天然各查一个方向，`travel.py` 零改动）；每对独立
-        provider 实例（per-pair travel_schedule 承载日期，绕开
-        `_direction_date` 写死主方向的路由）+ 共享 cache（(name,o,d,date) 去重）。
-
+        **逐对复用 `build_trip_segments` 本体**（`_build_pair_segments`）；
         段 kind：首对 outbound（全保真：local 实测+精排）/ 中间对 transfer
         （精排选最早 ≥12:00 单腿班次）/ 末对 return（`_rebuild_return_with_schedule`
         在规划后照常精排）。逐城窗口写入 `self._multi_city_windows`
         （city → [first_start "HH:MM"|None, last_end 分钟|None]）供
         `_plan_multi_city` 逐城消费：
         - c1 first_start = outbound 到达 + 90min（现有公式）；
-        - transfer 段出发 − 60min = 前城末日截止；到达 + 90min = 后城首日起点；
+        - transfer 到达 + 90min = 后城首日起点（**前城末日不设截止**——出发日
+          在后城首日，前城末日可玩到晚上）；
         - ck last_end = 返程出发 − 60min（现有 `_windowed_last_day_end`）。
+
+        返回 **None = 多城不适用**（守卫失败：origin 空/城市缺失/首城==origin/
+        缺日期——调用方落回单城段，S2 契约）；返回 [] = 适用但无段（逐对全空）。
         """
         from datetime import timedelta
 
-        from data_transmission.travel import build_trip_segments
+        from data_transmission.tool_specs import intercity_mode_budget
 
         self._ensure_default_travel_schedule()
         content = self.requirement.get("content") or {}
         origin = str(content.get("origin") or "").strip()
         schedule = dict(content.get("travel_schedule") or {})
         city_plan = getattr(self, "city_plan", None) or []
-        start_date = _as_date(content.get("start_date"))
+        start_date = _strict_date(content.get("start_date"))
         if not origin or start_date is None or len(city_plan) < 2:
-            return []
+            return None                      # S2：多城不适用 → 调用方落单城
         cities = [str(cp.get("city") or "") for cp in city_plan]
         if any(not c for c in cities) or cities[0] == origin:
             logger.warning("多城城际：首城与出发地同城或城市缺失，跳过多城城际段")
-            return []
+            return None
         departure_date = str(schedule.get("departure_date") or "").strip()
         departure_time = str(schedule.get("departure_time") or "").strip()
         return_date = str(schedule.get("return_date") or "").strip()
         return_time = str(schedule.get("return_time") or "").strip()
         if not departure_date or not return_date:
-            return []
-        cache: Dict[str, Any] = {}
-
-        def _pair_segments(kind: str, from_city: str, to_city: str,
-                           date_iso: str) -> List[Dict[str, Any]]:
-            """单对构建：requirement 拷贝裁剪 travel_schedule 至单方向。"""
-            sched: Dict[str, str] = {}
-            if kind == "return":
-                sched["return_date"] = date_iso
-                if return_time:
-                    sched["return_time"] = return_time
-            else:
-                sched["departure_date"] = date_iso
-                sched["departure_time"] = (
-                    departure_time if kind == "outbound" else "12:00"
-                )
-            rc = {
-                **content,
-                "origin": from_city,
-                "destination": to_city,
-                "travel_schedule": sched,
-                # 地址 stash 只对真实 outbound/return 生效（中间段 city 级进出）
-                "origin_address": (
-                    content.get("origin_address") if kind == "outbound" else ""
-                ),
-                "return_address": (
-                    content.get("return_address") if kind == "return" else ""
-                ),
-            }
-            provider = None
-            if self._use_live and getattr(self, "_tool_provider", None) is not None:
-                from data_transmission.live_data import (
-                    make_live_intercity_provider,
-                )
-
-                provider = make_live_intercity_provider(
-                    self._tool_provider, sched,
-                    origin=from_city, destination=to_city, cache=cache,
-                )
-            req = {**self.requirement, "content": rc}
-            segs = build_trip_segments(
-                {}, req, travel_provider=provider,
-                local_route_fn=self._local_route_fn(),
-            )
-            want = "return" if kind == "return" else "outbound"
-            out: List[Dict[str, Any]] = []
-            for s in segs:
-                d = s.get("details") or {}
-                if d.get("kind") != want:
-                    continue
-                if kind == "transfer":
-                    d["kind"] = "transfer"
-                out.append(s)
-            return out
-
+            return None
+        # M2：实例级 cache + 共享 stats（一次规划一个，hook 每请求新建无需清空）
+        # + mode_budget 按对数放大（pairs = outbound + k−1 transfer + return）
+        if getattr(self, "_mc_cache", None) is None:
+            self._mc_cache = {}
+            self._mc_shared_stats = {}
+        pairs_count = len(cities) + 1
+        self._mc_mode_budget = {
+            k: v * pairs_count for k, v in intercity_mode_budget().items()
+        }
         segments: List[Dict[str, Any]] = []
-        segments += _pair_segments(
-            "outbound", origin, cities[0], departure_date
+        segments += self._build_pair_segments(
+            "outbound", origin, cities[0], departure_date,
+            local_route_fn=self._local_route_fn(),
         )
         for i in range(len(cities) - 1):
             next_first = int(city_plan[i + 1].get("day_from") or 0)
             date_iso = (
                 start_date + timedelta(days=max(next_first - 1, 0))
             ).isoformat()
-            segments += _pair_segments(
-                "transfer", cities[i], cities[i + 1], date_iso
+            segments += self._build_pair_segments(
+                "transfer", cities[i], cities[i + 1], date_iso,
+                local_route_fn=None,               # M1：异城腿不做驾车实测
             )
         # 返程对：rc 保持 origin/destination 原语义（make_segment 的 return
         # details.from = destination = 末城），homeward = 末城→出发地
-        segments += _pair_segments("return", origin, cities[-1], return_date)
+        segments += self._build_pair_segments(
+            "return", origin, cities[-1], return_date,
+            local_route_fn=self._local_route_fn(),
+        )
 
         # 去程精排（首对，现有机制全保留）
         dep_min = _hhmm_to_minutes_loose(departure_time or None)
@@ -1658,6 +1788,19 @@ class TripSegmentAttacher:
         # 下午开始后城）——**前城末日不设截止**（次日上午才走，末日可玩到
         # 晚上）；后城首日起点 = 到达 + 90min。末城 last_end 只来自返程
         #（return 出发 − 60min）。
+        windows = self._multi_city_windows_from_segments(segments, cities)
+        self._multi_city_windows = windows
+        logger.info(
+            "多城城际段构建完成：%s 段（窗口 %s）",
+            len(segments),
+            {c: tuple(w) for c, w in windows.items()},
+        )
+        return segments
+
+    def _multi_city_windows_from_segments(
+        self, segments: List[Dict[str, Any]], cities: List[str]
+    ) -> Dict[str, List[Any]]:
+        """从（已精排的）多城段推导逐城窗口（构建与剔城重建共用，F4）。"""
         windows: Dict[str, List[Any]] = {c: [None, None] for c in cities}
         first_start = _first_day_start_from_segments(segments)
         if first_start:
@@ -1674,14 +1817,7 @@ class TripSegmentAttacher:
         last_end = _windowed_last_day_end(segments, self.requirement)
         if last_end is not None:
             windows[cities[-1]][1] = last_end
-        self._multi_city_windows = windows
-        logger.info(
-            "多城城际段构建完成：%s 段（窗口 %s）",
-            len(segments),
-            {c: tuple(w) for c, w in windows.items()},
-        )
-        return segments
-
+        return windows
     def _build_trip_segments(self) -> List[Dict[str, Any]]:
         """构建城际来去程段（**一次**查询：demo 候选 → 主链 build_trip_segments）。
 
@@ -1737,9 +1873,13 @@ class TripSegmentAttacher:
         # 窗口；失败回退单城段（方案 b）。
         if getattr(self, "city_plan", None) and multi_city_enabled():
             try:
-                return self._build_multi_city_trip_segments()
+                multi_segments = self._build_multi_city_trip_segments()
             except Exception as exc:  # noqa: BLE001  多城失败不阻断规划
                 logger.warning("多城城际段构建失败，回退单城段：%s", exc)
+            else:
+                if multi_segments is not None:
+                    return multi_segments
+                # None = 多城不适用（守卫失败）→ 落回单城段（S2 契约）
         try:
             segments = build_trip_segments(
                 {},
