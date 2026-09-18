@@ -107,11 +107,17 @@ class HotelAttacher:
         except Exception:  # noqa: BLE001
             return []
 
+    # 州/区名 → 首府别名（2026-09-18 实测）：RollingGo hotel_search 对州名
+    # （伊犁）不限定城市 → 返回默认城市（乌鲁木齐）数据；用首府名再拉即正确。
+    _HOTEL_CITY_ALIAS: Dict[str, str] = {"伊犁": "伊宁"}
+
     def _live_hotel_pool_for(self, city: str) -> List[Any]:
         """按城拉酒店候选池（方案 c 阶段 4，D5 跨城住宿）。
 
         真源优先（hotel 工具按 city 参数化，天然支持多城）/ 假池兜底，
         per-city 缓存（`self._mc_hotel_pools`，hook 每次规划新建）。
+        州名回退：city 命中 `_HOTEL_CITY_ALIAS` 且真源池为空时用首府名重拉
+        （线上实测：city=伊犁 返回乌鲁木齐酒店，city=伊宁 返回正确伊宁池）。
         """
         cache = getattr(self, "_mc_hotel_pools", None)
         if cache is None:
@@ -125,6 +131,11 @@ class HotelAttacher:
                 from data_transmission.live_data import make_live_hotel_provider
 
                 pool = list(make_live_hotel_provider(self._tool_provider)(city))
+                if not pool and city in self._HOTEL_CITY_ALIAS:
+                    alias = self._HOTEL_CITY_ALIAS[city]
+                    pool = list(make_live_hotel_provider(self._tool_provider)(alias))
+                    logger.info("hotel 池按别名重拉：%s → %s（%d 条）",
+                                city, alias, len(pool))
                 if not pool:
                     logger.warning("hotel 工具返回空池（city=%s），回退假池", city)
             except Exception as exc:  # noqa: BLE001
