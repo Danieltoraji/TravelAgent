@@ -1,15 +1,15 @@
-"""区域目的地 → 多城计划决策层（方案 c 阶段 1，2026-09-17；v3 LLM 全权选城，2026-09-18）。
+"""区域目的地 → 多城计划决策层（方案 c 阶段 1，2026-09-17；v4 判定上移，2026-09-19）。
 
 destination 为区域名（「东北」）且行程天数足够时，产出 **city_plan**：
 按访问序的每城天数分配（``[{city, day_from, day_to}]``）。
 
-**v3（用户拍板，2026-09-18）**：prompt 不给候选城市列表、不做任何偏好类型
-特化引导（真实世界偏好枚举不完）——完整 context（备注原文/全部偏好/
-must_visit/budget）给 LLM，凭世界知识在整个区域范围内自主选城；
-区域城市词典只保留在 ``expand_region`` 做「是否区域名」的规则判定门控。
-校验只留城名 sanity（纯汉字 2-15 字）/去重/Σ天数/每城≥1/≥2城——幻觉城市
-由下游验证网兜底（逐城池/酒店/城际对 + 剔城 carry-forward），不必过度
-估计幻觉成本。
+**v4（R2 治本，用户拍板）**：「是否区域名」的判定上移至调用方——
+``address_city_resolver.classify`` 性质判定（LLM）或区域词典保底命中；
+本函数不再自带 expand_region 门控（词典此前挡住云南等未收录区名，
+LLM 自由选城能力根本没被调用）。days < 3 仍规则拒绝。完整 context
+（备注原文/全部偏好/must_visit/budget）进 prompt，LLM 凭世界知识在
+区域范围内自主选城（v3 口径不变）；幻觉城市由下游验证网兜底（逐城池/
+酒店/城际对 + 剔城 carry-forward）。
 
 **规则定界**（不调 LLM 的确定性边界，决策引擎哲学）：
 - ``expand_region`` 未命中 → 非区域，None（调用方走方案 b 地址归一）；
@@ -124,14 +124,18 @@ def build_region_city_planner(
     timeout: int = 30,
 ) -> Optional[Callable[[str, int, List[str], str], Optional[List[Dict[str, int]]]]]:
     """构造 ``plan(region, days, preferred_tags, origin, *, free_text,
-    preferences, constraints) -> city_plan | None``。
+    preferences, constraints, region_cities_hint) -> city_plan | None``。
 
     city_plan 元素形如 ``{"city": "沈阳", "day_from": 1, "day_to": 2}``
     （按访问序，day 从 1 计）。完整 context（备注原文/全部偏好/必去/预算）
     进 prompt，由 LLM 自主选城（v3：prompt 无候选列表、无偏好特化引导）。
-    门控关/客户端创建失败 → None
-    （调用方走方案 b 单主城归一）。返回 None = 不做多城（回退单主城，
-    不阻断）。
+
+    **v4（R2 治本，2026-09-19）**：不再自带「是否区域名」的门控——判定上移
+    至调用方（``address_city_resolver.classify`` 性质判定 / 词典保底命中），
+    本函数只负责多城序列与天数分配；``region_cities``（词典 ∪ resolver
+    提名）仅作日志参照。days < 3 仍规则拒绝（确定性可行性边界）。
+    门控关/客户端创建失败 → None（调用方走方案 b 单主城归一）。
+    返回 None = 不做多城（回退单主城，不阻断）。
     """
     import os
 
@@ -158,17 +162,22 @@ def build_region_city_planner(
         origin: str = "", *, free_text: str = "",
         preferences: Optional[Dict[str, Any]] = None,
         constraints: Optional[Dict[str, Any]] = None,
+        region_cities_hint: Optional[List[str]] = None,
     ) -> Optional[List[Dict[str, int]]]:
         from data_transmission.place_normalizer import PlaceNormalizer
 
-        region_cities = PlaceNormalizer().expand_region(region)
-        if not region_cities:
-            return None                       # 非区域名 → 方案 b 单城归一
+        try:
+            dict_cities = PlaceNormalizer().expand_region(region)
+        except Exception as exc:  # noqa: BLE001  词典异常不阻断
+            logger.warning("区域词典查询异常（%s）：%s", region, exc)
+            dict_cities = ()
+        # v4：词典（保底）∪ resolver 提名（LLM 性质判定时附带）仅作日志参照；
+        # 「是否区域」的判定已上移调用方，这里不再因词典未命中而拒绝。
+        region_cities = tuple(dict_cities) or tuple(region_cities_hint or ())
         if days < _MIN_MULTI_CITY_DAYS:
-            return None                       # 短行程不换城
+            return None                       # 短行程不换城（规则边界保留）
         # v3（用户拍板）：prompt 不给候选列表、不做偏好类型特化引导——
-        # 完整偏好+备注原文给 LLM 自主判断（真实世界偏好枚举不完）；
-        # 词典只保留在 expand_region 做区域判定门控。
+        # 完整偏好+备注原文给 LLM 自主判断（真实世界偏好枚举不完）。
         prefs = "、".join(preferred_tags or []) or "（无特别偏好）"
         must_visit = (constraints or {}).get("must_visit") or []
         budget = (constraints or {}).get("budget")
@@ -197,12 +206,15 @@ def build_region_city_planner(
                 meta.get("cities") or [], region_cities, days
             )
             if plan is not None:
-                outside = {p["city"] for p in plan} - set(region_cities)
-                if outside:
-                    logger.info(
-                        "选城含区域词典外城市（开放提名，下游逐城验证）： %s",
-                        "、".join(sorted(outside)),
-                    )
+                if region_cities:
+                    outside = {p["city"] for p in plan} - set(region_cities)
+                    if outside:
+                        logger.info(
+                            "选城含参照清单外城市（开放提名，下游逐城验证）： %s",
+                            "、".join(sorted(outside)),
+                        )
+                else:
+                    logger.info("选城无参照清单（词典与提名均空，纯 LLM 判断）")
                 logger.info(
                     "LLM 多城计划：%s %d天 → %s", region, days,
                     " → ".join(f"{p['city']}{p['day_to'] - p['day_from'] + 1}天"

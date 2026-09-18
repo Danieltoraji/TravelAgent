@@ -1087,54 +1087,89 @@ class TripSegmentAttacher:
                     "城际地名未识别（%s=%s），用原值；候选：%s",
                     key, raw, candidates or "无",
                 )
-                # 地名映射方案 b 过渡版（2026-09-17）：LLM 地址→主城归一。
-                # 小区级地址/区域名 PlaceNormalizer 不认 → 城际真源全挂 →
-                # driving 兜底（能出图但不查火车班次，2026-09-16 天津→西安
-                # 实测）。LLM 解读主城后**二次归一确认**（已知城市才写回，
-                # LLM 幻觉天然被拦），命中走既有真源精排；LLM 失败/门控关
-                # 保持原值不阻断。原文已 stash 进 origin_address/return_address
-                # 供「家→车站」市内腿实测（见本方法上方 stash 逻辑）。
-                # 方案 c 阶段 1（2026-09-17）：目的地为区域名且天数足够 →
-                # 先尝试多城计划（city_plan，硬校验+重问一次+失败回退）；
-                # 产出后**执行仍按首城走单城管线**（决策与执行解耦，线上
-                # 零行为变化，阶段 2 起执行层逐城消费）。产出失败 → 落回
-                # 方案 b 单主城归一。origin 侧不做多城（出发地是单点）。
-                city_plan = (
-                    self._plan_region_cities(raw, content, key)
-                    if key == "destination" else None
-                )
-                if city_plan:
-                    # F6（裁决 R6，2026-09-18）：城市来自 expand_region 白名单，
-                    # 可信度高于 LLM 二次归一——**无条件覆写**（不依赖
-                    # normalizer 认识它；v1.5 区域首城如宜昌的等价性前提）
-                    first_city = str(city_plan[0].get("city") or "")
-                    if first_city:
-                        content[key] = first_city
-                        if callable(getattr(self, "_add_notice", None)):
-                            self._add_notice(
-                                f"目的地「{raw}」已按 {first_city} 查询城际班次"
-                            )
-                    continue
-                mapped = self._llm_resolve_place_city(raw, content, key)
-                if mapped and mapped != raw:
+                # R2 治本（2026-09-19，用户拍板「判定交给 LLM」）：未识别地名
+                # 分流——目的地先查区域词典（保底，命中省一次 LLM 判定），
+                # 未命中由 resolver v2 一次性判定 city/region/unknown；
+                # region 分支接 v3 选城 + 逐城验证链（幻觉由剔城兜底）；
+                # origin/返程地永远是单点（区域名由 resolver 降级主城）。
+                # 写回一律经二次确认（站表 430 城兜底后只拦真幻觉）。
+                if key == "destination":
                     try:
-                        retry = normalizer.normalize(mapped)
+                        dict_cities = normalizer.expand_region(raw)
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning("LLM 归一城市二次确认异常：%s", exc)
-                        retry = None
-                    if retry is not None and retry.matched:
-                        canonical2 = retry.city or retry.canonical
-                        if canonical2:
-                            logger.info(
-                                "城际地名 LLM 归一：%s=%s → %s（二次确认命中）",
-                                key, raw, canonical2,
-                            )
-                            content[key] = canonical2
-                            label = "出发地" if key == "origin" else "目的地"
-                            if callable(getattr(self, "_add_notice", None)):
-                                self._add_notice(
-                                    f"{label}「{raw}」已按 {canonical2} 查询城际班次"
+                        logger.warning("区域词典查询异常（%s）：%s", raw, exc)
+                        dict_cities = ()
+                    if dict_cities:
+                        # 词典保底命中 → 直接多城计划（免一次性质判定调用）
+                        city_plan = self._plan_region_cities(raw, content, key)
+                        if not city_plan:
+                            # 多城计划失败/天数不足 → 方案 b 单主城：优先
+                            # LLM 判定的主城/首个提名城，词典首城最后兜底
+                            verdict = self._llm_judge_place(raw, content, key)
+                            hub = None
+                            if isinstance(verdict, dict):
+                                hub = verdict.get("city") or (
+                                    (verdict.get("cities") or [""])[0] or None
                                 )
+                            self._writeback_confirmed_city(
+                                raw, content, key,
+                                hub or dict_cities[0], normalizer,
+                            )
+                            continue
+                    else:
+                        verdict = self._llm_judge_place(raw, content, key)
+                        vtype = str((verdict or {}).get("type") or "unknown")
+                        if vtype == "region":
+                            city_plan = self._plan_region_cities(
+                                raw, content, key,
+                                region_hint=(verdict or {}).get("cities") or None,
+                            )
+                            if not city_plan:
+                                # region 计划失败 → 首个提名城作单主城（方案 b 语义）
+                                hub = (
+                                    (verdict or {}).get("cities") or [""]
+                                )[0] or (verdict or {}).get("city") or ""
+                                self._writeback_confirmed_city(
+                                    raw, content, key, hub, normalizer,
+                                )
+                                continue
+                        elif vtype == "city":
+                            self._writeback_confirmed_city(
+                                raw, content, key,
+                                (verdict or {}).get("city"), normalizer,
+                            )
+                            continue
+                        else:
+                            logger.info(
+                                "LLM 地点判定 unknown（%s=%s），保持原值",
+                                key, raw,
+                            )
+                            continue
+                else:
+                    # origin/返程地：单点归一（resolver 对出发地区域名降级
+                    # 主城；v1 兼容桩返回字符串原样走写回）
+                    verdict = self._llm_judge_place(raw, content, key)
+                    mapped = None
+                    if isinstance(verdict, dict):
+                        mapped = verdict.get("city") or (
+                            (verdict.get("cities") or [""])[0] or None
+                        )
+                    else:
+                        mapped = verdict
+                    self._writeback_confirmed_city(
+                        raw, content, key, mapped, normalizer,
+                    )
+                    continue
+                # city_plan 产出 → F6（裁决 R6）：多城计划已过 sanity 校验且
+                # 下游有逐城验证网，首城**无条件覆写**（不依赖 normalizer
+                # 认识它；v1.5 区域首城如宜昌的等价性前提）
+                first_city = str(city_plan[0].get("city") or "")
+                if first_city:
+                    content[key] = first_city
+                    if callable(getattr(self, "_add_notice", None)):
+                        self._add_notice(
+                            f"目的地「{raw}」已按 {first_city} 查询城际班次"
+                        )
                 continue
             canonical = result.city or result.canonical
             if canonical and canonical != raw:
@@ -1151,14 +1186,17 @@ class TripSegmentAttacher:
                         self.city, dest)
             self.city = dest
 
-    def _llm_resolve_place_city(
+    def _llm_judge_place(
         self, raw: str, content: Dict[str, Any], key: str
-    ) -> Optional[str]:
-        """LLM 地址→主城解读（惰性构建 resolver，一次规划内同参只调一次）。
+    ) -> Optional[Dict[str, Any]]:
+        """LLM 地点性质判定（R2 治本 v2）：city / region / unknown。
 
-        门控 ``USE_LLM_TOOLS``（与池审核/估时同门控）；构建失败/调用异常
-        返回 None（保持原值，driving 兜底不阻断）。返回的城市**未验证**，
-        调用方必须经 PlaceNormalizer 二次确认后才写回 content。
+        惰性构建 resolver（一次规划内同参只调一次）。返回 resolver v2 结构
+        ``{"type": "city|region|unknown", "city": str|None, "cities": [..],
+        "reason": str}``；旧式桩（只返回城市名字符串，测试兼容）包装为
+        city 判定。门控 ``USE_LLM_TOOLS``；构建失败/调用异常 → None（保持
+        原值，driving 兜底不阻断）。返回的城市**未验证**，调用方必须经
+        PlaceNormalizer 二次确认后才写回 content。
         """
         if getattr(self, "_address_city_resolver", None) is None:
             try:
@@ -1174,20 +1212,61 @@ class TripSegmentAttacher:
         other_key = "destination" if key == "origin" else "origin"
         other_city = str((content.get(other_key) or "").strip())
         try:
-            return resolver(raw, other_city)
+            classify = getattr(resolver, "classify", None)
+            if callable(classify):
+                return classify(raw, other_city, role=key)
+            # v1 兼容桩：只返回城市名字符串 → 包装为 city 判定
+            mapped = resolver(raw, other_city)
+            if mapped:
+                return {"type": "city", "city": str(mapped), "cities": [],
+                        "reason": "（v1 兼容桩）"}
+            return {"type": "unknown", "city": None, "cities": [], "reason": ""}
         except Exception as exc:  # noqa: BLE001
-            logger.warning("LLM 地址归一调用异常（%s=%s）：%s", key, raw, exc)
+            logger.warning("LLM 地点判定调用异常（%s=%s）：%s", key, raw, exc)
             return None
 
+    def _writeback_confirmed_city(
+        self, raw: str, content: Dict[str, Any], key: str,
+        mapped: Optional[str], normalizer: Any,
+    ) -> None:
+        """LLM 主城写回（二次确认：已知城市才写回，幻觉天然被拦）。
+
+        站表全量城市集（430 城）兜底后，二次确认只拦真幻觉，不拦真实城市
+        （廊坊事故教训）。写回成功附告知；失败/未命中静默保持原值。"""
+        mapped = str(mapped or "").strip()
+        if not mapped or mapped == raw:
+            return
+        try:
+            retry = normalizer.normalize(mapped)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM 归一城市二次确认异常：%s", exc)
+            return
+        if retry is not None and retry.matched:
+            canonical2 = retry.city or retry.canonical
+            if canonical2:
+                logger.info(
+                    "城际地名 LLM 归一：%s=%s → %s（二次确认命中）",
+                    key, raw, canonical2,
+                )
+                content[key] = canonical2
+                label = "出发地" if key == "origin" else "目的地"
+                if callable(getattr(self, "_add_notice", None)):
+                    self._add_notice(
+                        f"{label}「{raw}」已按 {canonical2} 查询城际班次"
+                    )
+
     def _plan_region_cities(
-        self, raw: str, content: Dict[str, Any], key: str
+        self, raw: str, content: Dict[str, Any], key: str,
+        region_hint: Optional[List[str]] = None,
     ) -> Optional[List[Dict[str, int]]]:
         """区域目的地 → 多城计划（方案 c 阶段 1，决策与执行解耦）。
 
         产出 ``city_plan``（按访问序的每城天数分配）挂到 ``self.city_plan``
-        并告知用户；**执行仍按首城走单城管线**（阶段 2 起逐城消费）。
-        规则定界与硬校验见 ``region_city_planner``；非区域/天数不足/
-        门控关/LLM 失败 → None（调用方落回方案 b 单主城归一，不阻断）。
+        并告知用户。v4（R2 治本）：调用方已判定「这是区域」（词典保底命中或
+        resolver 性质判定 type=region），本方法不再判区域；``region_hint``
+        为 resolver 附带的 LLM 提名城市序列（仅作 planner 日志参照）。
+        天数不足/门控关/LLM 失败 → None（调用方落回方案 b 单主城归一，
+        不阻断）。
         """
         if getattr(self, "_region_city_planner", None) is None:
             try:
@@ -1214,6 +1293,7 @@ class TripSegmentAttacher:
                 free_text=str(content.get("free_text_requirement") or ""),
                 preferences=content.get("preferences") or None,
                 constraints=content.get("constraints") or None,
+                region_cities_hint=region_hint,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM 多城计划调用异常（%s）：%s", raw, exc)

@@ -12,12 +12,11 @@ tool 后只会更高频（模型自由生成参数，地名写法更放飞），
 本层输出**规范地名 + 所属城市 + 结构化结果**（``NormalizeResult``）。
 数据源分两层（保持 A 侧离线可测）：
 
-- **城市级默认内置**：估算表城市（17）∪ 航路城市（41）——数据都在 A 侧
-  ``data_transmission``；
-- **站级/全量注入式**：12306 站表是 B 侧资产（``tools/train/``，含
-  ``Station.city`` 字段——方案 §P3.1 明说的「现成资产」）。B 侧接线时注入
-  ``extra_cities``（12306 city 集）与 ``station_resolver``（城市 → 车站
-  列表）；A 侧单测注入小集合验证剥离/反查逻辑，不依赖 B 侧文件。
+- **城市级默认内置**：估算表城市（17）∪ 航路城市（41）∪ **12306 站表全量
+  城市集（430 城，2026-09-19 R2 治本——station_name.js 的 ``Station.city``
+  字段提取为 ``station_cities.txt`` 随 A 侧数据自带）∪ 区域词典成员**；
+- **站级注入式**：城市 → 车站列表（``station_resolver``，B 侧接线时注入）；
+  A 侧单测注入小集合验证剥离/反查逻辑，不依赖 B 侧文件。
 
 匹配顺序（方案 §P3.1）：
 1. 精确匹配（城市集 / 别名表）；
@@ -183,11 +182,38 @@ class PlaceNormalizer:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _load_station_cities() -> Set[str]:
+        """12306 全量站表城市集（R2 治本，2026-09-19）。
+
+        ``station_name.js``（12306 官方，B 仓 ``tools/train/data/`` 内置）的
+        ``Station.city`` 字段去重共 430 城——廊坊/延吉/大理等地级市全覆盖，
+        写回二次确认不再漏杀真实城市（此前估算表 17 ∪ 航路 41 ∪ 贵港只有
+        58 城，廊坊事故根因）。再生成方式见文件头注释。缺失/解析失败 →
+        空集（回退估算表 ∪ 航路，行为同既往，不阻断）。
+        """
+        from pathlib import Path
+
+        try:
+            path = Path(__file__).resolve().parent / "station_cities.txt"
+            with open(path, encoding="utf-8") as f:
+                return {line.strip() for line in f if line.strip()}
+        except Exception as exc:  # noqa: BLE001  数据缺失不阻断归一化
+            logger.warning("站表城市集加载失败，仅用估算表/航路城市：%s", exc)
+            return set()
+
+    @staticmethod
     def _load_city_set() -> Set[str]:
         cities = set()
         cities.update(_BUILTIN_EXTRA_CITIES)
         cities.update(
             c for pair in load_city_travel_options().keys() for c in pair
+        )
+        cities.update(PlaceNormalizer._load_station_cities())
+        # 修 A（§十六，2026-09-19）：区域词典成员并入城市集——词典是拍板
+        # 数据（东北/新疆等），其成员必为真源可消费城市；站表已覆盖绝大多数，
+        # 此条兜底站表缺失场景。
+        cities.update(
+            c for members in _REGIONS.values() for c in members
         )
         try:
             routes = load_air_routes()
