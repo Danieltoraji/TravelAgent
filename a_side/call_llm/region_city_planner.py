@@ -1,20 +1,21 @@
-"""区域目的地 → 多城计划决策层（方案 c 阶段 1，2026-09-17；v2 开放提名，2026-09-18）。
+"""区域目的地 → 多城计划决策层（方案 c 阶段 1，2026-09-17；v3 LLM 全权选城，2026-09-18）。
 
 destination 为区域名（「东北」）且行程天数足够时，产出 **city_plan**：
 按访问序的每城天数分配（``[{city, day_from, day_to}]``）。
 
-**v2（§十六/§十七 拍板）**：决策层收完整 context（备注原文/全部偏好/
-must_visit/budget），prompt 引导民俗偏好选民族聚居城市并允许在词典候选
-之外提名县级民俗地（延吉/新宾类）；词典白名单**降级为保底候选**——
-校验不再做区域成员检查，幻觉城市由下游验证网兜底（逐城池/酒店/城际对
-+ 剔城 carry-forward），不必过度估计幻觉成本。
+**v3（用户拍板，2026-09-18）**：prompt 不给候选城市列表、不做任何偏好类型
+特化引导（真实世界偏好枚举不完）——完整 context（备注原文/全部偏好/
+must_visit/budget）给 LLM，凭世界知识在整个区域范围内自主选城；
+区域城市词典只保留在 ``expand_region`` 做「是否区域名」的规则判定门控。
+校验只留城名 sanity（纯汉字 2-15 字）/去重/Σ天数/每城≥1/≥2城——幻觉城市
+由下游验证网兜底（逐城池/酒店/城际对 + 剔城 carry-forward），不必过度
+估计幻觉成本。
 
 **规则定界**（不调 LLM 的确定性边界，决策引擎哲学）：
 - ``expand_region`` 未命中 → 非区域，None（调用方走方案 b 地址归一）；
 - ``days < 3`` → None（行程太短撑不起换城，单主城合理）；
-- LLM 产出校验：城名 sanity（纯汉字 2-15 字）、去重、Σ天数 = days、
-  每城 ≥1、城数 ≥2；违反 → 重问一次 → 再失败 None（回退方案 b 单主城，
-  不阻断）。
+- LLM 产出校验：城名 sanity、去重、Σ天数 = days、每城 ≥1、城数 ≥2；
+  违反 → 重问一次 → 再失败 None（回退方案 b 单主城，不阻断）。
 
 **门控**：``USE_LLM_TOOLS``（与池审核/估时/地址归一同门控）；**失败不阻断**。
 """
@@ -29,14 +30,12 @@ logger = logging.getLogger("call_llm.region_city_planner")
 REGION_CITY_SYSTEM = (
     "你是旅行规划助手。用户以区域名（如「东北」）作为旅行目的地，请把该"
     "区域展开为一次连游的**城市序列**并分配每城天数：\n"
-    "- 优先从保底候选城市里选；若用户偏好或备注明确指向区域内其他真实"
-    "  城市（如民族自治州/自治县所在地的县级民俗城市，东北如延吉、新宾），"
-    "  也可以提名它们——名字必须真实规范、确属该区域，不要编造；\n"
-    "- 用户偏好民俗/少数民族文化时，优先选择民族聚居的城市/县域所在地，"
-    "  而不是只盯着省会大城市；\n"
+    "- 凭你的地理与旅行知识，在整个区域范围内自由选择城市，不要局限于"
+    "  常见的大城市或省会——完全以用户偏好与备注为准：用户想要什么，"
+    "  就选区域内最能满足该需求的城市；\n"
     "- 顺序符合地理走向与交通现实（相邻城市间有高铁/直达交通）；\n"
-    "- Σ每城天数 == 总天数，每城至少 1 天；结合用户偏好与备注把天数多分给"
-    "更值得深度游的城市；\n"
+    "- Σ每城天数 == 总天数，每城至少 1 天；把天数多分给最符合用户需求的"
+    "城市；\n"
     "- 城市数不超过总天数；若区域里只有 1 个城市值得去，也至少给出 2 个\n"
     "  （连游需换城）；\n"
     "只输出 JSON：{\"cities\": [{\"city\": \"城市名\", \"days\": 整数}]}，"
@@ -129,7 +128,8 @@ def build_region_city_planner(
 
     city_plan 元素形如 ``{"city": "沈阳", "day_from": 1, "day_to": 2}``
     （按访问序，day 从 1 计）。完整 context（备注原文/全部偏好/必去/预算）
-    进 prompt 支撑民俗类县级提名（v2）。门控关/客户端创建失败 → None
+    进 prompt，由 LLM 自主选城（v3：prompt 无候选列表、无偏好特化引导）。
+    门控关/客户端创建失败 → None
     （调用方走方案 b 单主城归一）。返回 None = 不做多城（回退单主城，
     不阻断）。
     """
@@ -166,12 +166,14 @@ def build_region_city_planner(
             return None                       # 非区域名 → 方案 b 单城归一
         if days < _MIN_MULTI_CITY_DAYS:
             return None                       # 短行程不换城
-        listing = "、".join(region_cities)
+        # v3（用户拍板）：prompt 不给候选列表、不做偏好类型特化引导——
+        # 完整偏好+备注原文给 LLM 自主判断（真实世界偏好枚举不完）；
+        # 词典只保留在 expand_region 做区域判定门控。
         prefs = "、".join(preferred_tags or []) or "（无特别偏好）"
         must_visit = (constraints or {}).get("must_visit") or []
         budget = (constraints or {}).get("budget")
         user = (
-            f"区域：{region}（保底候选城市：{listing}）\n"
+            f"区域：{region}\n"
             f"总天数：{days}\n出发地：{origin or '（未填）'}\n"
             f"用户偏好：{prefs}\n"
             f"全部偏好：{_fmt_preferences(preferences) or '（无）'}\n"
@@ -195,11 +197,10 @@ def build_region_city_planner(
                 meta.get("cities") or [], region_cities, days
             )
             if plan is not None:
-                picked = {p["city"] for p in plan}
-                outside = picked - set(region_cities)
+                outside = {p["city"] for p in plan} - set(region_cities)
                 if outside:
                     logger.info(
-                        "LLM 多城计划含候选外提名（保底词典未收，交下游验证）： %s",
+                        "选城含区域词典外城市（开放提名，下游逐城验证）： %s",
                         "、".join(sorted(outside)),
                     )
                 logger.info(
