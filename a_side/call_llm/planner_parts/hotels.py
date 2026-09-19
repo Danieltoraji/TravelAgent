@@ -71,6 +71,17 @@ class HotelAttacher:
             acc = None
         if acc:
             plan["accommodation"] = acc
+        else:
+            # R4（2026-09-19 天津实测）：空住宿不再静默——选店失败（偏好
+            # 过滤过严/无数据）时日志 + 用户告知，避免行程无声无息缺酒店
+            logger.warning(
+                "住宿挂载未产出（select_hotels_for_plan 返回空），行程不含酒店段"
+            )
+            if callable(getattr(self, "_add_notice", None)):
+                self._add_notice(
+                    "您选择的酒店偏好下暂无匹配住宿，本次行程未含酒店安排"
+                    "（可放宽价位/位置偏好后重新规划）"
+                )
         return plan
 
     def _live_hotel_pool(self) -> List[Any]:

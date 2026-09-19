@@ -21,10 +21,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+logger = logging.getLogger("transport.hotels")
 
 try:
     from data_transmission.city_graph import DEFAULT_GRAPH_DIR, match_city_spots
@@ -196,8 +199,13 @@ class HotelSelector:
         self,
         budget_per_night: Optional[float] = None,
         exclude_ids: Sequence[str] = (),
+        ignore_location: bool = False,
     ) -> List[Hotel]:
-        """候选酒店：价位段 / 位置偏好 / 最低星级 / 每晚预算上限 / 排除集 过滤。"""
+        """候选酒店：价位段 / 位置偏好 / 最低星级 / 每晚预算上限 / 排除集 过滤。
+
+        ``ignore_location``（R4，2026-09-19）：跳过位置偏好过滤——位置偏好
+        （近地铁类）在真源 tags 无对应标签时全灭候选，作为第三级回退由
+        ``select`` 触发并告知。"""
         excluded = {str(hotel_id) for hotel_id in exclude_ids}
         price_level = _normalize_price_level(
             self.preferences.get("price_level")
@@ -219,7 +227,7 @@ class HotelSelector:
             return True
 
         def _location_passes(hotel: Hotel) -> bool:
-            if not location_preferences:
+            if ignore_location or not location_preferences:
                 return True
             haystack = " ".join(
                 [hotel.name, *hotel.tags]
@@ -346,6 +354,20 @@ class HotelSelector:
             )
             candidates = self.eligible(
                 budget_per_night=None, exclude_ids=exclude_ids
+            )
+        # R4（2026-09-19 天津实测）：位置偏好（近地铁等）是用户"想要"而非
+        # "必须"——真源酒店 tags 无此类标签时硬过滤会全灭候选。第三级回退：
+        # 忽略位置偏好重选（价位/星级/预算仍硬），并如实告知。
+        if not candidates and self.preferences.get("location_preferences"):
+            warnings.append(
+                "所选位置偏好（"
+                + "、".join(str(p) for p in self.preferences["location_preferences"])
+                + "）暂无匹配酒店，已忽略该偏好按其他条件选店"
+            )
+            candidates = self.eligible(
+                budget_per_night=budget_per_night,
+                exclude_ids=exclude_ids,
+                ignore_location=True,
             )
         if not candidates:
             warnings.append("无符合条件的酒店（数据缺失或过滤过严）")
@@ -571,6 +593,14 @@ def select_hotels_for_plan(
         price_deltas=price_deltas,
     )
     if not result["bookings"]:
+        # R4（2026-09-19 天津实测）：空选店结果不再静默——warnings 此前被
+        # 丢弃，用户只会看到行程无酒店段而无任何解释
+        logger.warning(
+            "酒店选店无结果（destination=%s, 池=%d 家）：%s",
+            destination,
+            len(getattr(selector, "hotels", []) or []),
+            "；".join(result.get("warnings") or []) or "无候选",
+        )
         return None
 
     daily_limit = int(content.get("constraints", {}).get("daily_travel_time") or 0)

@@ -140,6 +140,11 @@ class RestaurantOrchestrator:
             return plan1  # 无已安排的用餐 → 不需要真源餐厅
         resolver = self._build_live_restaurants(name_to_coord)
         if resolver is None:
+            # R4（2026-09-19）：餐厅真源不可用不再静默——用户看到的"午餐"
+            # 是抽象占位而非真餐厅，需要告知
+            logger.warning("餐厅真源 resolver 构建失败，降级为无餐厅计划（阶段 1）")
+            if callable(getattr(self, "_add_notice", None)):
+                self._add_notice("周边餐厅数据暂不可用，已按时段预留用餐时间")
             return plan1
         from data_transmission.live_data import _coord_str, make_live_matrix_fn
 
@@ -270,6 +275,8 @@ class RestaurantOrchestrator:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("带餐厅重排失败，降级为无餐厅计划（阶段 1）：%s", exc)
+            if callable(getattr(self, "_add_notice", None)):
+                self._add_notice("周边餐厅数据暂不可用，已按时段预留用餐时间")
             return plan1
 
     def _build_live_restaurants(
