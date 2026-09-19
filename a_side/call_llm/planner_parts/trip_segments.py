@@ -1910,10 +1910,22 @@ class TripSegmentAttacher:
             date_iso = (
                 start_date + timedelta(days=max(next_first - 1, 0))
             ).isoformat()
-            segments += self._build_pair_segments(
+            pair_segs = self._build_pair_segments(
                 "transfer", cities[i], cities[i + 1], date_iso,
                 local_route_fn=None,               # M1：异城腿不做驾车实测
             )
+            if not pair_segs:
+                # R3（§十九 P1）：transfer 建段失败不再静默——告知用户断链
+                logger.warning(
+                    "多城 transfer 建段失败（%s→%s），行程存在城际断链",
+                    cities[i], cities[i + 1],
+                )
+                if callable(getattr(self, "_add_notice", None)):
+                    self._add_notice(
+                        f"{cities[i]}→{cities[i + 1]} 暂未查到合适班次，"
+                        "这两城之间的衔接请以实地交通为准"
+                    )
+            segments += pair_segs
         # 返程对：rc 保持 origin/destination 原语义（make_segment 的 return
         # details.from = destination = 末城），homeward = 末城→出发地
         segments += self._build_pair_segments(

@@ -181,6 +181,41 @@ class PlaceNormalizer:
     # 数据源
     # ------------------------------------------------------------------
 
+    @classmethod
+    def known_cities(cls) -> Set[str]:
+        """全量合法城市集（估算表 ∪ 航路 ∪ 站表 430 城 ∪ 贵港 ∪ 区域成员）。
+
+        城市级语义（写回二次确认用）。预检/护栏判定「12306 可消费性」请用
+        ``queryable_places``（含站名——站表 city 字段是上级行政区口径，
+        延吉西站的 city=延边，仅城市集会漏杀延吉/桐乡/敦煌等真实目的地）。
+        """
+        return cls._load_city_set()
+
+    @staticmethod
+    def _load_station_names() -> Set[str]:
+        """12306 全量站名（3384，station_name.js 的 Station.name 提取）。
+
+        与 station_cities.txt 同源同再生成方式；缺失 → 空集不阻断。"""
+        from pathlib import Path
+
+        try:
+            path = Path(__file__).resolve().parent / "station_names.txt"
+            with open(path, encoding="utf-8") as f:
+                return {line.strip() for line in f if line.strip()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("站名清单加载失败：%s", exc)
+            return set()
+
+    @classmethod
+    def queryable_places(cls) -> Set[str]:
+        """12306 可查询单位全集 = 城市集 ∪ 站名（R3 预检/护栏口径）。
+
+        B 侧 train_trip 既认城市也认站名（站名→电报码解析），「下游可
+        消费性」的真语义是本集合：延吉/桐乡/敦煌（站名）在、乌镇/西塘/
+        壶口瀑布（无车站）不在。集合为空 = 数据缺失（调用方放行不拦）。
+        """
+        return cls._load_city_set() | cls._load_station_names()
+
     @staticmethod
     def _load_station_cities() -> Set[str]:
         """12306 全量站表城市集（R2 治本，2026-09-19）。

@@ -23,7 +23,7 @@ LLM 自由选城能力根本没被调用）。days < 3 仍规则拒绝。完整 
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("call_llm.region_city_planner")
 
@@ -33,6 +33,10 @@ REGION_CITY_SYSTEM = (
     "- 凭你的地理与旅行知识，在整个区域范围内自由选择城市，不要局限于"
     "  常见的大城市或省会——完全以用户偏好与备注为准：用户想要什么，"
     "  就选区域内最能满足该需求的城市；\n"
+    "- **城市序列里只能放真实存在的城市**（地级市/县级市，铁路 12306 可"
+    "  查询）：古镇（乌镇/西塘）、景区（壶口瀑布）、地貌都不是城市，"
+    "  不要放进序列——把它们所属的城市放进来，用户点名的地方交给行程"
+    "  中的必去景点承接；\n"
     "- 顺序符合地理走向与交通现实（相邻城市间有高铁/直达交通）；\n"
     "- Σ每城天数 == 总天数，每城至少 1 天；把天数多分给最符合用户需求的"
     "城市；\n"
@@ -77,11 +81,15 @@ def _validate_allocation(
     cities: List[Dict[str, Any]],
     region_cities: Tuple[str, ...],
     days: int,
+    city_filter: Optional[Set[str]] = None,
 ) -> Optional[List[Dict[str, int]]]:
     """LLM 分配 → city_plan（sanity 校验；词典白名单只是保底）。
 
-    v2：不做区域成员检查（开放县级提名），只留城名 sanity、去重、
-    Σ天数 = days、每城 ≥1、城数 ≥2；不合格返回 None。
+    v4：不做区域成员检查（开放县级提名），只留城名 sanity、去重、
+    Σ天数 = days、每城 ≥1、城数 ≥2。
+    v5（R3）：``city_filter`` 非空时做**可消费性预检**——提名城市必须在
+    站表城市集内（镇/景区/幻觉名出局，如乌镇/壶口瀑布），不合格返回
+    None（交重问机制让 LLM 自换真实城市）。
     """
     plan: List[Dict[str, int]] = []
     seen = set()
@@ -93,6 +101,11 @@ def _validate_allocation(
         except (TypeError, ValueError):
             return None
         if not _city_sane(city) or city in seen or d < 1:
+            return None
+        if city_filter and city not in city_filter:
+            logger.warning(
+                "提名城市预检不通过（城市集外，镇/景区/幻觉名）：%s", city
+            )
             return None
         seen.add(city)
         plan.append({"city": city, "day_from": total + 1, "day_to": total + d})
@@ -192,6 +205,15 @@ def build_region_city_planner(
             "请给出连游城市序列与每城天数。"
         )
         plan: Optional[List[Dict[str, int]]] = None
+        # v5（R3）：可消费性预检——提名城市须在站表城市集内；集合加载失败
+        # → None（预检跳过，护栏由 live_data 端点预检兜底）
+        city_filter: Optional[Set[str]] = None
+        try:
+            from data_transmission.place_normalizer import PlaceNormalizer
+
+            city_filter = PlaceNormalizer.queryable_places() or None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("城市集加载失败，提名预检跳过：%s", exc)
         for attempt in (1, 2):                # 校验不过重问一次
             try:
                 result = client.generate(
@@ -202,8 +224,9 @@ def build_region_city_planner(
             except Exception as exc:  # noqa: BLE001  失败不阻断
                 logger.warning("LLM 多城计划失败（%s %d天）：%s", region, days, exc)
                 return None
+            raw_cities = meta.get("cities") or []
             plan = _validate_allocation(
-                meta.get("cities") or [], region_cities, days
+                raw_cities, region_cities, days, city_filter=city_filter
             )
             if plan is not None:
                 if region_cities:
@@ -221,10 +244,24 @@ def build_region_city_planner(
                                for p in plan),
                 )
                 return plan
+            invalid = ""
+            if city_filter:
+                bad = [
+                    str((e or {}).get("city") or "").strip()
+                    for e in raw_cities
+                    if str((e or {}).get("city") or "").strip()
+                    and str((e or {}).get("city") or "").strip() not in city_filter
+                ]
+                bad = [b for b in bad if b]
+                if bad:
+                    invalid = (
+                        f"（{'、'.join(bad)} 不是可查询的城市，"
+                        "请换成其所属地级市/县级市或换其他城市）"
+                    )
             user = (
                 user + "\n（上次分配未通过校验：Σ天数必须等于总天数、"
-                "每城至少 1 天、至少 2 座城市、城市名须为真实规范地名，"
-                "请重新分配。）"
+                "每城至少 1 天、至少 2 座城市、城市名须为真实规范城市"
+                f"{invalid}，请重新分配。）"
             )
         logger.warning("LLM 多城计划两次校验不过，回退单主城（%s）", region)
         return None

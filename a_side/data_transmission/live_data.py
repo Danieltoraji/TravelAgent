@@ -838,9 +838,33 @@ def make_live_intercity_provider(
             return None
         return None
 
+    _known_cities: Optional[set] = None
+
+    def _endpoint_known(city: str) -> bool:
+        """R3 护栏（§十九 P0）：端点在 12306 可查询单位集（城市∪站名）内
+        才查真源/估算。城市集为空（数据缺失）→ 不拦（回退既往行为）。"""
+        nonlocal _known_cities
+        if _known_cities is None:
+            try:
+                from data_transmission.place_normalizer import PlaceNormalizer
+
+                _known_cities = PlaceNormalizer.queryable_places()
+            except Exception:  # noqa: BLE001  数据缺失不拦
+                _known_cities = set()
+        return not _known_cities or city in _known_cities
+
     def intercity_provider(
         o: str, d: str, *, mode: Optional[str] = None
     ) -> Optional[CityTravelEdge]:
+        # R3 护栏：端点是镇/景区/幻觉名（城市集外）→ 不查真源、不做
+        # geocode/map 估算，直接 None——杜绝不可达端点的全枢纽 BFS 枚举
+        # 风暴（江南水乡实测：乌镇端点致 388s 超时 + geocode 错配同名镇）。
+        if not (_endpoint_known(str(o or "").strip())
+                and _endpoint_known(str(d or "").strip())):
+            logger.warning(
+                "城际护栏：%s→%s 含城市集外端点，跳过真源与估算", o, d
+            )
+            return None
         date_str = _direction_date(o, d)
         if date_str:
             if mode in (None, Mode.TRAIN.value):
