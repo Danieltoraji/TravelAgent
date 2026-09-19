@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F2B46">
+<title>TravelAgent · 自主旅行管家</title>
+<!--
+  决赛传单二维码落地页（/static/ 免鉴权）。
+  约束：零外链（无 CDN 字体/图标/统计），会场弱网 + 明文 http 下必须秒开。
+  待填占位（搜"TODO"）：演示视频 URL、队名、学校、联系方式。
+-->
+<style>
+  :root {
+    --navy: #0F2B46; --orange: #FF8A3D; --teal: #2BB3A3;
+    --mist: #F4F6F8; --ink: #333A45; --line: #E3E8EE;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+                 "Microsoft YaHei", "Segoe UI", sans-serif;
+    background: var(--mist); color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 0 20px 40px; }
+
+  /* ── hero ── */
+  .hero {
+    background: linear-gradient(160deg, #0F2B46 0%, #16395d 100%);
+    color: #fff; text-align: center;
+    padding: 52px 20px 44px;
+    border-radius: 0 0 28px 28px;
+  }
+  .hero .badge {
+    display: inline-block; font-size: 12px; letter-spacing: 2px;
+    color: #cfe0f2; border: 1px solid rgba(255,255,255,.35);
+    border-radius: 999px; padding: 4px 14px; margin-bottom: 22px;
+  }
+  .hero h1 { font-size: 44px; letter-spacing: 1px; font-weight: 800; }
+  .hero .sub { font-size: 20px; margin-top: 6px; color: #dbe7f3; font-weight: 500; }
+  .hero .slogan {
+    display: inline-block; margin-top: 18px; font-size: 17px; font-weight: 700;
+    color: var(--orange);
+  }
+  .flow {
+    margin-top: 26px; font-size: 12.5px; color: #b9cddf;
+    line-height: 2;
+  }
+  .flow b { color: #fff; font-weight: 600; }
+  .flow .arr { color: var(--teal); padding: 0 2px; }
+
+  /* ── 卡片 ── */
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 18px;
+    padding: 22px 20px; margin-top: 18px;
+  }
+  .card h2 { font-size: 16px; color: var(--navy); margin-bottom: 12px; font-weight: 700; }
+
+  .btn {
+    display: block; text-align: center; text-decoration: none;
+    background: var(--orange); color: #fff;
+    font-size: 17px; font-weight: 700;
+    padding: 15px 16px; border-radius: 14px;
+    box-shadow: 0 6px 18px rgba(255,138,61,.35);
+  }
+  .btn:active { transform: scale(.98); }
+  .meta { text-align: center; font-size: 12px; color: #8a93a0; margin-top: 10px; }
+  .note { font-size: 12.5px; color: #8a93a0; line-height: 1.8; margin-top: 12px; }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  .video-placeholder {
+    text-align: center; padding: 26px 10px; color: #8a93a0; font-size: 14px;
+    background: var(--mist); border-radius: 12px;
+  }
+  .video-placeholder .emoji { font-size: 30px; display: block; margin-bottom: 8px; }
+  a.video-link { color: var(--teal); font-weight: 600; }
+
+  /* ── 亮点 ── */
+  .feat { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; }
+  .feat + .feat { border-top: 1px dashed var(--line); }
+  .feat .ico {
+    flex: none; width: 38px; height: 38px; border-radius: 11px;
+    background: rgba(43,179,163,.12); color: var(--teal);
+    display: flex; align-items: center; justify-content: center; font-size: 19px;
+  }
+  .feat h3 { font-size: 14.5px; color: var(--navy); font-weight: 700; }
+  .feat p { font-size: 12.5px; color: #8a93a0; line-height: 1.7; margin-top: 3px; }
+
+  /* ── footer ── */
+  .footer { text-align: center; margin-top: 34px; color: #9aa3b0; font-size: 12px; line-height: 2; }
+  .footer .team { color: var(--ink); font-weight: 600; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="badge">创新大赛 · 决赛参赛作品</div><!-- TODO: 换成正式比赛名 -->
+  <h1>TravelAgent</h1>
+  <div class="sub">自主旅行管家</div>
+  <div class="slogan">行程有变，它先知道。</div>
+  <div class="flow">
+    <b>规划</b><span class="arr">→</span><b>监控</b><span class="arr">→</span><b>突发感知</b><span class="arr">→</span><b>自动重规划</b><span class="arr">→</span><b>安全执行</b>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="card">
+    <h2>📲 下载安卓版 App</h2>
+    <a class="btn" href="/static/travel-app-v15.apk" download>下载 TravelAgent（v15）</a>
+    <div class="meta">v15 · 4.4 MB · 安卓 Android</div>
+    <div class="note">
+      <b>安卓：</b>下载后如提示安全，请允许「安装未知来源应用」。<br>
+      <b>iOS：</b>暂不支持安装，可观看下方演示视频，或到展台现场体验。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🎬 演示视频</h2>
+    <!-- TODO: 视频上线后替换下方注释行，删掉占位 div：
+         <a class="video-link" href="视频地址">▶ 观看 3 分钟演示视频</a> -->
+    <div class="video-placeholder">
+      <span class="emoji">🎞️</span>
+      演示视频整理中 · 欢迎决赛现场体验
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>✨ 它能做什么</h2>
+    <div class="feat">
+      <div class="ico">🛰️</div>
+      <div>
+        <h3>真源数据，不编造</h3>
+        <p>12306 余票 / 和风天气 / 高德路线 / 飞常准航班 / RollingGo 酒店——报价即实时价。</p>
+      </div>
+    </div>
+    <div class="feat">
+      <div class="ico">🔁</div>
+      <div>
+        <h3>全生命周期闭环</h3>
+        <p>不止生成攻略：旅行中持续监控，突发自动触发决策与重规划。</p>
+      </div>
+    </div>
+    <div class="feat">
+      <div class="ico">👁️</div>
+      <div>
+        <h3>AI 思考全程可视</h3>
+        <p>规划期结构化轨迹实时展示模型与工具调用，看得见 AI 的每一步。</p>
+      </div>
+    </div>
+    <div class="feat">
+      <div class="ico">🛡️</div>
+      <div>
+        <h3>安全边界清晰</h3>
+        <p>预约需确认、付款永远人工——Agent 有能力，更有分寸。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="team">【队名】· 【学校】</div><!-- TODO: 填队名/学校 -->
+    <div>【联系方式 / 邮箱】</div><!-- TODO: 填联系方式 -->
+    <div>TravelAgent · 自主旅行管家</div>
+  </div>
+
+</div>
+</body>
+</html>

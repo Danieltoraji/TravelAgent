@@ -31,6 +31,10 @@ PUBLIC_PATHS = {
     "/api/auth/login/",
 }
 
+# 前缀放行（2026-09-19）：决赛传单落地页 /static/（扫码用户无 Bearer token，
+# 必须免鉴权可达）；业务面仍精确匹配，不受影响
+PUBLIC_PREFIXES = ("/static/",)
+
 
 class TokenAuthRuntimeMiddleware:
     def __init__(self, get_response):
@@ -50,7 +54,7 @@ class TokenAuthRuntimeMiddleware:
         path = request.path
         if not path.endswith("/"):
             path = path + "/"
-        if path not in PUBLIC_PATHS:
+        if path not in PUBLIC_PATHS and not path.startswith(PUBLIC_PREFIXES):
             try:
                 user = resolve_bearer(request)
             except Exception:  # noqa: BLE001  DB 异常按未认证处理（fail-closed）

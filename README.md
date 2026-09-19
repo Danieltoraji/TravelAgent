@@ -140,6 +140,9 @@ docker compose exec -T web python smoke/smoke_acceptance.py
 
 # 5) 演示剧情脚本
 python -m demo.demo_scenario
+
+# 6) 决赛传单落地页（免鉴权静态站，2026-09-19）：APK 下载 + 演示视频位
+#    http://localhost:8000/static/   （文件在 django_server/static_site/，改完即生效）
 ```
 
 > Mock/Live 切换：复制 `config/local_settings.example.py` 为 `config/local_settings.py`
