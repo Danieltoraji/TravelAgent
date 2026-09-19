@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>TravelAgent · 决赛传单（A4 双面打样稿）</title>
+<!--
+  ════════════════════════════════════════════════════════════════
+  TravelAgent 决赛传单 · HTML 打样稿 v1（A4 双面，1:1 成品尺寸）
+  ────────────────────────────────────────────────────────────────
+  ▸ 浏览器打开即为屏幕预览；Ctrl+P 打印/导出 PDF：
+      · 目标打印机另存为 PDF，纸张 A4，边距=无，勾选"背景图形"
+      · 本稿为 210×297 成品尺寸；交付印刷厂前需在设计工具中
+        重排为 216×303 并加 3mm 出血（背景已做满版，出血好加）
+  ▸ 占位符（付印前必换）：
+      【队名】【学校】【比赛名】【联系人｜电话】 + 两个二维码
+  ▸ 二维码规格：容错等级 H，成品 ≥20×20mm；正面=落地页，
+      背面=APK 直下（见记忆库「决赛传单落地页」口径）
+  ▸ URL hash 速查：#p1 只看正面，#p2 只看背面（导图用）
+  ▸ 字体：本机装有「阿里巴巴普惠体 / Montserrat / JetBrains Mono」
+      自动生效；否则回退 微软雅黑 / Segoe UI / Consolas
+  ════════════════════════════════════════════════════════════════
+-->
+<style>
+  :root{
+    --navy:#0F2B46; --orange:#FF8A3D; --teal:#2BB3A3;
+    --mist:#F4F6F8; --ink:#333A45; --white:#FFFFFF;
+    --zh:"Alibaba PuHuiTi 3.0","Alibaba PuHuiTi","Source Han Sans SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    --num:"Montserrat","Segoe UI",Arial,sans-serif;
+    --mono:"JetBrains Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:#E6EAEE;font-family:var(--zh);color:var(--ink);
+       -webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .page{width:210mm;height:297mm;background:var(--white);position:relative;
+        overflow:hidden;margin:8mm auto;box-shadow:0 4px 24px rgba(15,43,70,.25);
+        display:flex;flex-direction:column;}
+  @page{size:A4 portrait;margin:0;}
+  @media print{
+    body{background:none;}
+    .page{margin:0;box-shadow:none;page-break-after:always;}
+    .page:last-child{page-break-after:auto;}
+  }
+  /* URL hash 单页渲染（截图/导图用） */
+  body.only-front .page.back{display:none;}
+  body.only-back  .page.front{display:none;}
+  body.only-front .page,body.only-back .page{margin:0;box-shadow:none;}
+
+  /* ─────────── 通用 ─────────── */
+  .ph{color:#94A3B8;font-weight:400;}          /* 占位符灰 */
+  .qr-box{background:var(--white);border:2px dashed #B9C4CF;border-radius:2mm;
+          display:flex;flex-direction:column;align-items:center;justify-content:center;
+          color:#94A3B8;font-family:var(--mono);text-align:center;line-height:1.5;}
+  .qr-box b{font-size:7pt;font-weight:700;letter-spacing:.5px;}
+  .qr-box span{font-size:5.5pt;}
+
+  /* ═══════════ 正面 ═══════════ */
+  .front .topbar{background:var(--navy);color:var(--white);height:13mm;flex:0 0 auto;
+                 display:flex;align-items:center;justify-content:space-between;
+                 padding:0 9mm;}
+  .front .topbar .team{display:flex;align-items:center;gap:3mm;font-size:8.5pt;}
+  .front .topbar .logo{width:7mm;height:7mm;border-radius:50%;border:1.5px solid var(--orange);
+                 display:flex;align-items:center;justify-content:center;
+                 font:700 7pt var(--num);color:var(--orange);}
+  .front .topbar .badge{font-size:7.5pt;border:1px solid rgba(255,255,255,.5);
+                 border-radius:10mm;padding:.8mm 4mm;letter-spacing:1px;}
+
+  .front .hero{padding:9mm 9mm 0;text-align:center;flex:0 0 auto;}
+  .front .hero h1{font-family:var(--num);font-weight:800;font-size:46pt;color:var(--navy);
+                  letter-spacing:-1px;line-height:1.05;}
+  .front .hero h1 i{font-style:normal;color:var(--orange);}
+  .front .hero .sub{font-size:16pt;font-weight:700;color:var(--navy);margin-top:2mm;
+                    letter-spacing:6px;}
+  .front .hero .slogan{display:inline-block;margin-top:4mm;font-size:13.5pt;font-weight:700;
+                color:var(--orange);letter-spacing:2px;}
+  .front .hero .slogan::before{content:"—— ";color:#C9D3DC;}
+  .front .hero .slogan::after {content:" ——";color:#C9D3DC;}
+
+  /* 主视觉：轨迹流手机样机 */
+  .front .stage{flex:1 1 auto;margin:7mm 9mm 0;background:var(--mist);border-radius:5mm;
+                position:relative;overflow:hidden;
+                display:flex;align-items:center;justify-content:center;}
+  .front .stage .orbit{position:absolute;border-radius:50%;}
+  .front .stage .o1{width:90mm;height:90mm;right:-25mm;top:-25mm;
+                    background:radial-gradient(circle,rgba(43,179,163,.14),transparent 70%);}
+  .front .stage .o2{width:70mm;height:70mm;left:-20mm;bottom:-22mm;
+                    background:radial-gradient(circle,rgba(255,138,61,.16),transparent 70%);}
+  .front .stage .route{position:absolute;left:8mm;right:8mm;top:12mm;height:0;
+                border-top:1.5px dashed var(--teal);opacity:.55;}
+  .front .stage .route i{position:absolute;top:-2mm;width:3mm;height:3mm;border-radius:50%;
+                background:var(--teal);}
+  .front .stage .route i.a{left:6%;} .front .stage .route i.b{left:49%;}
+  .front .stage .route i.c{right:6%;background:var(--orange);}
+  .front .stage .city{position:absolute;top:4.5mm;font-size:6pt;color:var(--teal);
+                letter-spacing:1px;font-weight:700;}
+  .front .stage .city.c1{left:6%;} .front .stage .city.c2{left:47%;}
+  .front .stage .city.c3{right:5%;color:var(--orange);}
+
+  .phone{width:56mm;height:96mm;background:var(--navy);border-radius:7mm;position:relative;
+         padding:2.2mm;box-shadow:0 6px 18px rgba(15,43,70,.35);z-index:2;}
+  .phone .screen{background:var(--white);width:100%;height:100%;border-radius:5.4mm;
+         overflow:hidden;display:flex;flex-direction:column;}
+  .phone .notch{width:16mm;height:2.4mm;background:var(--navy);border-radius:0 0 2mm 2mm;
+         margin:0 auto;}
+  .phone .appbar{background:var(--navy);color:var(--white);padding:1.8mm 3mm;
+         display:flex;justify-content:space-between;align-items:center;}
+  .phone .appbar b{font-size:7pt;letter-spacing:.5px;}
+  .phone .appbar span{font-size:5.5pt;color:var(--orange);font-weight:700;}
+  .trace{flex:1;padding:2mm 2.6mm;display:flex;flex-direction:column;gap:1.6mm;}
+  .tstep{border-left:.8mm solid var(--teal);background:var(--mist);border-radius:0 1.5mm 1.5mm 0;
+         padding:1.2mm 2mm;}
+  .tstep .h{display:flex;justify-content:space-between;align-items:baseline;}
+  .tstep .t{font-size:6.3pt;font-weight:700;color:var(--navy);}
+  .tstep .m{font-size:5pt;color:#7A8794;font-family:var(--mono);}
+  .tstep .d{font-size:5.3pt;color:var(--ink);margin-top:.4mm;}
+  .tstep.done{border-color:var(--teal);}
+  .tstep.run{border-color:var(--orange);background:#FFF3EA;}
+  .tstep.run .t::after{content:" ⟳";color:var(--orange);}
+  .tstep.wait{border-color:#C9D3DC;background:var(--white);}
+  .tevent{background:var(--navy);color:var(--white);border-radius:2mm;padding:1.4mm 2mm;
+         font-size:5.6pt;display:flex;gap:1.5mm;align-items:center;}
+  .tevent b{color:var(--orange);}
+  .phone .homebar{width:14mm;height:1mm;border-radius:1mm;background:#C9D3DC;
+         margin:1.2mm auto 1mm;flex:0 0 auto;}
+
+  /* 数字带 */
+  .front .numbers{flex:0 0 auto;display:flex;padding:6mm 9mm 2mm;}
+  .front .num{flex:1;text-align:center;padding:0 2mm;}
+  .front .num + .num{border-left:1px solid #E3E9EF;}
+  .front .num .v{font-family:var(--num);font-weight:800;font-size:27pt;color:var(--orange);
+                 line-height:1;}
+  .front .num .l{font-size:9pt;font-weight:700;color:var(--navy);margin-top:1.6mm;}
+  .front .num .s{font-size:6pt;color:#7A8794;margin-top:1mm;line-height:1.5;}
+
+  /* 流程条 */
+  .front .flow{flex:0 0 auto;padding:2mm 9mm 5mm;text-align:center;}
+  .front .flow .chips{display:flex;align-items:center;justify-content:center;gap:2.2mm;}
+  .front .chip{background:var(--white);border:1px solid var(--navy);color:var(--navy);
+        font-size:8pt;font-weight:700;border-radius:10mm;padding:1.6mm 4mm;white-space:nowrap;}
+  .front .chip.hot{background:var(--orange);border-color:var(--orange);color:var(--white);}
+  .front .arrow{color:var(--teal);font-size:11pt;font-weight:800;}
+  .front .flow .cap{font-size:6.3pt;color:#7A8794;margin-top:2.2mm;letter-spacing:1px;}
+
+  /* 底部 CTA */
+  .front .cta{background:var(--navy);color:var(--white);flex:0 0 auto;height:30mm;
+        display:flex;align-items:center;justify-content:space-between;padding:0 9mm;}
+  .front .cta .say .big{font-size:14pt;font-weight:800;letter-spacing:1px;}
+  .front .cta .say .big b{color:var(--orange);}
+  .front .cta .say .small{font-size:7pt;color:#B9C4CF;margin-top:1.6mm;letter-spacing:2px;}
+  .front .cta .qr-box{width:21mm;height:21mm;}
+  .front .cta .qrcell{display:flex;align-items:center;gap:3.5mm;}
+  .front .cta .qrcell .lab{font-size:6.5pt;color:#B9C4CF;writing-mode:vertical-rl;
+        letter-spacing:2px;}
+  .front .cta .contact{font-size:7.5pt;color:#B9C4CF;text-align:right;line-height:1.8;}
+
+  /* ═══════════ 背面 ═══════════ */
+  .back{padding:10mm 9mm 0;display:flex;flex-direction:column;}
+  .back h2{font-size:17pt;color:var(--navy);font-weight:800;letter-spacing:2px;}
+  .back h2 i{font-style:normal;color:var(--orange);}
+  .back .h2sub{font-size:7.5pt;color:#7A8794;margin-top:1.5mm;letter-spacing:1px;}
+
+  .steps{display:flex;gap:0;margin-top:5mm;align-items:stretch;}
+  .step{flex:1;display:flex;flex-direction:column;align-items:center;text-align:center;
+        position:relative;padding:0 2mm;}
+  .step .no{width:8.5mm;height:8.5mm;border-radius:50%;background:var(--orange);color:var(--white);
+        font-family:var(--num);font-weight:800;font-size:11pt;display:flex;
+        align-items:center;justify-content:center;}
+  .step .tt{font-size:8.3pt;font-weight:700;color:var(--navy);margin-top:2mm;}
+  .step .dd{font-size:6.3pt;color:#7A8794;margin-top:1mm;line-height:1.55;}
+  .step::after{content:"";position:absolute;top:4.2mm;left:calc(50% + 6mm);
+        width:calc(100% - 12mm);height:0;border-top:1.4px dashed var(--teal);}
+  .step:last-child::after{display:none;}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4mm;margin-top:7mm;}
+  .card{background:var(--mist);border-radius:3mm;padding:4.5mm 4mm;min-height:41mm;}
+  .card .ic{width:9mm;height:9mm;color:var(--navy);}
+  .card .ic svg{width:100%;height:100%;stroke:var(--navy);fill:none;stroke-width:1.8;
+        stroke-linecap:round;stroke-linejoin:round;}
+  .card .ic .acc{stroke:var(--orange);}
+  .card h3{font-size:10.5pt;color:var(--navy);font-weight:800;margin-top:2.2mm;}
+  .card p{font-size:6.8pt;line-height:1.7;margin-top:1.6mm;color:var(--ink);}
+  .card p b{color:var(--navy);}
+
+  .arch{margin-top:7mm;background:var(--navy);border-radius:4mm;padding:5mm 6mm 5.5mm;}
+  .arch .title{color:var(--white);font-size:9.5pt;font-weight:800;letter-spacing:2px;
+        text-align:center;}
+  .arch .row{display:flex;align-items:center;gap:3mm;margin-top:4.5mm;}
+  .node{flex:1;background:var(--white);border-radius:2.5mm;padding:2.6mm 2.5mm;text-align:center;}
+  .node b{display:block;font-size:8pt;color:var(--navy);}
+  .node span{display:block;font-size:5.8pt;color:#7A8794;margin-top:1.2mm;line-height:1.5;}
+  .node.llm{border-bottom:1.2mm solid var(--orange);}
+  .node.tools{border-bottom:1.2mm solid var(--teal);}
+  .link{flex:0 0 auto;color:var(--teal);text-align:center;}
+  .link .a{font-size:12pt;font-weight:800;line-height:1;}
+  .link .t{font-size:6.5pt;color:#C9D6E2;font-family:var(--mono);margin-top:.8mm;letter-spacing:.5px;}
+  .arch .row2{display:flex;justify-content:center;margin-top:3.2mm;}
+  .arch .down{color:var(--teal);text-align:center;font-size:6.5pt;font-family:var(--mono);}
+  .arch .down .a{font-size:11pt;display:block;line-height:1;}
+  .arch .down .lbl{color:#B9C4CF;}
+
+  .badges{display:flex;flex-wrap:wrap;gap:2.2mm;margin-top:6mm;justify-content:center;}
+  .bd{font-family:var(--mono);font-size:7pt;color:var(--navy);border:1px solid #C9D3DC;
+      border-radius:1.5mm;padding:1.2mm 3mm;background:var(--white);}
+
+  .back .cta{background:var(--navy);color:var(--white);height:28mm;
+      margin:auto -9mm 0;display:flex;align-items:center;justify-content:space-between;
+      padding:0 9mm;flex:0 0 auto;}
+  .back .cta .qrcell{display:flex;align-items:center;gap:2.6mm;}
+  .back .cta .qr-box{width:19mm;height:19mm;}
+  .back .cta .lab{font-size:6.3pt;color:#B9C4CF;line-height:1.6;}
+  .back .cta .lab b{display:block;color:var(--white);font-size:7.5pt;}
+  .back .cta .contact{font-size:7.5pt;color:#B9C4CF;text-align:right;line-height:1.9;}
+  .back .cta .contact b{color:var(--white);}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════ 正面 ══════════════════ -->
+<section class="page front" id="flyer-front">
+  <div class="topbar">
+    <div class="team"><span class="logo">TA</span><span><span class="ph">【队名】</span> · <span class="ph">【学校】</span></span></div>
+    <div class="badge"><span class="ph">【比赛名】</span>·决赛参赛作品</div>
+  </div>
+
+  <div class="hero">
+    <h1>TravelAgent<i>.</i></h1>
+    <div class="sub">自 主 旅 行 管 家</div>
+    <div class="slogan">行程有变，它先知道。</div>
+  </div>
+
+  <div class="stage">
+    <div class="orbit o1"></div><div class="orbit o2"></div>
+    <div class="route"><i class="a"></i><i class="b"></i><i class="c"></i></div>
+    <div class="city c1">出发</div><div class="city c2">中途</div><div class="city c3">目的地</div>
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="appbar"><b>TravelAgent</b><span>● 规划中</span></div>
+        <div class="trace">
+          <div class="tstep done"><div class="h"><span class="t">✓ 需求解析</span><span class="m">2.1s</span></div>
+            <div class="d">滇西北 5 日 · 双人 · 预算 6k</div></div>
+          <div class="tstep done"><div class="h"><span class="t">✓ 选城决策</span><span class="m">LLM</span></div>
+            <div class="d">丽江 → 大理 → 香格里拉</div></div>
+          <div class="tstep done"><div class="h"><span class="t">✓ 12306 余票</span><span class="m">真源</span></div>
+            <div class="d">昆明→丽江 二等座 ¥64 有票</div></div>
+          <div class="tstep run"><div class="h"><span class="t">酒店比价</span><span class="m">RollingGo</span></div>
+            <div class="d">古城商圈 真源查询中…</div></div>
+          <div class="tevent"><b>⚡ 突发注入</b>大理暴雨 → 自动重规划中</div>
+          <div class="tstep wait"><div class="h"><span class="t">○ 应急预案</span><span class="m">待命</span></div>
+            <div class="d">监控就绪：停运/满房/天气</div></div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="numbers">
+    <div class="num"><div class="v">21</div><div class="l">个实时数据工具</div>
+      <div class="s">火车·天气·地图·航班·酒店<br>全走官方真源</div></div>
+    <div class="num"><div class="v">430+</div><div class="l">城市火车可达</div>
+      <div class="s">12306 官方接口<br>直查余票与中转</div></div>
+    <div class="num"><div class="v">671</div><div class="l">项自动化测试</div>
+      <div class="s">每次改动<br>全量回归护航</div></div>
+    <div class="num"><div class="v">5</div><div class="l">个版本安卓 App</div>
+      <div class="s">React + Capacitor<br>真机持续迭代</div></div>
+  </div>
+
+  <div class="flow">
+    <div class="chips">
+      <span class="chip">智能规划</span><span class="arrow">→</span>
+      <span class="chip">实时监控</span><span class="arrow">→</span>
+      <span class="chip">突发感知</span><span class="arrow">→</span>
+      <span class="chip">自动重规划</span><span class="arrow">→</span>
+      <span class="chip hot">安全执行</span>
+    </div>
+    <div class="cap">不止生成攻略 —— 全生命周期闭环，突发事件自动触发决策与重规划</div>
+  </div>
+
+  <div class="cta">
+    <div class="say">
+      <div class="big">扫码，看 <b>AI</b> 如何思考</div>
+      <div class="small">轨迹流 · 实时 · 全程可视</div>
+    </div>
+    <div class="qrcell">
+      <span class="lab">落地页</span>
+      <div class="qr-box"><b>二维码占位</b><span>≥20×20mm · 容错H</span></div>
+    </div>
+    <div class="contact"><span class="ph">【联系人｜电话】</span><br><span class="ph">【邮箱 / 公众号】</span></div>
+  </div>
+</section>
+
+<!-- ══════════════════ 背面 ══════════════════ -->
+<section class="page back" id="flyer-back">
+  <h2>60 秒看懂 TravelAgent<i>.</i></h2>
+  <div class="h2sub">一部手机，看一个 AI 管家从规划到应变的完整过程</div>
+
+  <div class="steps">
+    <div class="step"><div class="no">1</div><div class="tt">扫码注册</div>
+      <div class="dd">安装 App 或打开网页<br>创建账号</div></div>
+    <div class="step"><div class="no">2</div><div class="tt">说出旅行偏好</div>
+      <div class="dd">目的地·天数·预算·偏好<br>一句话即可</div></div>
+    <div class="step"><div class="no">3</div><div class="tt">看 AI 思考轨迹</div>
+      <div class="dd">约 1 分钟出完整行程<br>每一步推理全程可见</div></div>
+    <div class="step"><div class="no">4</div><div class="tt">注入突发事件</div>
+      <div class="dd">现场演示暴雨/满房<br>看它自动重规划</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5"/><path d="M18 3v4h-4"/><path d="M20 12a8 8 0 0 1-14 5"/><path d="M6 21v-4h4"/></svg></div>
+      <h3>全生命周期闭环</h3>
+      <p>不止生成攻略：旅行中持续监控，突发<b>自动触发</b>决策与重规划，全程无需人工干预。</p>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2"/><path class="acc" d="M7.5 8.5a6.5 6.5 0 0 0 0 9"/><path class="acc" d="M16.5 8.5a6.5 6.5 0 0 1 0 9"/><path d="M4.5 5.5a10.5 10.5 0 0 0 0 13"/><path d="M19.5 5.5a10.5 10.5 0 0 1 0 13"/></svg></div>
+      <h3>真源数据，不编造</h3>
+      <p><b>12306</b> 官方余票、和风天气、高德路线、飞常准航班、RollingGo 酒店——报价即实时价。</p>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle class="acc" cx="12" cy="12" r="2.6"/></svg></div>
+      <h3>AI 思考全程可视</h3>
+      <p>规划期结构化轨迹<b>实时展示</b>模型与工具调用，能看见 AI 的每一步推理与依据。</p>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/><path class="acc" d="M8 9h8"/><path class="acc" d="M8 12.5h5"/></svg></div>
+      <h3>对话式改行程</h3>
+      <p>"第二天下雨，换室内"——对话直接改时间轴，<b>实时真源校验</b>可行性后再落锤。</p>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.4-6.5-10a6.5 6.5 0 0 1 13 0C18.5 15.6 12 21 12 21z"/><circle class="acc" cx="12" cy="10.6" r="2.3"/></svg></div>
+      <h3>多城连游智能选城</h3>
+      <p>一句"滇西北玩五天"，LLM 拆解<b>城市组合与城际交通</b>，跨城行程一次编排。</p>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.4-3 7.4-7 9-4-1.6-7-4.6-7-9V6z"/><path class="acc" d="M9 11.5l2.2 2.2L15.5 9"/></svg></div>
+      <h3>安全边界清晰</h3>
+      <p>预约需确认、<b>付款永远人工</b>——Agent 有能力，更有分寸。</p>
+    </div>
+  </div>
+
+  <div class="arch">
+    <div class="title">三 层 架 构</div>
+    <div class="row">
+      <div class="node"><b>安卓 App / Web</b><span>Bearer 鉴权 · 每用户独立账号<br>轨迹流 · 时间轴 · 地图</span></div>
+      <div class="link"><div class="a">→</div><div class="t">HTTPS</div></div>
+      <div class="node"><b>Django 多用户服务</b><span>每用户隔离运行时<br>SQLite 持久化 · 重启恢复</span></div>
+      <div class="link"><div class="a">→</div><div class="t">编排</div></div>
+      <div class="node llm"><b>LLM 决策引擎</b><span>DeepSeek / GLM 可切换<br>function calling</span></div>
+    </div>
+    <div class="row2"><div class="down"><span class="a">↓</span><span class="lbl">21 个真源工具：12306 · 和风 · 高德 · 飞常准 · RollingGo · Bing</span></div></div>
+  </div>
+
+  <div class="badges">
+    <span class="bd">Python</span><span class="bd">Django</span><span class="bd">SQLite</span>
+    <span class="bd">DeepSeek / GLM</span><span class="bd">React</span><span class="bd">Capacitor</span>
+    <span class="bd">Docker</span><span class="bd">MCP</span><span class="bd">Gunicorn</span>
+  </div>
+
+  <div class="cta">
+    <div class="qrcell">
+      <div class="qr-box"><b>二维码占位</b><span>APK 直下</span></div>
+      <div class="lab"><b>安卓 · 扫码安装</b>已迭代 5 个版本<br>v5 即当前赛场版本</div>
+    </div>
+    <div class="qrcell">
+      <div class="qr-box"><b>二维码占位</b><span>演示视频</span></div>
+      <div class="lab"><b>iOS · 扫码看视频</b>3 分钟完整演示<br>含突发事件重规划</div>
+    </div>
+    <div class="contact"><b><span class="ph">【队名】</span> · TravelAgent</b><br><span class="ph">【联系人｜电话】</span><br>付款永远人工确认 · Agent 不代付</div>
+  </div>
+</section>
+
+<script>
+  // URL hash 单页渲染：#p1 只出正面 / #p2 只出背面（配合无头截图导 PNG）
+  if (location.hash === "#p1") document.body.classList.add("only-front");
+  if (location.hash === "#p2") document.body.classList.add("only-back");
+</script>
+</body>
+</html>
