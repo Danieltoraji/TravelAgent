@@ -71,6 +71,10 @@ class HotelAttacher:
             acc = None
         if acc:
             plan["accommodation"] = acc
+            # R4：选店级降级告知透出（如"已忽略位置偏好按其他条件选店"）
+            for w in (acc.get("warnings") or []):
+                if callable(getattr(self, "_add_notice", None)):
+                    self._add_notice(str(w))
         else:
             # R4（2026-09-19 天津实测）：空住宿不再静默——选店失败（偏好
             # 过滤过严/无数据）时日志 + 用户告知，避免行程无声无息缺酒店
