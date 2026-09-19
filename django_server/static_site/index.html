@@ -8,7 +8,7 @@
 <!--
   决赛传单二维码落地页（/static/ 免鉴权）。
   约束：零外链（无 CDN 字体/图标/统计），会场弱网 + 明文 http 下必须秒开。
-  待填占位（搜"TODO"）：演示视频 URL、队名、学校、联系方式。
+  待填占位（搜"TODO"）：队名、学校、联系方式。
 -->
 <style>
   :root {
@@ -68,13 +68,6 @@
   .note { font-size: 12.5px; color: #8a93a0; line-height: 1.8; margin-top: 12px; }
   .note b { color: var(--ink); font-weight: 600; }
 
-  .video-placeholder {
-    text-align: center; padding: 26px 10px; color: #8a93a0; font-size: 14px;
-    background: var(--mist); border-radius: 12px;
-  }
-  .video-placeholder .emoji { font-size: 30px; display: block; margin-bottom: 8px; }
-  a.video-link { color: var(--teal); font-weight: 600; }
-
   /* ── 亮点 ── */
   .feat { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; }
   .feat + .feat { border-top: 1px dashed var(--line); }
@@ -111,17 +104,7 @@
     <div class="meta">v15 · 4.4 MB · 安卓 Android</div>
     <div class="note">
       <b>安卓：</b>下载后如提示安全，请允许「安装未知来源应用」。<br>
-      <b>iOS：</b>暂不支持安装，可观看下方演示视频，或到展台现场体验。
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>🎬 演示视频</h2>
-    <!-- TODO: 视频上线后替换下方注释行，删掉占位 div：
-         <a class="video-link" href="视频地址">▶ 观看 3 分钟演示视频</a> -->
-    <div class="video-placeholder">
-      <span class="emoji">🎞️</span>
-      演示视频整理中 · 欢迎决赛现场体验
+      <b>iOS：</b>暂不支持安装，欢迎到展台现场体验。
     </div>
   </div>
 
